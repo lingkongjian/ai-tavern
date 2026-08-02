@@ -1226,7 +1226,7 @@ a {
   font-style: normal;
 }
 
-.streaming-scene {
+.streaming-progress {
   margin-top: 14px;
   padding: 14px 16px;
   border: 1px solid rgb(111 148 132 / 28%);
@@ -1234,43 +1234,53 @@ a {
   background: rgb(21 42 34 / 24%);
 }
 
-.streaming-scene header {
+.streaming-progress header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
-.streaming-scene header > span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #86a493;
-  animation: streaming-pulse 1.2s ease-in-out infinite;
-}
-
-.streaming-scene header strong {
+.streaming-progress header strong {
   color: #86a493;
-  font-size: 0.66rem;
+  font-size: 0.68rem;
   font-weight: 500;
   letter-spacing: 0.05em;
 }
 
-.streaming-scene p {
-  margin: 0;
-  color: #cfc6bc;
-  font-size: 0.82rem;
-  line-height: 1.8;
-  white-space: pre-wrap;
+.streaming-progress header span {
+  color: #766d66;
+  font-family: ui-monospace, monospace;
+  font-size: 0.6rem;
 }
 
-@keyframes streaming-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
+.progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 7%);
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #5a7f6f, #86a493);
+  transition: width 0.25s ease-out;
+}
+
+.progress-fill.awaiting {
+  background: linear-gradient(90deg, #5a7f6f, #86a493, #5a7f6f);
+  background-size: 200% 100%;
+  animation: streaming-sweep 1.4s linear infinite;
+}
+
+@keyframes streaming-sweep {
+  0% {
+    background-position: 100% 0;
   }
-  50% {
-    opacity: 1;
+  100% {
+    background-position: -100% 0;
   }
 }
 

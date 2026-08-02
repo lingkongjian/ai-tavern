@@ -604,7 +604,7 @@ export function GameInterface({
   const [roleplayInput, setRoleplayInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
-  const [streamingScene, setStreamingScene] = useState("");
+  const [streamingChars, setStreamingChars] = useState(0);
   const [failoverNotice, setFailoverNotice] = useState("");
   const [regenerating, setRegenerating] = useState(false);
   const [regenerationError, setRegenerationError] = useState("");
@@ -1059,7 +1059,7 @@ export function GameInterface({
     setSubmitting(true);
     setSubmitError("");
     setRegenerationError("");
-    setStreamingScene("");
+    setStreamingChars(0);
     setFailoverNotice("");
     pendingIdempotencyKey.current ??= crypto.randomUUID();
 
@@ -1076,14 +1076,14 @@ export function GameInterface({
             : undefined,
           storyDirection: directionInput.trim(),
         },
-        (text) => setStreamingScene((current) => current + text),
+        (text) => setStreamingChars((current) => current + text.length),
         (profileName) =>
           setFailoverNotice(
             `当前 API 生成失败，已自动切换到备用配置“${profileName}”。`,
           ),
       );
       if (!body.adventure) throw new Error("生成本轮剧情失败。");
-      setStreamingScene("");
+      setStreamingChars(0);
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
       setSelectedChoice("");
@@ -1099,7 +1099,7 @@ export function GameInterface({
       setDirectionInput(text(nextDirection?.state.content));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
-      setStreamingScene("");
+      setStreamingChars(0);
       setSubmitError(
         error instanceof Error ? error.message : "生成本轮剧情失败。",
       );
@@ -1135,7 +1135,7 @@ export function GameInterface({
     }
     setRegenerating(true);
     setRegenerationError("");
-    setStreamingScene("");
+    setStreamingChars(0);
     setFailoverNotice("");
     try {
       const body = await streamTurnRequest(
@@ -1145,14 +1145,14 @@ export function GameInterface({
           actionId: pendingRegenerationAction.current.actionId,
           feedback,
         },
-        (text) => setStreamingScene((current) => current + text),
+        (text) => setStreamingChars((current) => current + text.length),
         (profileName) =>
           setFailoverNotice(
             `当前 API 生成失败，已自动切换到备用配置“${profileName}”。`,
           ),
       );
       if (!body.adventure) throw new Error("重新生成最新剧情失败。");
-      setStreamingScene("");
+      setStreamingChars(0);
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
       setSelectedChoice("");
@@ -1167,7 +1167,7 @@ export function GameInterface({
       setDirectionInput(text(nextDirection?.state.content));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
-      setStreamingScene("");
+      setStreamingChars(0);
       setRegenerationError(
         error instanceof Error ? error.message : "重新生成最新剧情失败。",
       );
@@ -2788,13 +2788,36 @@ export function GameInterface({
                   </p>
                 ) : null}
 
-                {submitting && streamingScene ? (
-                  <div className="streaming-scene" aria-live="polite">
+                {submitting ? (
+                  <div className="streaming-progress" aria-live="polite">
                     <header>
-                      <span aria-hidden="true" />
-                      <strong>AI 正在续写，流式生成中……</strong>
+                      <strong>AI 正在续写……</strong>
+                      <span>
+                        {streamingChars > 0
+                          ? `已生成 ${streamingChars} 字`
+                          : "正在连接模型"}
+                      </span>
                     </header>
-                    <p>{streamingScene}</p>
+                    <div
+                      className="progress-track"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(
+                        95 * (1 - Math.exp(-streamingChars / 400)),
+                      )}
+                    >
+                      <div
+                        className={
+                          streamingChars > 0 ? "progress-fill" : "progress-fill awaiting"
+                        }
+                        style={{
+                          width: `${Math.round(
+                            95 * (1 - Math.exp(-streamingChars / 400)),
+                          )}%`,
+                        }}
+                      />
+                    </div>
                   </div>
                 ) : null}
 
