@@ -1,0 +1,553 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-tavern.local/schemas/generation-output.schema.json",
+  "title": "AI 酒馆单回合生成输出",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "turn", "decision", "stateCommit", "warnings"],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "turn": {
+      "$ref": "#/$defs/turn"
+    },
+    "decision": {
+      "$ref": "#/$defs/decision"
+    },
+    "stateCommit": {
+      "$ref": "#/$defs/stateCommit"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scene", "events", "dialogue"],
+      "properties": {
+        "scene": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        },
+        "dialogue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dialogue"
+          }
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "summary", "characterIds"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "type": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "summary": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "characterIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "locationId": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "dialogue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "speakerId", "content"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "speakerId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "content": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "addressedCharacterIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context", "prompt", "choices"],
+      "properties": {
+        "context": {
+          "enum": ["proposal_response", "action_direction"]
+        },
+        "prompt": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/choice"
+          }
+        }
+      }
+    },
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "description", "stance"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "label": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "stance": {
+          "enum": [
+            "accept",
+            "partial_accept",
+            "reject",
+            "benevolent",
+            "neutral",
+            "malicious"
+          ]
+        }
+      }
+    },
+    "stateCommit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sceneTransition",
+        "characterStateChanges",
+        "relationshipChanges",
+        "characterCardChanges",
+        "worldBookChanges",
+        "storyDirectionEvaluation",
+        "summaryPatch"
+      ],
+      "properties": {
+        "sceneTransition": {
+          "$ref": "#/$defs/sceneTransition"
+        },
+        "characterStateChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/characterStateChange"
+          }
+        },
+        "relationshipChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relationshipChange"
+          }
+        },
+        "characterCardChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/characterCardChange"
+          }
+        },
+        "worldBookChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/worldBookChange"
+          }
+        },
+        "storyDirectionEvaluation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/storyDirectionEvaluation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summaryPatch": {
+          "type": "string"
+        }
+      }
+    },
+    "sceneTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "locationId",
+        "locationName",
+        "locationDescription",
+        "presentCharacterIds",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "locationId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "locationName": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "locationDescription": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "presentCharacterIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "characterStateChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["characterId", "patch", "duration", "reason", "evidence"],
+      "properties": {
+        "characterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "patch": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "duration": {
+          "enum": ["instant", "scene", "until_changed", "permanent"]
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "relationshipChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceCharacterId",
+        "targetCharacterId",
+        "dimension",
+        "delta",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "sourceCharacterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "targetCharacterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "dimension": {
+          "enum": ["trust", "affection", "fear", "hostility", "respect"]
+        },
+        "delta": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 100
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "characterCardChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "characterId",
+        "operation",
+        "path",
+        "reason",
+        "evidence",
+        "sourceTurnId"
+      ],
+      "properties": {
+        "characterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "operation": {
+          "enum": ["add", "update", "deactivate"]
+        },
+        "path": {
+          "enum": [
+            "identity.titles",
+            "identity.affiliations",
+            "goals.longTerm",
+            "beliefs",
+            "fears",
+            "vows",
+            "permanentConditions",
+            "abilities",
+            "revealedSecrets",
+            "relationshipMilestones"
+          ]
+        },
+        "value": {},
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "sourceTurnId": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "worldBookEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keys", "content", "enabled"],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "content": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "constant": {
+          "type": "boolean"
+        },
+        "position": {
+          "enum": ["before_char", "after_char"]
+        },
+        "order": {
+          "type": "number"
+        },
+        "extensions": {
+          "type": "object"
+        }
+      }
+    },
+    "worldBookChangeBase": {
+      "type": "object",
+      "required": ["sourceTurnId", "reason", "evidence"],
+      "properties": {
+        "sourceTurnId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "sourceStoryDirectionId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "worldBookChange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "entry", "sourceTurnId", "reason", "evidence"],
+          "properties": {
+            "operation": {
+              "const": "create"
+            },
+            "entry": {
+              "$ref": "#/$defs/worldBookEntry"
+            },
+            "sourceTurnId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "sourceStoryDirectionId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "reason": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "evidence": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "targetEntryId",
+            "patch",
+            "sourceTurnId",
+            "reason",
+            "evidence"
+          ],
+          "properties": {
+            "operation": {
+              "const": "update"
+            },
+            "targetEntryId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "patch": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "sourceTurnId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "sourceStoryDirectionId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "reason": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "evidence": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "targetEntryId",
+            "sourceTurnId",
+            "reason",
+            "evidence"
+          ],
+          "properties": {
+            "operation": {
+              "const": "deactivate"
+            },
+            "targetEntryId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "sourceTurnId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "sourceStoryDirectionId": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "reason": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "evidence": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        }
+      ]
+    },
+    "storyDirectionEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason",
+        "evidence",
+        "continuity",
+        "continuityReason",
+        "recommendedModuleId",
+        "suggestedNextDirection"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["active", "completed"]
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "continuity": {
+          "enum": ["aligned", "diverged", "uncertain"]
+        },
+        "continuityReason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "recommendedModuleId": {
+          "oneOf": [
+            { "$ref": "#/$defs/nonEmptyString" },
+            { "type": "null" }
+          ]
+        },
+        "suggestedNextDirection": {
+          "oneOf": [
+            { "$ref": "#/$defs/nextStoryDirection" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "nextStoryDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "content", "reason"],
+      "properties": {
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "content": { "$ref": "#/$defs/nonEmptyString" },
+        "reason": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

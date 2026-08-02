@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-tavern/schema/人物卡.schema.json",
+  "title": "AI 酒馆人物卡生成标准 v1（Character Card V2）",
+  "type": "object",
+  "required": ["spec", "spec_version", "data"],
+  "properties": {
+    "spec": { "const": "chara_card_v2" },
+    "spec_version": { "const": "2.0" },
+    "data": {
+      "type": "object",
+      "required": [
+        "name",
+        "description",
+        "personality",
+        "scenario",
+        "first_mes",
+        "mes_example",
+        "creator_notes",
+        "system_prompt",
+        "post_history_instructions",
+        "alternate_greetings",
+        "tags",
+        "creator",
+        "character_version",
+        "extensions"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 6000 },
+        "personality": { "type": "string", "maxLength": 6000 },
+        "scenario": { "type": "string", "maxLength": 8000 },
+        "first_mes": { "type": "string", "maxLength": 4000 },
+        "mes_example": { "type": "string", "maxLength": 8000 },
+        "creator_notes": { "type": "string", "maxLength": 4000 },
+        "system_prompt": { "type": "string", "maxLength": 8000 },
+        "post_history_instructions": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "alternate_greetings": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "maxLength": 4000 }
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 40,
+          "items": { "type": "string", "maxLength": 80 }
+        },
+        "creator": { "type": "string", "maxLength": 200 },
+        "character_version": { "type": "string", "maxLength": 120 },
+        "extensions": { "type": "object" },
+        "character_book": { "type": "object" }
+      },
+      "anyOf": [
+        { "properties": { "description": { "minLength": 1 } } },
+        { "properties": { "personality": { "minLength": 1 } } }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,71 @@
+{
+  "spec": "ai_tavern_bundle_project_v1",
+  "spec_version": "1.0",
+  "name": "纸城失踪档案维护项目",
+  "bundle": {
+    "name": "纸城失踪档案",
+    "description": "从拆分人物卡、世界书和原文构建的纸城开局剧本。",
+    "creator": "AI 酒馆示例",
+    "version": "1.0",
+    "outputFile": "完整剧本包_纸城失踪档案.json",
+    "reportFile": "校验报告_纸城失踪档案.json"
+  },
+  "campaign": {
+    "campaignName": "纸城失踪档案",
+    "campaignDescription": "调查一份会自行改写的失踪者档案。",
+    "world": {
+      "name": "纸城",
+      "premise": "纸城的公共档案会在日落前短暂影响现实，档案馆负责核验证据并修订错误记录。"
+    },
+    "player": {
+      "name": "记录员",
+      "description": "新任记录员，玩家拥有其全部言行与选择权。"
+    },
+    "mainCharacter": {
+      "name": "林雾"
+    },
+    "openingLocationName": "边境档案馆",
+    "openingScene": "暴雨夜，记录员来到即将闭馆的边境档案馆，守夜人林雾正压住一页自行改写的失踪者记录。巡夜人仍在外街巡逻，尚未进入当前场景。",
+    "initialStoryDirection": "确认失踪者是否真实存在；当档案来源和第一份外部证据都被查明时完成当前剧情走向。",
+    "storyModules": [
+      {
+        "id": "verify-missing-record",
+        "title": "核验失踪档案",
+        "objective": "确认失踪者是否真实存在，并查明档案自行改写的原因。",
+        "completionCriteria": [
+          "查明自行改写的档案来源",
+          "取得一份独立于档案馆的存在证据"
+        ],
+        "activationConditions": ["开场即启用"],
+        "prerequisiteModuleIds": [],
+        "continuityNotes": "玩家仍在调查失踪者或纸城档案改写现象。",
+        "autoContinue": true
+      }
+    ],
+    "initialStoryModuleId": "verify-missing-record"
+  },
+  "materials": {
+    "playerCard": "人物卡/00_玩家角色_记录员.json",
+    "mainCharacter": {
+      "file": "人物卡/01_主要角色_林雾.json"
+    },
+    "additionalCharacters": [
+      {
+        "file": "人物卡/02_巡夜人.json",
+        "presentAtOpening": false,
+        "firstMessage": ""
+      }
+    ],
+    "worldBook": "世界书_纸城.json",
+    "referenceDocuments": [
+      {
+        "file": "原文参考_纸城.md",
+        "name": "纸城原作片段",
+        "enabled": true,
+        "currentChapter": 1,
+        "preventFuture": true,
+        "fidelity": "balanced"
+      }
+    ]
+  }
+}

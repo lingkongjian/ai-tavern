@@ -1,0 +1,516 @@
+import type {
+  AdventureCharacterInput,
+  AdventureStoryModuleInput,
+  StartAdventureInput,
+} from "@/lib/storage/story-store";
+import {
+  ImportFileError,
+  parseCharacterCardDocument,
+  parseWorldBookDocument,
+} from "../import/酒馆文件.ts";
+import {
+  parseSourceDocumentInput,
+  SourceReferenceInputError,
+} from "../reference/原文参考.ts";
+
+const limits = {
+  short: 80,
+  description: 2_000,
+  premise: 6_000,
+  scene: 8_000,
+  direction: 1_000,
+  moduleNote: 2_000,
+} as const;
+
+export class AdventureInputError extends Error {
+  public readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(issues[0] ?? "开局信息无效。");
+    this.name = "AdventureInputError";
+    this.issues = issues;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readRequiredText(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  maximumLength: number,
+  issues: string[],
+) {
+  const value = source[key];
+  if (typeof value !== "string" || !value.trim()) {
+    issues.push(`${label}不能为空。`);
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length > maximumLength) {
+    issues.push(`${label}不能超过 ${maximumLength} 个字符。`);
+  }
+  return trimmed.slice(0, maximumLength);
+}
+
+function readOptionalText(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  maximumLength: number,
+  issues: string[],
+) {
+  const value = source[key];
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value !== "string") {
+    issues.push(`${label}必须是文本。`);
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length > maximumLength) {
+    issues.push(`${label}不能超过 ${maximumLength} 个字符。`);
+  }
+  return trimmed.slice(0, maximumLength);
+}
+
+function readSection(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  issues: string[],
+) {
+  const value = source[key];
+  if (!isRecord(value)) {
+    issues.push(`${label}格式无效。`);
+    return {};
+  }
+  return value;
+}
+
+function readCharacter(
+  source: Record<string, unknown>,
+  label: string,
+  issues: string[],
+): AdventureCharacterInput {
+  let card: AdventureCharacterInput["card"];
+  if (source.card !== undefined) {
+    try {
+      card = parseCharacterCardDocument(source.card).card;
+    } catch (error) {
+      if (error instanceof ImportFileError) {
+        issues.push(
+          ...error.issues.map((issue) => `${label}导入卡：${issue}`),
+        );
+      } else {
+        issues.push(`${label}导入卡格式无效。`);
+      }
+    }
+  }
+  const character: AdventureCharacterInput = {
+    name: readRequiredText(source, "name", `${label}姓名`, limits.short, issues),
+    role: readRequiredText(
+      source,
+      "role",
+      `${label}身份`,
+      limits.description,
+      issues,
+    ),
+    personality: readRequiredText(
+      source,
+      "personality",
+      `${label}性格`,
+      limits.description,
+      issues,
+    ),
+    firstMessage: readOptionalText(
+      source,
+      "firstMessage",
+      `${label}开场台词`,
+      limits.description,
+      issues,
+    ),
+    ...(card ? { card } : {}),
+  };
+  if (source.initiallyPresent !== undefined) {
+    if (typeof source.initiallyPresent !== "boolean") {
+      issues.push(`${label}开场在场状态必须是布尔值。`);
+    } else {
+      character.initiallyPresent = source.initiallyPresent;
+    }
+  }
+  return character;
+}
+
+function readTextList(
+  value: unknown,
+  label: string,
+  maximumItems: number,
+  maximumLength: number,
+  issues: string[],
+) {
+  if (!Array.isArray(value)) {
+    issues.push(`${label}必须是文本数组。`);
+    return [];
+  }
+  if (value.length > maximumItems) {
+    issues.push(`${label}最多允许 ${maximumItems} 项。`);
+  }
+  return value.slice(0, maximumItems).flatMap((item, index) => {
+    if (typeof item !== "string" || !item.trim()) {
+      issues.push(`${label}第 ${index + 1} 项不能为空。`);
+      return [];
+    }
+    const trimmed = item.trim();
+    if (trimmed.length > maximumLength) {
+      issues.push(`${label}第 ${index + 1} 项不能超过 ${maximumLength} 个字符。`);
+    }
+    return [trimmed.slice(0, maximumLength)];
+  });
+}
+
+function readStoryModules(value: unknown, issues: string[]) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    issues.push("剧情任务模块必须是数组。");
+    return [];
+  }
+  if (value.length > 30) issues.push("剧本包最多允许 30 个剧情任务模块。");
+  const modules = value.slice(0, 30).flatMap((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`剧情任务 ${index + 1} 格式无效。`);
+      return [];
+    }
+    const id = readRequiredText(
+      item,
+      "id",
+      `剧情任务 ${index + 1} ID`,
+      120,
+      issues,
+    );
+    if (id && !/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(id)) {
+      issues.push(`剧情任务 ${index + 1} ID 只能包含文字、数字、点、下划线和连字符。`);
+    }
+    let autoContinue = true;
+    if (item.autoContinue !== undefined) {
+      if (typeof item.autoContinue !== "boolean") {
+        issues.push(`剧情任务 ${index + 1} 的 autoContinue 必须是布尔值。`);
+      } else {
+        autoContinue = item.autoContinue;
+      }
+    }
+    const completionCriteria = readTextList(
+      item.completionCriteria,
+      `剧情任务 ${index + 1} 完成条件`,
+      12,
+      500,
+      issues,
+    );
+    if (completionCriteria.length === 0) {
+      issues.push(`剧情任务 ${index + 1} 至少需要一项完成条件。`);
+    }
+    const storyModule: AdventureStoryModuleInput = {
+      id,
+      title: readRequiredText(
+        item,
+        "title",
+        `剧情任务 ${index + 1} 标题`,
+        120,
+        issues,
+      ),
+      objective: readRequiredText(
+        item,
+        "objective",
+        `剧情任务 ${index + 1} 目标`,
+        limits.direction,
+        issues,
+      ),
+      completionCriteria,
+      activationConditions:
+        item.activationConditions === undefined
+          ? []
+          : readTextList(
+              item.activationConditions,
+              `剧情任务 ${index + 1} 进入条件`,
+              12,
+              500,
+              issues,
+            ),
+      prerequisiteModuleIds:
+        item.prerequisiteModuleIds === undefined
+          ? []
+          : readTextList(
+              item.prerequisiteModuleIds,
+              `剧情任务 ${index + 1} 前置任务`,
+              20,
+              120,
+              issues,
+            ),
+      continuityNotes: readOptionalText(
+        item,
+        "continuityNotes",
+        `剧情任务 ${index + 1} 连续性说明`,
+        limits.moduleNote,
+        issues,
+      ),
+      autoContinue,
+    };
+    return [storyModule];
+  });
+  const ids = modules.map((storyModule) => storyModule.id).filter(Boolean);
+  if (new Set(ids).size !== ids.length) issues.push("剧情任务模块 ID 不能重复。");
+  const knownIds = new Set(ids);
+  for (const storyModule of modules) {
+    for (const prerequisiteId of storyModule.prerequisiteModuleIds ?? []) {
+      if (!knownIds.has(prerequisiteId)) {
+        issues.push(`剧情任务《${storyModule.title}》引用了不存在的前置任务 ${prerequisiteId}。`);
+      }
+      if (prerequisiteId === storyModule.id) {
+        issues.push(`剧情任务《${storyModule.title}》不能把自己设为前置任务。`);
+      }
+    }
+    const prerequisiteIds = storyModule.prerequisiteModuleIds ?? [];
+    if (new Set(prerequisiteIds).size !== prerequisiteIds.length) {
+      issues.push(`剧情任务《${storyModule.title}》的前置任务 ID 不能重复。`);
+    }
+  }
+  const visitState = new Map<string, "visiting" | "visited">();
+  const path: string[] = [];
+  let reportedCycle = false;
+  const visit = (moduleId: string) => {
+    if (reportedCycle || visitState.get(moduleId) === "visited") return;
+    if (visitState.get(moduleId) === "visiting") {
+      const cycleStart = path.indexOf(moduleId);
+      const cycle = [...path.slice(cycleStart), moduleId];
+      issues.push(`剧情任务前置关系存在循环：${cycle.join(" -> ")}。`);
+      reportedCycle = true;
+      return;
+    }
+    visitState.set(moduleId, "visiting");
+    path.push(moduleId);
+    const storyModule = modules.find((item) => item.id === moduleId);
+    for (const prerequisiteId of storyModule?.prerequisiteModuleIds ?? []) {
+      if (knownIds.has(prerequisiteId)) visit(prerequisiteId);
+    }
+    path.pop();
+    visitState.set(moduleId, "visited");
+  };
+  for (const storyModule of modules) visit(storyModule.id);
+  return modules;
+}
+
+export function parseStartAdventureInput(value: unknown): StartAdventureInput {
+  if (!isRecord(value)) {
+    throw new AdventureInputError(["请求内容必须是 JSON 对象。"]);
+  }
+
+  const issues: string[] = [];
+  const storyModules = readStoryModules(value.storyModules, issues);
+  const initialStoryModuleId = readOptionalText(
+    value,
+    "initialStoryModuleId",
+    "开场剧情任务 ID",
+    120,
+    issues,
+  );
+  if (
+    initialStoryModuleId &&
+    !storyModules.some((storyModule) => storyModule.id === initialStoryModuleId)
+  ) {
+    issues.push("开场剧情任务 ID 不存在于剧情任务模块中。");
+  }
+  const world = readSection(value, "world", "世界设定", issues);
+  const player = readSection(value, "player", "玩家角色", issues);
+  const mainCharacter = readSection(
+    value,
+    "mainCharacter",
+    "主要角色",
+    issues,
+  );
+  let additionalCharacters: AdventureCharacterInput[] = [];
+  if (value.additionalCharacters !== undefined) {
+    if (!Array.isArray(value.additionalCharacters)) {
+      issues.push("其他 AI 角色必须是数组。");
+    } else {
+      if (value.additionalCharacters.length > 20) {
+        issues.push("开局最多可以添加 20 名其他 AI 角色。");
+      }
+      additionalCharacters = value.additionalCharacters
+        .slice(0, 20)
+        .map((character, index) => {
+          if (!isRecord(character)) {
+            issues.push(`其他角色 ${index + 1} 格式无效。`);
+            return readCharacter({}, `其他角色 ${index + 1}`, issues);
+          }
+          return readCharacter(character, `其他角色 ${index + 1}`, issues);
+        });
+    }
+  }
+  let worldBookEntries: StartAdventureInput["worldBookEntries"] = [];
+  if (value.worldBookEntries !== undefined) {
+    if (!Array.isArray(value.worldBookEntries)) {
+      issues.push("导入世界书条目必须是数组。");
+    } else if (value.worldBookEntries.length > 200) {
+      issues.push("开局最多可以导入 200 条世界书条目。");
+    } else if (value.worldBookEntries.length > 0) {
+      try {
+        worldBookEntries = parseWorldBookDocument({
+          spec: "ai_tavern_world_book_v1",
+          spec_version: "1.0",
+          name: "开局导入世界书",
+          entries: value.worldBookEntries,
+        }).entries;
+      } catch (error) {
+        if (error instanceof ImportFileError) {
+          issues.push(...error.issues.map((issue) => `导入世界书：${issue}`));
+        } else {
+          issues.push("导入世界书格式无效。");
+        }
+      }
+    }
+  }
+  let sourceDocuments: StartAdventureInput["sourceDocuments"] = [];
+  if (value.sourceDocuments !== undefined) {
+    if (!Array.isArray(value.sourceDocuments)) {
+      issues.push("原文参考资料必须是数组。");
+    } else if (value.sourceDocuments.length > 5) {
+      issues.push("每个剧本最多可以导入 5 份原文参考。");
+    } else {
+      sourceDocuments = value.sourceDocuments
+        .map((document, index) => {
+          try {
+            return parseSourceDocumentInput(document);
+          } catch (error) {
+            if (error instanceof SourceReferenceInputError) {
+              issues.push(
+                ...error.issues.map(
+                  (issue) => `原文参考 ${index + 1}：${issue}`,
+                ),
+              );
+            } else {
+              issues.push(`原文参考 ${index + 1} 格式无效。`);
+            }
+            return null;
+          }
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
+    }
+  }
+
+  let playerCard: StartAdventureInput["player"]["card"];
+  if (player.card !== undefined) {
+    try {
+      playerCard = parseCharacterCardDocument(player.card).card;
+    } catch (error) {
+      if (error instanceof ImportFileError) {
+        issues.push(
+          ...error.issues.map((issue) => `玩家角色导入卡：${issue}`),
+        );
+      } else {
+        issues.push("玩家角色导入卡格式无效。");
+      }
+    }
+  }
+
+  const result: StartAdventureInput = {
+    campaignName: readRequiredText(
+      value,
+      "campaignName",
+      "战役名称",
+      limits.short,
+      issues,
+    ),
+    campaignDescription: readOptionalText(
+      value,
+      "campaignDescription",
+      "战役说明",
+      limits.description,
+      issues,
+    ),
+    world: {
+      name: readRequiredText(
+        world,
+        "name",
+        "世界名称",
+        limits.short,
+        issues,
+      ),
+      premise: readRequiredText(
+        world,
+        "premise",
+        "世界观概要",
+        limits.premise,
+        issues,
+      ),
+    },
+    player: {
+      name: readRequiredText(
+        player,
+        "name",
+        "玩家角色名",
+        limits.short,
+        issues,
+      ),
+      description: readRequiredText(
+        player,
+        "description",
+        "玩家角色设定",
+        limits.description,
+        issues,
+      ),
+      ...(playerCard ? { card: playerCard } : {}),
+    },
+    mainCharacter: readCharacter(mainCharacter, "主要角色", issues),
+    additionalCharacters,
+    ...(worldBookEntries.length > 0 ? { worldBookEntries } : {}),
+    ...(sourceDocuments.length > 0 ? { sourceDocuments } : {}),
+    ...(value.openingLocationName !== undefined
+      ? {
+          openingLocationName: readOptionalText(
+            value,
+            "openingLocationName",
+            "开场地点名称",
+            limits.short,
+            issues,
+          ),
+        }
+      : {}),
+    openingScene: readRequiredText(
+      value,
+      "openingScene",
+      "开场场景",
+      limits.scene,
+      issues,
+    ),
+    initialStoryDirection: readOptionalText(
+      value,
+      "initialStoryDirection",
+      "初始剧情走向",
+      limits.direction,
+      issues,
+    ),
+    ...(storyModules.length > 0 ? { storyModules } : {}),
+    ...(initialStoryModuleId ? { initialStoryModuleId } : {}),
+  };
+
+  const characterNames = [
+    result.player.name,
+    result.mainCharacter.name,
+    ...additionalCharacters.map((character) => character.name),
+  ]
+    .filter(Boolean)
+    .map((name) => name.toLocaleLowerCase("zh-CN"));
+  if (new Set(characterNames).size !== characterNames.length) {
+    issues.push("同一剧本中的角色姓名不能重复。");
+  }
+
+  if (issues.length > 0) {
+    throw new AdventureInputError(issues);
+  }
+  return result;
+}

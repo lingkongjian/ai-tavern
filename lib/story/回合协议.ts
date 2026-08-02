@@ -1,0 +1,1133 @@
+import type {
+  JsonObject,
+  JsonValue,
+  LoadedAdventure,
+} from "../storage/story-store.ts";
+
+export type RoleplayMode = "speech" | "action" | "mixed";
+
+export interface PlayerTurnRequest {
+  expectedHeadTurnId: string | null;
+  idempotencyKey: string;
+  selectedChoiceId?: string;
+  customChoice?: string;
+  roleplay?: {
+    mode: RoleplayMode;
+    content: string;
+  };
+  storyDirection?: string;
+}
+
+export interface RegenerateTurnRequest {
+  expectedHeadTurnId: string;
+  actionId: string;
+  feedback: string;
+}
+
+export interface GeneratedEvent {
+  id: string;
+  type: string;
+  summary: string;
+  characterIds: string[];
+  locationId?: string;
+}
+
+export interface GeneratedDialogue {
+  id: string;
+  speakerId: string;
+  content: string;
+  addressedCharacterIds: string[];
+}
+
+export interface GeneratedChoice {
+  id: string;
+  label: string;
+  description: string;
+  stance:
+    | "accept"
+    | "partial_accept"
+    | "reject"
+    | "benevolent"
+    | "neutral"
+    | "malicious";
+}
+
+export interface GeneratedCharacterStateChange {
+  characterId: string;
+  patch: JsonObject;
+  duration: "instant" | "scene" | "until_changed" | "permanent";
+  reason: string;
+  evidence: string[];
+}
+
+export interface GeneratedSceneTransition {
+  locationId: string;
+  locationName: string;
+  locationDescription: string;
+  presentCharacterIds: string[];
+  reason: string;
+  evidence: string[];
+}
+
+export interface GeneratedRelationshipChange {
+  sourceCharacterId: string;
+  targetCharacterId: string;
+  dimension: "trust" | "affection" | "fear" | "hostility" | "respect";
+  delta: number;
+  reason: string;
+  evidence: string[];
+}
+
+export interface GeneratedCharacterCardChange {
+  characterId: string;
+  operation: "add" | "update" | "deactivate";
+  path: string;
+  value?: JsonValue;
+  reason: string;
+  evidence: string[];
+  sourceTurnId: string;
+}
+
+export type GeneratedWorldBookChange =
+  | {
+      operation: "create";
+      entry: JsonObject;
+      sourceTurnId: string;
+      sourceStoryDirectionId?: string;
+      reason: string;
+      evidence: string[];
+    }
+  | {
+      operation: "update";
+      targetEntryId: string;
+      patch: JsonObject;
+      sourceTurnId: string;
+      sourceStoryDirectionId?: string;
+      reason: string;
+      evidence: string[];
+    }
+  | {
+      operation: "deactivate";
+      targetEntryId: string;
+      sourceTurnId: string;
+      sourceStoryDirectionId?: string;
+      reason: string;
+      evidence: string[];
+    };
+
+export interface ValidatedGeneratedTurn {
+  raw: JsonObject;
+  turn: {
+    scene: string;
+    events: GeneratedEvent[];
+    dialogue: GeneratedDialogue[];
+  };
+  decision: {
+    context: "proposal_response" | "action_direction";
+    prompt: string;
+    choices: GeneratedChoice[];
+  };
+  stateCommit: {
+    sceneTransition: GeneratedSceneTransition | null;
+    characterStateChanges: GeneratedCharacterStateChange[];
+    relationshipChanges: GeneratedRelationshipChange[];
+    characterCardChanges: GeneratedCharacterCardChange[];
+    worldBookChanges: GeneratedWorldBookChange[];
+    storyDirectionEvaluation: {
+      status: "active" | "completed";
+      reason: string;
+      evidence: string[];
+      continuity: "aligned" | "diverged" | "uncertain";
+      continuityReason: string;
+      recommendedModuleId: string | null;
+      suggestedNextDirection: {
+        title: string;
+        content: string;
+        reason: string;
+      } | null;
+    } | null;
+    summaryPatch: string;
+  };
+  warnings: string[];
+}
+
+export class PlayerTurnInputError extends Error {
+  public readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(issues[0] ?? "玩家本轮输入无效。");
+    this.name = "PlayerTurnInputError";
+    this.issues = issues;
+  }
+}
+
+export class GeneratedTurnValidationError extends Error {
+  public readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(issues[0] ?? "模型输出不符合剧情生成规范。");
+    this.name = "GeneratedTurnValidationError";
+    this.issues = issues;
+  }
+}
+
+export class RegenerateTurnInputError extends Error {
+  public readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(issues[0] ?? "重新生成请求无效。");
+    this.name = "RegenerateTurnInputError";
+    this.issues = issues;
+  }
+}
+
+function isObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function normalizeGeneratedTurnVersion(value: JsonObject): JsonObject {
+  const normalized = structuredClone(value);
+  const candidate =
+    value.schemaVersion === undefined
+      ? value.schema_version
+      : value.schemaVersion;
+
+  if (
+    candidate === 1 ||
+    candidate === "1" ||
+    candidate === "1.0" ||
+    candidate === "1.0.0"
+  ) {
+    normalized.schemaVersion = "1.0.0";
+  }
+
+  delete normalized.schema_version;
+  return normalized;
+}
+
+function trimText(value: unknown, maximumLength: number) {
+  return typeof value === "string" ? value.trim().slice(0, maximumLength) : "";
+}
+
+export function parsePlayerTurnRequest(value: unknown): PlayerTurnRequest {
+  if (!isObject(value)) {
+    throw new PlayerTurnInputError(["请求内容必须是 JSON 对象。"]);
+  }
+
+  const issues: string[] = [];
+  const expectedHeadTurnId =
+    value.expectedHeadTurnId === null
+      ? null
+      : trimText(value.expectedHeadTurnId, 120);
+  if (value.expectedHeadTurnId !== null && !expectedHeadTurnId) {
+    issues.push("expectedHeadTurnId 无效，请重新载入剧情。");
+  }
+
+  const idempotencyKey = trimText(value.idempotencyKey, 120);
+  if (!idempotencyKey) issues.push("缺少本轮请求标识。");
+
+  const selectedChoiceId = trimText(value.selectedChoiceId, 160);
+  const customChoice = trimText(value.customChoice, 2_000);
+  const storyDirectionProvided = typeof value.storyDirection === "string";
+  const storyDirection = storyDirectionProvided
+    ? trimText(value.storyDirection, 1_000)
+    : undefined;
+
+  let roleplay: PlayerTurnRequest["roleplay"];
+  if (value.roleplay !== undefined && value.roleplay !== null) {
+    if (!isObject(value.roleplay)) {
+      issues.push("角色言行格式无效。");
+    } else {
+      const mode = value.roleplay.mode;
+      const content = trimText(value.roleplay.content, 4_000);
+      if (mode !== "speech" && mode !== "action" && mode !== "mixed") {
+        issues.push("角色言行类型无效。");
+      } else if (!content) {
+        issues.push("角色言行内容不能为空。");
+      } else {
+        roleplay = { mode, content };
+      }
+    }
+  }
+
+  if (!selectedChoiceId && !customChoice && !roleplay && !storyDirectionProvided) {
+    issues.push("请至少选择一个候选项，或填写一项玩家输入。");
+  }
+  if (selectedChoiceId && customChoice) {
+    issues.push("候选选项和自定义选项不能同时提交。");
+  }
+
+  if (issues.length > 0) throw new PlayerTurnInputError(issues);
+
+  return {
+    expectedHeadTurnId,
+    idempotencyKey,
+    selectedChoiceId: selectedChoiceId || undefined,
+    customChoice: customChoice || undefined,
+    roleplay,
+    ...(storyDirectionProvided ? { storyDirection } : {}),
+  };
+}
+
+export function parseRegenerateTurnRequest(value: unknown): RegenerateTurnRequest {
+  if (!isObject(value)) {
+    throw new RegenerateTurnInputError(["请求内容必须是 JSON 对象。"]);
+  }
+  const issues: string[] = [];
+  const expectedHeadTurnId = trimText(value.expectedHeadTurnId, 120);
+  const actionId = trimText(value.actionId, 120);
+  const feedback = trimText(value.feedback, 1_000);
+  if (!expectedHeadTurnId) issues.push("缺少要重新生成的最新回合 ID。");
+  if (!actionId) issues.push("缺少重新生成请求标识。");
+  if (!feedback) issues.push("请说明对当前剧情不满意的地方或希望如何修改。");
+  if (issues.length > 0) throw new RegenerateTurnInputError(issues);
+  return { expectedHeadTurnId, actionId, feedback };
+}
+
+function requiredObject(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+) {
+  if (!isObject(value)) {
+    issues.push(`${path} 必须是对象。`);
+    return {};
+  }
+  return value;
+}
+
+function requiredArray(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+) {
+  if (!Array.isArray(value)) {
+    issues.push(`${path} 必须是数组。`);
+    return [];
+  }
+  return value;
+}
+
+function requiredText(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+  maximumLength = 12_000,
+) {
+  const result = trimText(value, maximumLength);
+  if (!result) issues.push(`${path} 不能为空。`);
+  return result;
+}
+
+function textArray(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+  minimumLength = 0,
+) {
+  const values = requiredArray(value, path, issues).map((item, index) =>
+    requiredText(item, `${path}[${index}]`, issues, 160),
+  );
+  const filtered = values.filter(Boolean);
+  if (filtered.length < minimumLength) {
+    issues.push(`${path} 至少需要 ${minimumLength} 项。`);
+  }
+  if (new Set(filtered).size !== filtered.length) {
+    issues.push(`${path} 不能包含重复项。`);
+  }
+  return filtered;
+}
+
+function oneOf<T extends string>(
+  value: JsonValue | undefined,
+  allowed: readonly T[],
+  path: string,
+  issues: string[],
+) {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    issues.push(`${path} 不是允许的值。`);
+    return allowed[0];
+  }
+  return value as T;
+}
+
+function readEvidence(
+  value: JsonValue | undefined,
+  path: string,
+  knownEvidenceIds: Set<string>,
+  issues: string[],
+  minimumLength = 1,
+) {
+  const evidence = textArray(value, path, issues, minimumLength);
+  for (const evidenceId of evidence) {
+    if (!knownEvidenceIds.has(evidenceId)) {
+      issues.push(`${path} 引用了不存在的事件或对话 ${evidenceId}。`);
+    }
+  }
+  return evidence;
+}
+
+function collectExistingEvidence(adventure: LoadedAdventure) {
+  const evidence = new Set<string>();
+  for (const recentTurn of adventure.branchState.recentTurns) {
+    const turn = isObject(recentTurn.generatedOutput.turn)
+      ? recentTurn.generatedOutput.turn
+      : {};
+    for (const entry of [
+      ...requiredArray(turn.events, "历史事件", []),
+      ...requiredArray(turn.dialogue, "历史对话", []),
+    ]) {
+      if (isObject(entry) && typeof entry.id === "string") evidence.add(entry.id);
+    }
+  }
+  return evidence;
+}
+
+const cardPaths = [
+  "identity.titles",
+  "identity.affiliations",
+  "goals.longTerm",
+  "beliefs",
+  "fears",
+  "vows",
+  "permanentConditions",
+  "abilities",
+  "revealedSecrets",
+  "relationshipMilestones",
+] as const;
+
+export function validateGeneratedTurn(
+  value: JsonObject,
+  adventure: LoadedAdventure,
+  turnId: string,
+): ValidatedGeneratedTurn {
+  const issues: string[] = [];
+  const normalizationWarnings: string[] = [];
+  if (value.schemaVersion !== "1.0.0") {
+    issues.push("schemaVersion 必须是 1.0.0。");
+  }
+
+  const characterIds = new Set(
+    adventure.branchState.states
+      .filter((state) => state.entityType === "character_card" && state.isActive)
+      .map((state) => state.entityId),
+  );
+  const worldEntryIds = new Set(
+    adventure.branchState.states
+      .filter((state) => state.entityType === "world_book_entry")
+      .map((state) => state.entityId),
+  );
+  const activeLocationIds = new Set(
+    adventure.branchState.states
+      .filter((state) => state.entityType === "location" && state.isActive)
+      .map((state) => state.entityId),
+  );
+  const inactiveLocationIds = new Set(
+    adventure.branchState.states
+      .filter((state) => state.entityType === "location" && !state.isActive)
+      .map((state) => state.entityId),
+  );
+  const playerCharacterId = adventure.branchState.states.find(
+    (state) =>
+      state.entityType === "character_card" &&
+      state.isActive &&
+      state.state.role === "player",
+  )?.entityId;
+  const existingEvidenceIds = collectExistingEvidence(adventure);
+
+  const turn = requiredObject(value.turn, "turn", issues);
+  const scene = requiredText(turn.scene, "turn.scene", issues);
+  const eventIds = new Set<string>();
+  const events = requiredArray(turn.events, "turn.events", issues).map(
+    (item, index): GeneratedEvent => {
+      const event = requiredObject(item, `turn.events[${index}]`, issues);
+      const id = requiredText(event.id, `turn.events[${index}].id`, issues, 160);
+      if (eventIds.has(id) || existingEvidenceIds.has(id)) {
+        issues.push(`事件 ID ${id} 已经存在或在本轮重复。`);
+      }
+      eventIds.add(id);
+      const referencedCharacters = textArray(
+        event.characterIds,
+        `turn.events[${index}].characterIds`,
+        issues,
+      );
+      for (const characterId of referencedCharacters) {
+        if (!characterIds.has(characterId)) {
+          issues.push(`事件引用了不存在的角色 ${characterId}。`);
+        }
+      }
+      const locationId = trimText(event.locationId, 160);
+      return {
+        id,
+        type: requiredText(event.type, `turn.events[${index}].type`, issues, 160),
+        summary: requiredText(
+          event.summary,
+          `turn.events[${index}].summary`,
+          issues,
+          1_000,
+        ),
+        characterIds: referencedCharacters,
+        ...(locationId ? { locationId } : {}),
+      };
+    },
+  );
+
+  const dialogueIds = new Set<string>();
+  const dialogue = requiredArray(turn.dialogue, "turn.dialogue", issues).map(
+    (item, index): GeneratedDialogue => {
+      const line = requiredObject(item, `turn.dialogue[${index}]`, issues);
+      const id = requiredText(line.id, `turn.dialogue[${index}].id`, issues, 160);
+      if (
+        dialogueIds.has(id) ||
+        eventIds.has(id) ||
+        existingEvidenceIds.has(id)
+      ) {
+        issues.push(`事件或对话 ID ${id} 已经存在或在本轮重复。`);
+      }
+      dialogueIds.add(id);
+      const speakerId = requiredText(
+        line.speakerId,
+        `turn.dialogue[${index}].speakerId`,
+        issues,
+        160,
+      );
+      if (!characterIds.has(speakerId)) {
+        issues.push(`对话引用了不存在的说话角色 ${speakerId}。`);
+      }
+      const addressedCharacterIds = Array.isArray(line.addressedCharacterIds)
+        ? textArray(
+            line.addressedCharacterIds,
+            `turn.dialogue[${index}].addressedCharacterIds`,
+            issues,
+          )
+        : [];
+      for (const characterId of addressedCharacterIds) {
+        if (!characterIds.has(characterId)) {
+          issues.push(`对话引用了不存在的接收角色 ${characterId}。`);
+        }
+      }
+      return {
+        id,
+        speakerId,
+        content: requiredText(
+          line.content,
+          `turn.dialogue[${index}].content`,
+          issues,
+          4_000,
+        ),
+        addressedCharacterIds,
+      };
+    },
+  );
+  if (events.length === 0 && dialogue.length === 0) {
+    issues.push("本轮至少需要一个已经发生的事件或一条角色对话。");
+  }
+
+  const knownEvidenceIds = new Set(existingEvidenceIds);
+  eventIds.forEach((id) => knownEvidenceIds.add(id));
+  dialogueIds.forEach((id) => knownEvidenceIds.add(id));
+
+  const decisionObject = requiredObject(value.decision, "decision", issues);
+  const context = oneOf(
+    decisionObject.context,
+    ["proposal_response", "action_direction"] as const,
+    "decision.context",
+    issues,
+  );
+  const decisionPrompt = requiredText(
+    decisionObject.prompt,
+    "decision.prompt",
+    issues,
+    1_000,
+  );
+  const choiceIds = new Set<string>();
+  const choices = requiredArray(decisionObject.choices, "decision.choices", issues).map(
+    (item, index): GeneratedChoice => {
+      const choice = requiredObject(item, `decision.choices[${index}]`, issues);
+      const id = requiredText(choice.id, `decision.choices[${index}].id`, issues, 160);
+      if (choiceIds.has(id)) issues.push(`候选项 ID ${id} 重复。`);
+      choiceIds.add(id);
+      const stance = oneOf(
+        choice.stance,
+        [
+          "accept",
+          "partial_accept",
+          "reject",
+          "benevolent",
+          "neutral",
+          "malicious",
+        ] as const,
+        `decision.choices[${index}].stance`,
+        issues,
+      );
+      const allowedStances =
+        context === "proposal_response"
+          ? new Set(["accept", "partial_accept", "reject"])
+          : new Set(["benevolent", "neutral", "malicious"]);
+      if (!allowedStances.has(stance)) {
+        issues.push(`候选项 ${id} 的立场与提问类型不一致。`);
+      }
+      return {
+        id,
+        label: requiredText(choice.label, `decision.choices[${index}].label`, issues, 120),
+        description: requiredText(
+          choice.description,
+          `decision.choices[${index}].description`,
+          issues,
+          500,
+        ),
+        stance,
+      };
+    },
+  );
+  if (choices.length < 2) issues.push("每轮至少需要两个真正不同的候选项。");
+
+  const stateCommit = requiredObject(value.stateCommit, "stateCommit", issues);
+  let sceneTransition: GeneratedSceneTransition | null = null;
+  if (
+    stateCommit.sceneTransition === null ||
+    stateCommit.sceneTransition === undefined
+  ) {
+    issues.push("stateCommit.sceneTransition 必须是对象。");
+  } else {
+    const transition = requiredObject(
+      stateCommit.sceneTransition,
+      "stateCommit.sceneTransition",
+      issues,
+    );
+    const locationId = requiredText(
+      transition.locationId,
+      "stateCommit.sceneTransition.locationId",
+      issues,
+      160,
+    );
+    if (inactiveLocationIds.has(locationId)) {
+      issues.push(`场景变化不能进入已经停用的地点 ${locationId}。`);
+    }
+    const presentCharacterIds = textArray(
+      transition.presentCharacterIds,
+      "stateCommit.sceneTransition.presentCharacterIds",
+      issues,
+      1,
+    );
+    for (const characterId of presentCharacterIds) {
+      if (!characterIds.has(characterId)) {
+        issues.push(`场景变化引用了不存在或停用的角色 ${characterId}。`);
+      }
+    }
+    if (playerCharacterId && !presentCharacterIds.includes(playerCharacterId)) {
+      issues.push("回合结束时的在场阵容必须包含玩家角色。");
+    }
+    const locationName = requiredText(
+      transition.locationName,
+      "stateCommit.sceneTransition.locationName",
+      issues,
+      120,
+    );
+    const locationDescription = requiredText(
+      transition.locationDescription,
+      "stateCommit.sceneTransition.locationDescription",
+      issues,
+      2_000,
+    );
+    if (!activeLocationIds.has(locationId) && !locationName) {
+      issues.push("进入新地点时必须提供地点名称。");
+    }
+    const transitionEvidence = readEvidence(
+      transition.evidence,
+      "stateCommit.sceneTransition.evidence",
+      knownEvidenceIds,
+      issues,
+    );
+    if (
+      !transitionEvidence.some(
+        (evidenceId) => eventIds.has(evidenceId) || dialogueIds.has(evidenceId),
+      )
+    ) {
+      issues.push("场景变化必须引用本轮真实发生的事件或对话。");
+    }
+    sceneTransition = {
+      locationId,
+      locationName,
+      locationDescription,
+      presentCharacterIds,
+      reason: requiredText(
+        transition.reason,
+        "stateCommit.sceneTransition.reason",
+        issues,
+        1_000,
+      ),
+      evidence: transitionEvidence,
+    };
+  }
+  const characterStateChanges = requiredArray(
+    stateCommit.characterStateChanges,
+    "stateCommit.characterStateChanges",
+    issues,
+  ).map((item, index): GeneratedCharacterStateChange => {
+    const change = requiredObject(
+      item,
+      `stateCommit.characterStateChanges[${index}]`,
+      issues,
+    );
+    const characterId = requiredText(
+      change.characterId,
+      `stateCommit.characterStateChanges[${index}].characterId`,
+      issues,
+      160,
+    );
+    if (!characterIds.has(characterId)) {
+      issues.push(`角色状态变化引用了不存在的角色 ${characterId}。`);
+    }
+    const patch = requiredObject(
+      change.patch,
+      `stateCommit.characterStateChanges[${index}].patch`,
+      issues,
+    );
+    if (Object.keys(patch).length === 0) issues.push("角色状态补丁不能为空。");
+    if ("present" in patch || "locationId" in patch) {
+      issues.push(
+        "人物进出场和所在地点必须写入 sceneTransition，不能写入普通角色状态补丁。",
+      );
+    }
+    return {
+      characterId,
+      patch,
+      duration: oneOf(
+        change.duration,
+        ["instant", "scene", "until_changed", "permanent"] as const,
+        `stateCommit.characterStateChanges[${index}].duration`,
+        issues,
+      ),
+      reason: requiredText(
+        change.reason,
+        `stateCommit.characterStateChanges[${index}].reason`,
+        issues,
+        1_000,
+      ),
+      evidence: readEvidence(
+        change.evidence,
+        `stateCommit.characterStateChanges[${index}].evidence`,
+        knownEvidenceIds,
+        issues,
+      ),
+    };
+  });
+
+  const relationshipChanges = requiredArray(
+    stateCommit.relationshipChanges,
+    "stateCommit.relationshipChanges",
+    issues,
+  ).map((item, index): GeneratedRelationshipChange => {
+    const change = requiredObject(
+      item,
+      `stateCommit.relationshipChanges[${index}]`,
+      issues,
+    );
+    const sourceCharacterId = requiredText(
+      change.sourceCharacterId,
+      `stateCommit.relationshipChanges[${index}].sourceCharacterId`,
+      issues,
+      160,
+    );
+    const targetCharacterId = requiredText(
+      change.targetCharacterId,
+      `stateCommit.relationshipChanges[${index}].targetCharacterId`,
+      issues,
+      160,
+    );
+    if (!characterIds.has(sourceCharacterId) || !characterIds.has(targetCharacterId)) {
+      issues.push("关系变化引用了不存在的角色。");
+    }
+    if (sourceCharacterId === targetCharacterId) {
+      issues.push("关系变化的来源角色和目标角色不能相同。");
+    }
+    const delta = typeof change.delta === "number" ? change.delta : Number.NaN;
+    if (!Number.isFinite(delta) || delta < -100 || delta > 100) {
+      issues.push("关系变化 delta 必须位于 -100 到 100。 ");
+    }
+    return {
+      sourceCharacterId,
+      targetCharacterId,
+      dimension: oneOf(
+        change.dimension,
+        ["trust", "affection", "fear", "hostility", "respect"] as const,
+        `stateCommit.relationshipChanges[${index}].dimension`,
+        issues,
+      ),
+      delta: Number.isFinite(delta) ? delta : 0,
+      reason: requiredText(
+        change.reason,
+        `stateCommit.relationshipChanges[${index}].reason`,
+        issues,
+        1_000,
+      ),
+      evidence: readEvidence(
+        change.evidence,
+        `stateCommit.relationshipChanges[${index}].evidence`,
+        knownEvidenceIds,
+        issues,
+      ),
+    };
+  });
+
+  const characterCardChanges = requiredArray(
+    stateCommit.characterCardChanges,
+    "stateCommit.characterCardChanges",
+    issues,
+  ).map((item, index): GeneratedCharacterCardChange => {
+    const change = requiredObject(
+      item,
+      `stateCommit.characterCardChanges[${index}]`,
+      issues,
+    );
+    const characterId = requiredText(
+      change.characterId,
+      `stateCommit.characterCardChanges[${index}].characterId`,
+      issues,
+      160,
+    );
+    if (!characterIds.has(characterId)) {
+      issues.push(`角色卡变化引用了不存在的角色 ${characterId}。`);
+    }
+    const operation = oneOf(
+      change.operation,
+      ["add", "update", "deactivate"] as const,
+      `stateCommit.characterCardChanges[${index}].operation`,
+      issues,
+    );
+    if (operation !== "deactivate" && change.value === undefined) {
+      issues.push("角色卡新增或更新必须包含 value。");
+    }
+    const sourceTurnId = requiredText(
+      change.sourceTurnId,
+      `stateCommit.characterCardChanges[${index}].sourceTurnId`,
+      issues,
+      160,
+    );
+    if (sourceTurnId !== turnId) issues.push("角色卡变化的 sourceTurnId 不匹配本轮。");
+    return {
+      characterId,
+      operation,
+      path: oneOf(
+        change.path,
+        cardPaths,
+        `stateCommit.characterCardChanges[${index}].path`,
+        issues,
+      ),
+      ...(change.value !== undefined ? { value: change.value } : {}),
+      reason: requiredText(
+        change.reason,
+        `stateCommit.characterCardChanges[${index}].reason`,
+        issues,
+        1_000,
+      ),
+      evidence: readEvidence(
+        change.evidence,
+        `stateCommit.characterCardChanges[${index}].evidence`,
+        knownEvidenceIds,
+        issues,
+      ),
+      sourceTurnId,
+    };
+  });
+
+  const worldBookChanges = requiredArray(
+    stateCommit.worldBookChanges,
+    "stateCommit.worldBookChanges",
+    issues,
+  ).map((item, index): GeneratedWorldBookChange => {
+    const change = requiredObject(
+      item,
+      `stateCommit.worldBookChanges[${index}]`,
+      issues,
+    );
+    const operation = oneOf(
+      change.operation,
+      ["create", "update", "deactivate"] as const,
+      `stateCommit.worldBookChanges[${index}].operation`,
+      issues,
+    );
+    const sourceTurnId = requiredText(
+      change.sourceTurnId,
+      `stateCommit.worldBookChanges[${index}].sourceTurnId`,
+      issues,
+      160,
+    );
+    if (sourceTurnId !== turnId) issues.push("世界书变化的 sourceTurnId 不匹配本轮。");
+    const common = {
+      sourceTurnId,
+      ...(trimText(change.sourceStoryDirectionId, 160)
+        ? { sourceStoryDirectionId: trimText(change.sourceStoryDirectionId, 160) }
+        : {}),
+      reason: requiredText(
+        change.reason,
+        `stateCommit.worldBookChanges[${index}].reason`,
+        issues,
+        1_000,
+      ),
+      evidence: readEvidence(
+        change.evidence,
+        `stateCommit.worldBookChanges[${index}].evidence`,
+        knownEvidenceIds,
+        issues,
+      ),
+    };
+    if (operation === "create") {
+      const entry = requiredObject(
+        change.entry,
+        `stateCommit.worldBookChanges[${index}].entry`,
+        issues,
+      );
+      textArray(entry.keys, `stateCommit.worldBookChanges[${index}].entry.keys`, issues, 1);
+      requiredText(
+        entry.content,
+        `stateCommit.worldBookChanges[${index}].entry.content`,
+        issues,
+      );
+      if (typeof entry.enabled !== "boolean") issues.push("世界书条目 enabled 必须是布尔值。");
+      return { operation, entry, ...common };
+    }
+    const targetEntryId = requiredText(
+      change.targetEntryId,
+      `stateCommit.worldBookChanges[${index}].targetEntryId`,
+      issues,
+      160,
+    );
+    if (!worldEntryIds.has(targetEntryId)) {
+      issues.push(`世界书变化引用了不存在的条目 ${targetEntryId}。`);
+    }
+    if (operation === "update") {
+      const patch = requiredObject(
+        change.patch,
+        `stateCommit.worldBookChanges[${index}].patch`,
+        issues,
+      );
+      if (Object.keys(patch).length === 0) issues.push("世界书更新补丁不能为空。");
+      return { operation, targetEntryId, patch, ...common };
+    }
+    return { operation, targetEntryId, ...common };
+  });
+
+  let storyDirectionEvaluation: ValidatedGeneratedTurn["stateCommit"]["storyDirectionEvaluation"] = null;
+  if (stateCommit.storyDirectionEvaluation !== null) {
+    const evaluation = requiredObject(
+      stateCommit.storyDirectionEvaluation,
+      "stateCommit.storyDirectionEvaluation",
+      issues,
+    );
+    const status = oneOf(
+      evaluation.status,
+      ["active", "completed"] as const,
+      "stateCommit.storyDirectionEvaluation.status",
+      issues,
+    );
+    const continuity = oneOf(
+      evaluation.continuity,
+      ["aligned", "diverged", "uncertain"] as const,
+      "stateCommit.storyDirectionEvaluation.continuity",
+      issues,
+    );
+    const continuityReason = requiredText(
+      evaluation.continuityReason,
+      "stateCommit.storyDirectionEvaluation.continuityReason",
+      issues,
+      1_000,
+    );
+    let recommendedModuleId: string | null = null;
+    if (evaluation.recommendedModuleId !== null) {
+      recommendedModuleId = requiredText(
+        evaluation.recommendedModuleId,
+        "stateCommit.storyDirectionEvaluation.recommendedModuleId",
+        issues,
+        120,
+      );
+    }
+    let suggestedNextDirection: NonNullable<
+      NonNullable<ValidatedGeneratedTurn["stateCommit"]["storyDirectionEvaluation"]>["suggestedNextDirection"]
+    > | null = null;
+    if (evaluation.suggestedNextDirection !== null) {
+      const suggestion = requiredObject(
+        evaluation.suggestedNextDirection,
+        "stateCommit.storyDirectionEvaluation.suggestedNextDirection",
+        issues,
+      );
+      suggestedNextDirection = {
+        title: requiredText(
+          suggestion.title,
+          "stateCommit.storyDirectionEvaluation.suggestedNextDirection.title",
+          issues,
+          120,
+        ),
+        content: requiredText(
+          suggestion.content,
+          "stateCommit.storyDirectionEvaluation.suggestedNextDirection.content",
+          issues,
+          1_000,
+        ),
+        reason: requiredText(
+          suggestion.reason,
+          "stateCommit.storyDirectionEvaluation.suggestedNextDirection.reason",
+          issues,
+          1_000,
+        ),
+      };
+    }
+
+    const storyModules = adventure.branchState.states.filter(
+      (state) => state.entityType === "story_module" && state.isActive,
+    );
+    const activeDirection = adventure.branchState.states.find(
+      (state) => state.entityType === "story_direction" && state.isActive,
+    );
+    const activeModuleId =
+      typeof activeDirection?.state.moduleId === "string"
+        ? activeDirection.state.moduleId
+        : "";
+    const completedModuleIds = new Set(
+      storyModules
+        .filter(
+          (module) =>
+            module.state.status === "completed" ||
+            (status === "completed" && module.state.moduleId === activeModuleId),
+        )
+        .map((module) =>
+          typeof module.state.moduleId === "string" ? module.state.moduleId : "",
+        )
+        .filter(Boolean),
+    );
+    const readyModuleIds = new Set(
+      storyModules
+        .filter((module) => {
+          if (module.state.status !== "queued" || module.state.autoContinue === false) {
+            return false;
+          }
+          const prerequisites = Array.isArray(module.state.prerequisiteModuleIds)
+            ? module.state.prerequisiteModuleIds.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : [];
+          return prerequisites.every((id) => completedModuleIds.has(id));
+        })
+        .map((module) =>
+          typeof module.state.moduleId === "string" ? module.state.moduleId : "",
+        )
+        .filter(Boolean),
+    );
+
+    if (status === "active") {
+      if (recommendedModuleId || suggestedNextDirection) {
+        recommendedModuleId = null;
+        suggestedNextDirection = null;
+        normalizationWarnings.push(
+          "模型在当前剧情走向尚未完成时提前提供了后续目标；系统已忽略这些字段。",
+        );
+      }
+    } else {
+      if (recommendedModuleId && suggestedNextDirection) {
+        if (
+          continuity === "aligned" &&
+          readyModuleIds.has(recommendedModuleId)
+        ) {
+          suggestedNextDirection = null;
+          normalizationWarnings.push(
+            "模型同时返回了预埋任务和新目标；系统已优先采用满足条件的预埋任务。",
+          );
+        } else {
+          recommendedModuleId = null;
+          normalizationWarnings.push(
+            "模型同时返回了预埋任务和新目标；系统已忽略不可接续的预埋任务并采用自然生成的新目标。",
+          );
+        }
+      }
+      if (!recommendedModuleId && !suggestedNextDirection) {
+        issues.push("剧情走向完成后必须接续可用的预埋任务，或给出自然生长的新目标。");
+      }
+      if (recommendedModuleId) {
+        if (continuity !== "aligned") {
+          issues.push("只有剧情未偏离剧本时才能接续预埋任务。");
+        }
+        if (!readyModuleIds.has(recommendedModuleId)) {
+          issues.push(`推荐的剧情任务 ${recommendedModuleId} 不存在、尚未满足前置条件或已经结束。`);
+        }
+      }
+    }
+    storyDirectionEvaluation = {
+      status,
+      reason: requiredText(
+        evaluation.reason,
+        "stateCommit.storyDirectionEvaluation.reason",
+        issues,
+        1_000,
+      ),
+      evidence: readEvidence(
+        evaluation.evidence,
+        "stateCommit.storyDirectionEvaluation.evidence",
+        knownEvidenceIds,
+        issues,
+        status === "completed" ? 1 : 0,
+      ),
+      continuity,
+      continuityReason,
+      recommendedModuleId,
+      suggestedNextDirection,
+    };
+  }
+
+  const warnings = [
+    ...requiredArray(value.warnings, "warnings", issues).map(
+      (warning, index) =>
+        requiredText(warning, `warnings[${index}]`, issues, 1_000),
+    ),
+    ...normalizationWarnings,
+  ];
+  const summaryPatch =
+    typeof stateCommit.summaryPatch === "string"
+      ? stateCommit.summaryPatch.trim().slice(0, 4_000)
+      : "";
+  if (typeof stateCommit.summaryPatch !== "string") {
+    issues.push("stateCommit.summaryPatch 必须是字符串。");
+  }
+
+  if (issues.length > 0) throw new GeneratedTurnValidationError(issues);
+
+  return {
+    raw:
+      normalizationWarnings.length > 0
+        ? {
+            ...value,
+            stateCommit: {
+              ...stateCommit,
+              storyDirectionEvaluation: storyDirectionEvaluation
+                ? {
+                    ...(isObject(stateCommit.storyDirectionEvaluation)
+                      ? stateCommit.storyDirectionEvaluation
+                      : {}),
+                    recommendedModuleId:
+                      storyDirectionEvaluation.recommendedModuleId,
+                    suggestedNextDirection:
+                      storyDirectionEvaluation.suggestedNextDirection,
+                  }
+                : null,
+            },
+            warnings,
+          }
+        : value,
+    turn: { scene, events, dialogue },
+    decision: {
+      context,
+      prompt: decisionPrompt,
+      choices,
+    },
+    stateCommit: {
+      sceneTransition,
+      characterStateChanges,
+      relationshipChanges,
+      characterCardChanges,
+      worldBookChanges,
+      storyDirectionEvaluation,
+      summaryPatch,
+    },
+    warnings,
+  };
+}

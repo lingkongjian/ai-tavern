@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-tavern.invalid/schemas/model-catalog-v1.json",
+  "title": "AI 酒馆模型目录清单",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "exportedAt",
+    "provider",
+    "providerLabel",
+    "baseUrl",
+    "catalogFetchedAt",
+    "selectedModel",
+    "verifiedModel",
+    "summary",
+    "audit",
+    "models"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "kind": { "const": "ai_tavern_model_catalog_v1" },
+    "exportedAt": { "type": "string", "format": "date-time" },
+    "provider": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "providerLabel": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "baseUrl": { "type": "string", "format": "uri", "maxLength": 2000 },
+    "catalogFetchedAt": {
+      "oneOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    },
+    "selectedModel": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 200 },
+        { "type": "null" }
+      ]
+    },
+    "verifiedModel": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 200 },
+        { "type": "null" }
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chatCompletionsCandidates",
+        "requiresAudit",
+        "unsupportedProtocol"
+      ],
+      "properties": {
+        "chatCompletionsCandidates": { "type": "integer", "minimum": 0 },
+        "requiresAudit": { "type": "integer", "minimum": 0 },
+        "unsupportedProtocol": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "audit": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ok",
+            "checkedAt",
+            "provider",
+            "selectedModel",
+            "returnedModel",
+            "checks"
+          ],
+          "properties": {
+            "ok": { "type": "boolean" },
+            "checkedAt": { "type": "string", "format": "date-time" },
+            "provider": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            },
+            "selectedModel": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "returnedModel": {
+              "oneOf": [
+                { "type": "string", "minLength": 1, "maxLength": 200 },
+                { "type": "null" }
+              ]
+            },
+            "checks": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": { "$ref": "#/$defs/auditCheck" }
+            }
+          }
+        }
+      ]
+    },
+    "models": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/model" }
+    }
+  },
+  "$defs": {
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "compatibility", "compatibilityReason"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "ownedBy": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "compatibility": {
+          "enum": ["chat_completions", "unknown", "unsupported_protocol"]
+        },
+        "compatibilityReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "auditCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "status", "detail"],
+      "properties": {
+        "id": {
+          "enum": [
+            "configuration",
+            "model_catalog",
+            "model_selection",
+            "completion_json"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "status": { "enum": ["passed", "warning", "failed", "skipped"] },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "durationMs": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

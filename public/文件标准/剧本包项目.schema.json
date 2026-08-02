@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-tavern/schema/剧本包项目.schema.json",
+  "title": "AI 酒馆剧本包维护项目 v1.0",
+  "type": "object",
+  "required": ["spec", "spec_version", "bundle", "campaign", "materials"],
+  "properties": {
+    "spec": { "const": "ai_tavern_bundle_project_v1" },
+    "spec_version": { "const": "1.0" },
+    "name": { "type": "string", "maxLength": 120 },
+    "source": { "type": "object" },
+    "bundle": {
+      "type": "object",
+      "required": ["name", "description", "version", "outputFile"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "creator": { "type": "string", "maxLength": 200 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "outputFile": { "$ref": "#/$defs/jsonPath" },
+        "reportFile": { "$ref": "#/$defs/jsonPath" }
+      },
+      "additionalProperties": false
+    },
+    "campaign": {
+      "type": "object",
+      "required": [
+        "campaignName",
+        "campaignDescription",
+        "world",
+        "player",
+        "mainCharacter",
+        "openingLocationName",
+        "openingScene",
+        "initialStoryDirection"
+      ],
+      "properties": {
+        "campaignName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "campaignDescription": { "type": "string", "maxLength": 2000 },
+        "world": {
+          "type": "object",
+          "required": ["name", "premise"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "premise": { "type": "string", "minLength": 1, "maxLength": 6000 }
+          },
+          "additionalProperties": false
+        },
+        "player": {
+          "type": "object",
+          "required": ["name", "description"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "description": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          },
+          "additionalProperties": false
+        },
+        "mainCharacter": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 80 }
+          },
+          "additionalProperties": false
+        },
+        "openingLocationName": { "type": "string", "maxLength": 80 },
+        "openingScene": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "initialStoryDirection": { "type": "string", "maxLength": 1000 },
+        "storyModules": {
+          "type": "array",
+          "maxItems": 30,
+          "items": { "$ref": "剧本包.schema.json#/$defs/storyModule" }
+        },
+        "initialStoryModuleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "materials": {
+      "type": "object",
+      "required": [
+        "playerCard",
+        "mainCharacter",
+        "additionalCharacters",
+        "worldBook"
+      ],
+      "properties": {
+        "playerCard": { "$ref": "#/$defs/jsonPath" },
+        "mainCharacter": { "$ref": "#/$defs/characterMaterial" },
+        "additionalCharacters": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "allOf": [
+              { "$ref": "#/$defs/characterMaterial" },
+              {
+                "type": "object",
+                "required": ["presentAtOpening"],
+                "properties": {
+                  "presentAtOpening": { "type": "boolean" }
+                }
+              }
+            ]
+          }
+        },
+        "worldBook": { "$ref": "#/$defs/jsonPath" },
+        "referenceDocuments": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/referenceMaterial" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "jsonPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "\\.json$"
+    },
+    "characterMaterial": {
+      "type": "object",
+      "required": ["file"],
+      "properties": {
+        "file": { "$ref": "#/$defs/jsonPath" },
+        "firstMessage": { "type": "string", "maxLength": 2000 },
+        "presentAtOpening": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "referenceMaterial": {
+      "type": "object",
+      "required": ["file", "name"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\.(txt|md)$"
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "currentChapter": { "type": "integer", "minimum": 1, "default": 1 },
+        "preventFuture": { "type": "boolean", "default": true },
+        "fidelity": {
+          "enum": ["balanced", "faithful"],
+          "default": "balanced"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

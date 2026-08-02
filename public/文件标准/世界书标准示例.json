@@ -1,0 +1,36 @@
+{
+  "spec": "ai_tavern_world_book_v1",
+  "spec_version": "1.0",
+  "name": "纸城基础设定",
+  "description": "纸城的稳定规则、地点与组织。",
+  "entries": [
+    {
+      "id": "paper-city-law",
+      "comment": "纸城核心法则",
+      "keys": [],
+      "secondaryKeys": [],
+      "content": "纸城中被公共档案正式记录的句子会在日落前短暂成为现实，但与既有核心法则冲突的记录不会生效。",
+      "enabled": true,
+      "constant": true,
+      "selective": false,
+      "position": "before_char",
+      "order": 100,
+      "probability": 100,
+      "depth": 4
+    },
+    {
+      "id": "blue-paper-court",
+      "comment": "蓝纸庭院",
+      "keys": ["蓝纸庭院", "蓝纸", "修订档案"],
+      "secondaryKeys": ["档案馆"],
+      "content": "蓝纸庭院位于档案馆内层，只有持有修订许可的人能够进入；庭院保存的是已经被证据推翻、等待重写的城市记录。",
+      "enabled": true,
+      "constant": false,
+      "selective": true,
+      "position": "after_char",
+      "order": 180,
+      "probability": 100,
+      "depth": 4
+    }
+  ]
+}

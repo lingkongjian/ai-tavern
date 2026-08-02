@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-tavern/schema/剧本包.schema.json",
+  "title": "AI 酒馆完整剧本导入包 v1.1",
+  "type": "object",
+  "required": ["spec", "spec_version", "name", "description", "adventure"],
+  "properties": {
+    "spec": { "const": "ai_tavern_adventure_bundle_v1" },
+    "spec_version": { "enum": ["1.0", "1.1"] },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "creator": { "type": "string", "maxLength": 200 },
+    "bundle_version": { "type": "string", "maxLength": 120 },
+    "adventure": {
+      "type": "object",
+      "required": [
+        "campaignName",
+        "campaignDescription",
+        "world",
+        "player",
+        "mainCharacter",
+        "additionalCharacters",
+        "worldBook",
+        "opening"
+      ],
+      "properties": {
+        "campaignName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "campaignDescription": { "type": "string", "maxLength": 2000 },
+        "world": {
+          "type": "object",
+          "required": ["name", "premise"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "premise": { "type": "string", "minLength": 1, "maxLength": 6000 }
+          },
+          "additionalProperties": false
+        },
+        "player": {
+          "type": "object",
+          "required": ["card"],
+          "properties": {
+            "card": { "$ref": "人物卡.schema.json" },
+            "description": { "type": "string", "maxLength": 2000 }
+          },
+          "additionalProperties": false
+        },
+        "mainCharacter": { "$ref": "#/$defs/storyCharacter" },
+        "additionalCharacters": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/additionalCharacter" }
+        },
+        "worldBook": { "$ref": "世界书.schema.json" },
+        "referenceDocuments": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/referenceDocument" }
+        },
+        "storyModules": {
+          "type": "array",
+          "maxItems": 30,
+          "items": { "$ref": "#/$defs/storyModule" }
+        },
+        "opening": {
+          "type": "object",
+          "required": ["locationName", "scene", "initialStoryDirection"],
+          "properties": {
+            "locationName": { "type": "string", "maxLength": 80 },
+            "scene": { "type": "string", "minLength": 1, "maxLength": 8000 },
+            "initialStoryDirection": { "type": "string", "maxLength": 1000 },
+            "initialStoryModuleId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]*$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "storyModule": {
+      "type": "object",
+      "required": ["id", "title", "objective", "completionCriteria"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]*$"
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "objective": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "completionCriteria": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "activationConditions": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "prerequisiteModuleIds": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+        },
+        "continuityNotes": { "type": "string", "maxLength": 2000 },
+        "autoContinue": { "type": "boolean", "default": true }
+      },
+      "additionalProperties": false
+    },
+    "storyCharacter": {
+      "type": "object",
+      "required": ["card"],
+      "properties": {
+        "card": { "$ref": "人物卡.schema.json" },
+        "firstMessage": { "type": "string", "maxLength": 2000 }
+      },
+      "additionalProperties": false
+    },
+    "additionalCharacter": {
+      "type": "object",
+      "required": ["card", "presentAtOpening"],
+      "properties": {
+        "card": { "$ref": "人物卡.schema.json" },
+        "firstMessage": { "type": "string", "maxLength": 2000 },
+        "presentAtOpening": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "referenceDocument": {
+      "type": "object",
+      "required": ["name", "fileName", "content"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\.(txt|md)$"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000000
+        },
+        "enabled": { "type": "boolean", "default": true },
+        "currentChapter": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "preventFuture": { "type": "boolean", "default": true },
+        "fidelity": {
+          "enum": ["balanced", "faithful"],
+          "default": "balanced"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,62 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1785568754113,
+      "tag": "0000_noisy_johnny_blaze",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785575861182,
+      "tag": "0001_exotic_miek",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785577322056,
+      "tag": "0002_lean_peter_parker",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785580508431,
+      "tag": "0003_cool_shiva",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785590931321,
+      "tag": "0004_volatile_cyclops",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785600000000,
+      "tag": "0005_branching_saves",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785601000000,
+      "tag": "0006_backfill_branch_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785602000000,
+      "tag": "0007_long_story_memory",
+      "breakpoints": true
+    }
+  ]
+}

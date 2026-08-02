@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-tavern/schema/世界书.schema.json",
+  "title": "AI 酒馆世界书生成标准 v1",
+  "type": "object",
+  "required": ["spec", "spec_version", "name", "description", "entries"],
+  "properties": {
+    "spec": { "const": "ai_tavern_world_book_v1" },
+    "spec_version": { "const": "1.0" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "id",
+        "comment",
+        "keys",
+        "secondaryKeys",
+        "content",
+        "enabled",
+        "constant",
+        "selective",
+        "position",
+        "order",
+        "probability",
+        "depth"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "comment": { "type": "string", "maxLength": 300 },
+        "keys": {
+          "type": "array",
+          "maxItems": 30,
+          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+        },
+        "secondaryKeys": {
+          "type": "array",
+          "maxItems": 30,
+          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+        },
+        "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "enabled": { "type": "boolean" },
+        "constant": { "type": "boolean" },
+        "selective": { "type": "boolean" },
+        "position": { "enum": ["before_char", "after_char"] },
+        "order": { "type": "number", "minimum": -10000, "maximum": 10000 },
+        "probability": { "type": "number", "minimum": 0, "maximum": 100 },
+        "depth": { "type": "number", "minimum": 0, "maximum": 999 },
+        "extensions": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "constant": { "const": false } } },
+          "then": { "properties": { "keys": { "minItems": 1 } } }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
