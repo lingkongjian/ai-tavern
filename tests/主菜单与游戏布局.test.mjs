@@ -5,7 +5,7 @@ import test from "node:test";
 const readProjectFile = (path) =>
   readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("首页使用主菜单和新建、继续两个二级页面", async () => {
+test("首页主菜单提供 API 配置并保留新建、继续两个二级页面", async () => {
   const [home, styles] = await Promise.all([
     readProjectFile("app/酒馆首页.tsx"),
     readProjectFile("app/globals.css"),
@@ -13,9 +13,14 @@ test("首页使用主菜单和新建、继续两个二级页面", async () => {
 
   assert.match(home, /type HomeView = "menu" \| "new" \| "continue"/);
   assert.match(home, /aria-label="游戏主菜单"/);
-  for (const label of ["新剧本", "继续游戏", "退出", "返回主菜单"]) {
+  for (const label of ["新剧本", "继续游戏", "API 配置", "退出", "返回主菜单"]) {
     assert.match(home, new RegExp(label));
   }
+  assert.match(
+    home,
+    /className="main-menu-api"[\s\S]*?onClick=\{openModelSettings\}/,
+  );
+  assert.doesNotMatch(home, /className="model-config-note"/);
   assert.match(home, /window\.location\.assign\(`\/game\/\$\{body\.adventure\.sessionId\}`\)/);
   assert.match(styles, /\.main-menu-page/);
   assert.match(styles, /\.continue-content/);

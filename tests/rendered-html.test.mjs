@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("build renders the Chinese three-option main menu", async () => {
+test("build renders the Chinese four-option main menu", async () => {
   const html = await readFile(
     new URL("../.next/server/app/index.html", import.meta.url),
     "utf8",
@@ -14,6 +14,7 @@ test("build renders the Chinese three-option main menu", async () => {
   assert.match(html, /本地数据库已连接/);
   assert.match(html, /新剧本/);
   assert.match(html, /继续游戏/);
+  assert.match(html, /API 配置/);
   assert.match(html, /退出/);
   assert.match(html, /AI 模型[\s\S]{0,30}尚未配置/);
   assert.match(html, /操作手册/);

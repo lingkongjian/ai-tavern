@@ -153,7 +153,7 @@ a {
 
 .main-menu-actions {
   display: grid;
-  padding: clamp(30px, 5vw, 62px);
+  padding: clamp(24px, 3.5vw, 44px);
   border-left: 1px solid var(--line);
   background: rgb(10 8 9 / 40%);
   align-content: center;
@@ -163,7 +163,7 @@ a {
 .main-menu-actions button {
   position: relative;
   display: grid;
-  min-height: 130px;
+  min-height: 112px;
   padding: 22px 54px 22px 24px;
   border: 1px solid rgb(255 255 255 / 8%);
   border-radius: 4px;
@@ -175,10 +175,20 @@ a {
   gap: 5px;
 }
 
-.main-menu-actions button:hover {
+.main-menu-actions button:hover:not(:disabled) {
   border-color: rgb(224 168 114 / 42%);
   background: rgb(55 34 34 / 86%);
   transform: translateX(4px);
+}
+
+.main-menu-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.main-menu-actions .main-menu-api {
+  border-color: rgb(212 124 69 / 24%);
+  background: rgb(48 30 29 / 72%);
 }
 
 .main-menu-actions button > span {
@@ -211,7 +221,7 @@ a {
 }
 
 .main-menu-actions .main-menu-exit {
-  min-height: 92px;
+  min-height: 80px;
   border-color: rgb(167 83 83 / 12%);
   background: rgb(34 23 26 / 58%);
 }
@@ -929,53 +939,6 @@ a {
 .sidebar-footer {
   margin-top: auto;
   padding-top: 42px;
-}
-
-.model-config-note {
-  display: grid;
-  gap: 6px;
-  padding: 14px 15px;
-  border: 1px solid rgb(212 124 69 / 17%);
-  border-radius: 3px;
-  background: rgb(48 30 29 / 28%);
-}
-
-.model-config-note strong {
-  color: #b89b86;
-  font-size: 0.7rem;
-}
-
-.model-config-note span {
-  color: #746962;
-  font-size: 0.65rem;
-  line-height: 1.55;
-}
-
-.model-config-note code {
-  color: #a9785e;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-.model-config-note button {
-  width: fit-content;
-  margin-top: 4px;
-  padding: 6px 9px;
-  border: 1px solid var(--line-bright);
-  border-radius: 2px;
-  color: #c59778;
-  background: rgb(212 124 69 / 7%);
-  cursor: pointer;
-  font-size: 0.67rem;
-}
-
-.model-config-note button:hover:not(:disabled) {
-  border-color: rgb(224 168 114 / 55%);
-  color: var(--paper-bright);
-}
-
-.model-config-note button:disabled {
-  cursor: wait;
-  opacity: 0.5;
 }
 
 .model-settings-backdrop {

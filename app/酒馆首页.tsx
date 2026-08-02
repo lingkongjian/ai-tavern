@@ -1782,8 +1782,7 @@ export function TavernHome() {
     setExitNotice("当前运行在网页开发模式，请关闭这个浏览器页面结束使用。");
   }
 
-  if (homeView === "menu") {
-    return (
+  const mainMenu = (
       <main className="main-menu-page">
         <div className="start-glow start-glow-one" aria-hidden="true" />
         <div className="start-glow start-glow-two" aria-hidden="true" />
@@ -1819,8 +1818,25 @@ export function TavernHome() {
               </small>
               <i aria-hidden="true">→</i>
             </button>
-            <button className="main-menu-exit" type="button" onClick={exitApplication}>
+            <button
+              className="main-menu-api"
+              type="button"
+              disabled={!modelStatus}
+              onClick={openModelSettings}
+            >
               <span>03</span>
+              <strong>API 配置</strong>
+              <small>
+                {modelStatus
+                  ? modelStatus.configured
+                    ? `${modelStatus.providerLabel} · ${modelStatus.model}`
+                    : "选择模型供应商并检查连接"
+                  : "正在读取本机配置……"}
+              </small>
+              <i aria-hidden="true">→</i>
+            </button>
+            <button className="main-menu-exit" type="button" onClick={exitApplication}>
+              <span>04</span>
               <strong>退出</strong>
               <small>保存完成后关闭 AI 酒馆</small>
               <i aria-hidden="true">×</i>
@@ -1839,11 +1855,12 @@ export function TavernHome() {
           </p>
         ) : null}
       </main>
-    );
-  }
+  );
 
   return (
-    <main className={`start-page ${homeView === "continue" ? "continue-page" : "new-story-page"}`}>
+    <>
+      {homeView === "menu" ? mainMenu : (
+      <main className={`start-page ${homeView === "continue" ? "continue-page" : "new-story-page"}`}>
       <div className="start-glow start-glow-one" aria-hidden="true" />
       <div className="start-glow start-glow-two" aria-hidden="true" />
 
@@ -2034,25 +2051,6 @@ export function TavernHome() {
         )}
 
         <div className="sidebar-footer">
-          <div className="model-config-note">
-            <strong>
-              {modelStatus?.providerLabel ?? "AI 模型"} · {modelStatus?.configured ? "已配置" : "待配置"}
-            </strong>
-            <span>
-              {modelStatus?.configured ? (
-                <>当前模型：{modelStatus.model}</>
-              ) : (
-                <>请选择供应商并填写连接信息。</>
-              )}
-            </span>
-            <button
-              type="button"
-              disabled={!modelStatus}
-              onClick={openModelSettings}
-            >
-              模型设置
-            </button>
-          </div>
           <div className="local-note">
             <span className="local-dot" aria-hidden="true" />
             本地数据库已连接
@@ -3211,6 +3209,8 @@ export function TavernHome() {
           </div>
         </section>
       )}
+      </main>
+      )}
 
       {modelSettingsOpen && modelDraft && modelStatus ? (
         <div
@@ -3231,13 +3231,13 @@ export function TavernHome() {
             <header>
               <div>
                 <p className="eyebrow">本机服务端配置</p>
-                <h2 id="model-settings-title">模型供应商</h2>
+                <h2 id="model-settings-title">API 与模型配置</h2>
                 <p>密钥只保存到本机的模型配置文件，不会返回浏览器或写入剧本存档。</p>
               </div>
               <button
                 type="button"
                 disabled={Boolean(modelOperation)}
-                aria-label="关闭模型设置"
+                aria-label="关闭 API 配置"
                 onClick={() => setModelSettingsOpen(false)}
               >
                 关闭
@@ -3580,6 +3580,6 @@ export function TavernHome() {
           </section>
         </div>
       ) : null}
-    </main>
+    </>
   );
 }
