@@ -202,6 +202,7 @@ npm test                     # 构建并运行全部自动化测试
 npm run public:check         # 检查当前提交是否混入私有数据或常见密钥
 npm run public:check:history # 检查当前分支完整历史
 npm run desktop:build:mac    # 生成并验证 macOS 桌面包
+node scripts/发布GitHubRelease.mjs  # 发布 GitHub Release（说明见 docs/release-说明-v<版本>.md）
 ```
 
 ## 项目文档
@@ -218,6 +219,7 @@ npm run desktop:build:mac    # 生成并验证 macOS 桌面包
 | [`docs/DEEPSEEK.md`](docs/DEEPSEEK.md) | 多供应商调用、校验、重试和上下文结构 |
 | [`docs/LOCAL_RUNTIME.md`](docs/LOCAL_RUNTIME.md) | 本地开发与 macOS 桌面封装 |
 | [`docs/GITHUB_PUBLICATION.md`](docs/GITHUB_PUBLICATION.md) | 不携带私有历史的 GitHub 发布流程 |
+| [`docs/release-说明-v0.1.11.md`](docs/release-说明-v0.1.11.md) | GitHub Release 文案模板：每版维护一份，由发布脚本读取 |
 
 ## 当前限制与后续方向
 
