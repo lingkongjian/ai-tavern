@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "../storage/story-store.ts";
+import { getActiveAiProfileSync } from "./活动配置.ts";
 
 export type AiProviderId =
   | "deepseek"
@@ -64,7 +65,7 @@ export const AI_PROVIDER_PRESETS: readonly AiProviderPreset[] = [
     id: "opencode_go",
     label: "OpenCode Go",
     description: "读取套餐模型目录，并审核所选模型是否兼容酒馆协议。",
-    defaultBaseUrl: "https://opencode.ai/zen/go/v1",
+    defaultBaseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
     defaultModel: "deepseek-v4-flash",
     apiKeyRequired: true,
     modelDiscoverySupported: true,
@@ -254,17 +255,24 @@ function readUsage(value: unknown): AiUsage {
 export function getAiConnectionConfig(
   input: AiProviderConfigInput = {},
 ): ResolvedAiConnectionConfig {
-  const provider = readProvider(input.provider ?? process.env.AI_PROVIDER);
+  const profile = getActiveAiProfileSync();
+  const provider = readProvider(
+    input.provider ?? profile?.provider ?? process.env.AI_PROVIDER,
+  );
   const preset = presetFor(provider);
   const baseUrl =
     input.baseUrl !== undefined
       ? input.baseUrl.trim()
-      : process.env.AI_API_BASE_URL?.trim() || preset.defaultBaseUrl;
+      : (profile?.baseUrl ||
+        process.env.AI_API_BASE_URL?.trim() ||
+        preset.defaultBaseUrl);
   const apiKey =
     input.apiKey !== undefined
       ? input.apiKey.trim()
-      : (process.env.AI_API_KEY?.trim() ?? "");
-  const jsonMode = readJsonMode(input.jsonMode ?? process.env.AI_JSON_MODE);
+      : (profile?.apiKey?.trim() || process.env.AI_API_KEY?.trim() || "");
+  const jsonMode = readJsonMode(
+    input.jsonMode ?? profile?.jsonMode ?? process.env.AI_JSON_MODE,
+  );
 
   if (!baseUrl) {
     throw new AiConfigurationError("请填写模型供应商的 Base URL。");
@@ -291,10 +299,11 @@ export function getAiProviderConfig(
 ): ResolvedAiProviderConfig {
   const connection = getAiConnectionConfig(input);
   const preset = presetFor(connection.provider);
+  const profile = getActiveAiProfileSync();
   const model =
     input.model !== undefined
       ? input.model.trim()
-      : process.env.AI_MODEL?.trim() || preset.defaultModel;
+      : (profile?.model || process.env.AI_MODEL?.trim() || preset.defaultModel);
   if (!model) {
     throw new AiConfigurationError("请填写要调用的模型名称。");
   }
@@ -306,13 +315,21 @@ export function getAiProviderConfig(
 }
 
 export function getAiProviderStatus() {
-  const provider = readProvider(process.env.AI_PROVIDER);
+  const profile = getActiveAiProfileSync();
+  const provider = readProvider(
+    profile?.provider ?? process.env.AI_PROVIDER,
+  );
   const preset = presetFor(provider);
-  const apiKey = process.env.AI_API_KEY?.trim() ?? "";
+  const apiKey = profile?.apiKey?.trim() ?? process.env.AI_API_KEY?.trim() ?? "";
   const baseUrl =
-    process.env.AI_API_BASE_URL?.trim() || preset.defaultBaseUrl;
-  const model = process.env.AI_MODEL?.trim() || preset.defaultModel;
-  const jsonMode = readJsonMode(process.env.AI_JSON_MODE);
+    profile?.baseUrl ||
+    process.env.AI_API_BASE_URL?.trim() ||
+    preset.defaultBaseUrl;
+  const model =
+    profile?.model || process.env.AI_MODEL?.trim() || preset.defaultModel;
+  const jsonMode = readJsonMode(
+    profile?.jsonMode ?? process.env.AI_JSON_MODE,
+  );
   const hasApiKey = Boolean(apiKey);
   return {
     provider,

@@ -8,8 +8,10 @@ import {
   type AiProviderId,
 } from "@/lib/ai/模型供应商";
 import {
-  deleteAiProviderConfig,
-  saveAiProviderConfig,
+  activateAiProfile,
+  deleteAiProfile,
+  listAiProfiles,
+  saveAiProfile,
 } from "@/lib/ai/模型配置文件";
 import {
   auditAiProvider,
@@ -62,9 +64,30 @@ function parseConfiguration(value: unknown) {
   };
 }
 
+function parseProfileId(value: unknown) {
+  if (typeof value !== "string" || !value.trim() || value.length > 200) {
+    throw new AiConfigurationError("API 配置编号无效。");
+  }
+  return value.trim();
+}
+
+function parseProfileName(value: unknown) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length > 100) {
+    throw new AiConfigurationError("API 配置名称格式无效或过长。");
+  }
+  return value.trim();
+}
+
 function parseOperation(value: unknown) {
   if (!isRecord(value) || value.operation === undefined) return "audit" as const;
-  if (value.operation === "audit" || value.operation === "discover_models") {
+  if (
+    value.operation === "audit" ||
+    value.operation === "discover_models" ||
+    value.operation === "save_profile" ||
+    value.operation === "delete_profile" ||
+    value.operation === "switch_profile"
+  ) {
     return value.operation;
   }
   throw new AiConfigurationError("不支持的模型设置操作。");
@@ -78,6 +101,16 @@ function effectiveApiKey(input: ReturnType<typeof parseConfiguration>) {
         (existingProvider === input.provider
           ? process.env.AI_API_KEY?.trim() || ""
           : "");
+}
+
+async function settingsResponse() {
+  const profiles = await listAiProfiles();
+  return {
+    ...getAiProviderStatus(),
+    presets: AI_PROVIDER_PRESETS,
+    activeId: profiles.activeId,
+    profiles: profiles.profiles,
+  };
 }
 
 function errorResponse(error: unknown) {
@@ -97,7 +130,7 @@ function errorResponse(error: unknown) {
 export async function GET() {
   try {
     return Response.json(
-      { ...getAiProviderStatus(), presets: AI_PROVIDER_PRESETS },
+      await settingsResponse(),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
@@ -109,6 +142,39 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const operation = parseOperation(body);
+    if (operation === "save_profile") {
+      const id = typeof body.id === "string" && body.id.trim()
+        ? body.id.trim()
+        : undefined;
+      if (id && id.length > 200) throw new AiConfigurationError("API 配置编号无效。");
+      const input = parseConfiguration(body);
+      const saved = await saveAiProfile({
+        id,
+        name: parseProfileName(body.name),
+        ...input,
+        apiKey: effectiveApiKey(input),
+      });
+      return Response.json(
+        { operation, saved, ...(await settingsResponse()) },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    if (operation === "delete_profile") {
+      const profileId = parseProfileId(body.profileId);
+      await deleteAiProfile(profileId);
+      return Response.json(
+        { operation, ...(await settingsResponse()) },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    if (operation === "switch_profile") {
+      const profileId = parseProfileId(body.profileId);
+      await activateAiProfile(profileId);
+      return Response.json(
+        { operation, ...(await settingsResponse()) },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
     const input = parseConfiguration(body);
     const config = { ...input, apiKey: effectiveApiKey(input) };
     if (operation === "discover_models") {
@@ -130,10 +196,20 @@ export async function POST(request: Request) {
 
 export async function PUT(request: Request) {
   try {
-    const input = parseConfiguration(await request.json());
-    await saveAiProviderConfig(input);
+    const body = await request.json();
+    const id = typeof body.id === "string" && body.id.trim()
+      ? body.id.trim()
+      : undefined;
+    if (id && id.length > 200) throw new AiConfigurationError("API 配置编号无效。");
+    const input = parseConfiguration(body);
+    await saveAiProfile({
+      id,
+      name: parseProfileName(body.name),
+      ...input,
+      apiKey: effectiveApiKey(input),
+    });
     return Response.json(
-      { ...getAiProviderStatus(), presets: AI_PROVIDER_PRESETS },
+      await settingsResponse(),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
@@ -141,11 +217,18 @@ export async function PUT(request: Request) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
-    await deleteAiProviderConfig();
+    const url = new URL(request.url);
+    const profileId = url.searchParams.get("profileId");
+    if (profileId) {
+      await deleteAiProfile(profileId);
+    } else {
+      const profiles = await listAiProfiles();
+      if (profiles.activeId) await deleteAiProfile(profiles.activeId);
+    }
     return Response.json(
-      { ...getAiProviderStatus(), presets: AI_PROVIDER_PRESETS },
+      await settingsResponse(),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

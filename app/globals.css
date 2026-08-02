@@ -1081,6 +1081,151 @@ a {
   color: #dfa7a8;
 }
 
+.api-profile-list {
+  margin-top: 16px;
+  padding: 17px;
+  border: 1px solid rgb(111 148 132 / 24%);
+  border-radius: 4px;
+  background: rgb(21 42 34 / 24%);
+}
+
+.api-profile-list > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.api-profile-list > header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.api-profile-list > header span {
+  color: #637c6e;
+  font-family: ui-monospace, monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+}
+
+.api-profile-list > header strong {
+  color: #b8c9be;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.api-profile-list > header button {
+  padding: 7px 11px;
+  border: 1px solid var(--line-bright);
+  border-radius: 3px;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.65rem;
+}
+
+.api-profile-list > p {
+  margin: 12px 0 0;
+  color: #766d66;
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+
+.api-profile-list ul {
+  margin: 13px 0 0;
+  padding: 0;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+  list-style: none;
+}
+
+.api-profile-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 0;
+  border-bottom: 1px solid rgb(255 255 255 / 5%);
+}
+
+.api-profile-list li.active {
+  padding-left: 9px;
+  border-left: 2px solid #86a493;
+}
+
+.api-profile-detail {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.api-profile-detail strong {
+  color: #cfc6bc;
+  font-size: 0.76rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.api-profile-detail small {
+  color: #766d66;
+  font-size: 0.62rem;
+  overflow-wrap: anywhere;
+}
+
+.api-profile-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.api-profile-actions em {
+  padding: 5px 8px;
+  border: 1px solid rgb(111 148 132 / 28%);
+  border-radius: 999px;
+  color: #86a493;
+  font-size: 0.56rem;
+  font-style: normal;
+}
+
+.api-profile-actions button {
+  padding: 5px 9px;
+  border: 1px solid var(--line-bright);
+  border-radius: 3px;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.62rem;
+}
+
+.game-api-switcher {
+  display: grid;
+  gap: 3px;
+}
+
+.game-api-switcher > span {
+  color: #7d7169;
+  font-family: ui-monospace, monospace;
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+}
+
+.game-api-switcher select {
+  max-width: 210px;
+  padding: 5px 8px;
+  border: 1px solid var(--line-bright);
+  border-radius: 3px;
+  color: var(--text-dim);
+  background: var(--panel-solid);
+  font-size: 0.65rem;
+}
+
+.game-api-switcher em {
+  color: #b57c7d;
+  font-size: 0.6rem;
+  font-style: normal;
+}
+
 .model-settings-dialog header p:last-child,
 .model-settings-dialog > footer > span {
   max-width: 520px;

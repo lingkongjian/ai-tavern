@@ -14,6 +14,10 @@ import {
 } from "../lib/ai/模型可用性.ts";
 import {
   deleteAiProviderConfig,
+  listAiProfiles,
+  saveAiProfile,
+  deleteAiProfile,
+  activateAiProfile,
   saveAiProviderConfig,
 } from "../lib/ai/模型配置文件.ts";
 
@@ -24,6 +28,7 @@ const originalEnvironment = {
   AI_MODEL: process.env.AI_MODEL,
   AI_JSON_MODE: process.env.AI_JSON_MODE,
   AI_TAVERN_CONFIG_FILE: process.env.AI_TAVERN_CONFIG_FILE,
+  AI_TAVERN_DATA_DIR: process.env.AI_TAVERN_DATA_DIR,
 };
 
 function restoreEnvironment() {
@@ -402,6 +407,106 @@ test("desktop configuration path stays inside the configured portable directory"
     const source = await readFile(filePath, "utf8");
     assert.match(source, /^AI_PROVIDER=deepseek$/m);
     assert.match(source, /^AI_API_KEY=portable-secret$/m);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+    restoreEnvironment();
+  }
+});
+
+test("multiple API profiles can be saved, activated, and deleted", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "ai-tavern-profiles-"));
+  const configFile = path.join(temporaryDirectory, "模型.env");
+  const profilesFile = path.join(temporaryDirectory, "api-configs.json");
+  try {
+    process.env.AI_TAVERN_CONFIG_FILE = configFile;
+    process.env.AI_TAVERN_DATA_DIR = temporaryDirectory;
+    process.env.AI_PROVIDER = "deepseek";
+    process.env.AI_API_BASE_URL = "https://api.deepseek.com";
+    process.env.AI_API_KEY = "legacy-secret";
+    process.env.AI_MODEL = "deepseek-chat";
+    process.env.AI_JSON_MODE = "response_format";
+
+    const legacyView = await listAiProfiles({ filePath: profilesFile });
+    assert.equal(legacyView.profiles.length, 1);
+    assert.equal(legacyView.profiles[0].id, "legacy-env");
+
+    const first = await saveAiProfile(
+      {
+        name: "OpenCode Go 主用",
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "go-secret",
+      },
+      { filePath: profilesFile },
+    );
+    assert.equal(first.provider, "opencode_go");
+    assert.equal(process.env.AI_PROVIDER, "opencode_go");
+    assert.equal(process.env.AI_API_KEY, "go-secret");
+
+    const migratedView = await listAiProfiles({ filePath: profilesFile });
+    assert.equal(migratedView.profiles.length, 2);
+    assert.equal(migratedView.profiles[0].id, "legacy-env");
+
+    const second = await saveAiProfile(
+      {
+        name: "本地兼容服务",
+        provider: "local_openai_compatible",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        model: "local-model",
+        jsonMode: "prompt_only",
+        apiKey: "",
+      },
+      { filePath: profilesFile },
+    );
+    assert.notEqual(second.id, first.id);
+    assert.equal(process.env.AI_PROVIDER, "local_openai_compatible");
+
+    const view = await listAiProfiles({ filePath: profilesFile });
+    assert.equal(view.activeId, second.id);
+    assert.equal(view.profiles.length, 3);
+    assert.deepEqual(
+      view.profiles.map((profile) => profile.id),
+      ["legacy-env", first.id, second.id],
+    );
+    for (const profile of view.profiles) {
+      assert.equal(Object.hasOwn(profile, "apiKey"), false);
+    }
+
+    await activateAiProfile(first.id, { filePath: profilesFile });
+    assert.equal(process.env.AI_PROVIDER, "opencode_go");
+    assert.equal(process.env.AI_API_KEY, "go-secret");
+
+    const updated = await saveAiProfile(
+      {
+        id: second.id,
+        name: "本地兼容服务（更新）",
+        provider: "local_openai_compatible",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        model: "local-model-2",
+        jsonMode: "prompt_only",
+        apiKey: "local-secret",
+      },
+      { filePath: profilesFile },
+    );
+    assert.equal(updated.name, "本地兼容服务（更新）");
+    assert.equal(updated.model, "local-model-2");
+
+    await deleteAiProfile(first.id, { filePath: profilesFile });
+    const afterDelete = await listAiProfiles({ filePath: profilesFile });
+    assert.equal(afterDelete.profiles.length, 2);
+    assert.equal(afterDelete.activeId, second.id);
+    assert.deepEqual(
+      afterDelete.profiles.map((profile) => profile.id),
+      ["legacy-env", second.id],
+    );
+    assert.equal(process.env.AI_PROVIDER, "local_openai_compatible");
+    assert.equal(process.env.AI_API_KEY, "local-secret");
+
+    const configSource = await readFile(configFile, "utf8");
+    assert.match(configSource, /^AI_PROVIDER=local_openai_compatible$/m);
+    assert.match(configSource, /^AI_API_KEY=local-secret$/m);
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
     restoreEnvironment();

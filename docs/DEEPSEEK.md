@@ -35,7 +35,7 @@ AI_JSON_MODE=response_format
 
 “审核可用性”依次检查配置与 HTTPS 边界、模型目录、所选模型协议，再用所选模型发起一次最多 64 token 的最小 JSON 生成。只有实际生成成功且返回预期 JSON 才算通过。读取目录通常不产生生成 token，但目录公开可见或包含某个模型，不代表当前套餐 token 拥有生成权限。已知协议不兼容时会跳过生成，避免无效请求；供应商没有 `/models` 时目录检查为警告，仍以最小生成结果为准。
 
-OpenCode Go 的官方目录为 `https://opencode.ai/zen/go/v1/models`。其套餐同时暴露 Chat Completions、Messages 和 Responses 模型，而当前酒馆只实现 Chat Completions；官方模型列表变化后，新 ID 会先标记为“需要审核”，不会因本地旧名单而被直接拒绝。依据见 [OpenCode Go 官方文档](https://dev.opencode.ai/docs/go/)。
+OpenCode Go 的官方目录为 `https://opencode.ai/zen/go/v1/models`，官方文档中调用模型的端点为完整地址 `https://opencode.ai/zen/go/v1/chat/completions`（Chat Completions 模型共用该端点）。酒馆预设默认填写完整端点地址；两种写法都受支持——填写版本路径 `https://opencode.ai/zen/go/v1` 时程序会自动追加 `/chat/completions`。其套餐同时暴露 Chat Completions、Messages 和 Responses 模型，而当前酒馆只实现 Chat Completions；官方模型列表变化后，新 ID 会先标记为“需要审核”，不会因本地旧名单而被直接拒绝。依据见 [OpenCode Go 官方文档](https://dev.opencode.ai/docs/go/)。
 
 目录可以导出为 UTF-8 JSON，格式为 `schemaVersion=1.0.0`、`kind=ai_tavern_model_catalog_v1`。文件包含供应商、Base URL、读取时间、兼容性分类、所选模型及本次审核结果，不包含 API Key。`verifiedModel` 只有在当前所选模型完成审核时才有值；该文件用于诊断和迁移选择，不会被导入为运行配置，也不能代替日后的重新审核。
 

@@ -17,10 +17,37 @@ import type {
 import type { SourceDocumentSummary } from "@/lib/reference/原文参考";
 import type { StoryMemoryDashboard } from "@/lib/memory/剧情记忆";
 import Link from "next/link";
-import { type FormEvent, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 function isObject(value: JsonValue | undefined): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+interface ApiProfileSummary {
+  id: string;
+  name: string;
+  provider: string;
+  providerLabel: string;
+  baseUrl: string;
+  model: string;
+  jsonMode: string;
+  hasApiKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ApiSettingsResponse {
+  provider: string;
+  providerLabel: string;
+  configured: boolean;
+  hasApiKey: boolean;
+  apiKeyRequired: boolean;
+  baseUrl: string;
+  model: string;
+  jsonMode: string;
+  presets: unknown[];
+  activeId: string | null;
+  profiles: ApiProfileSummary[];
 }
 
 function text(value: JsonValue | undefined, fallback = "") {
@@ -523,6 +550,54 @@ export function GameInterface({
   initialMemory: StoryMemoryDashboard;
 }) {
   const [adventure, setAdventure] = useState(initialAdventure);
+  const [apiProfiles, setApiProfiles] = useState<ApiProfileSummary[]>([]);
+  const [apiActiveId, setApiActiveId] = useState<string | null>(null);
+  const [apiSwitching, setApiSwitching] = useState(false);
+  const [apiSwitchError, setApiSwitchError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/settings/ai", { cache: "no-store" })
+      .then(async (response) => {
+        const body = (await response.json()) as ApiSettingsResponse & {
+          error?: string;
+        };
+        if (!response.ok) throw new Error(body.error ?? "读取模型配置失败。");
+        if (!cancelled) {
+          setApiProfiles(body.profiles ?? []);
+          setApiActiveId(body.activeId ?? null);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function switchApiProfile(profileId: string) {
+    if (apiSwitching || profileId === apiActiveId) return;
+    setApiSwitching(true);
+    setApiSwitchError("");
+    try {
+      const response = await fetch("/api/settings/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "switch_profile", profileId }),
+      });
+      const body = (await response.json()) as ApiSettingsResponse & {
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error ?? "切换 API 失败。");
+      setApiProfiles(body.profiles ?? []);
+      setApiActiveId(body.activeId ?? null);
+    } catch (reason) {
+      setApiSwitchError(
+        reason instanceof Error ? reason.message : "切换 API 失败。",
+      );
+    } finally {
+      setApiSwitching(false);
+    }
+  }
   const [selectedChoice, setSelectedChoice] = useState("");
   const [customChoice, setCustomChoice] = useState("");
   const [roleplayMode, setRoleplayMode] = useState("mixed");
@@ -2115,6 +2190,27 @@ export function GameInterface({
           <h1>{adventure.campaign.name}</h1>
         </div>
         <div className="header-branch-actions">
+          {apiProfiles.length > 1 ? (
+            <label className="game-api-switcher">
+              <span>生成模型</span>
+              <select
+                value={apiActiveId ?? ""}
+                disabled={apiSwitching}
+                onChange={(event) => {
+                  if (event.target.value) {
+                    void switchApiProfile(event.target.value);
+                  }
+                }}
+              >
+                {apiProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name} · {profile.model}
+                  </option>
+                ))}
+              </select>
+              {apiSwitchError ? <em role="alert">{apiSwitchError}</em> : null}
+            </label>
+          ) : null}
           <button
             className="story-workbench-launch"
             type="button"

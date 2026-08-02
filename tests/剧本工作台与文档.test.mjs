@@ -64,17 +64,18 @@ test("模型设置支持目录读取、OpenCode Go 分类和分项可用性审�
   const catalogSchema = JSON.parse(catalogSchemaSource);
 
   assert.match(provider, /id: "opencode_go"/);
-  assert.match(provider, /https:\/\/opencode\.ai\/zen\/go\/v1/);
+  assert.match(provider, /https:\/\/opencode\.ai\/zen\/go\/v1\/chat\/completions/);
   assert.match(availability, /modelCatalogEndpoint/);
   assert.match(availability, /unsupported_protocol/);
   assert.match(settingsRoute, /discover_models/);
   assert.match(settingsRoute, /auditAiProvider/);
   assert.match(settingsRoute, /export async function DELETE/);
-  assert.match(settingsRoute, /deleteAiProviderConfig/);
-  for (const label of ["读取模型", "审核可用性", "导出 JSON", "已审核可用"]) {
+  assert.match(settingsRoute, /saveAiProfile/);
+  assert.match(settingsRoute, /switch_profile/);
+  for (const label of ["读取模型", "审核可用性", "导出 JSON", "已审核可用", "新建配置", "另存为新 API"]) {
     assert.match(home, new RegExp(label));
   }
-  for (const label of ["已配置 API", "删除已配置 API", "正在使用"]) {
+  for (const label of ["已配置 API", "删除已配置 API", "正在使用", "使用中"]) {
     assert.match(home, new RegExp(label));
   }
   assert.match(home, /aiProviderTypeLabel/);
@@ -82,6 +83,7 @@ test("模型设置支持目录读取、OpenCode Go 分类和分项可用性审�
   assert.match(styles, /\.ai-model-catalog/);
   assert.match(styles, /\.ai-availability-audit/);
   assert.match(styles, /\.configured-api-summary/);
+  assert.match(styles, /\.api-profile-list/);
   assert.equal(catalogSchema.properties.schemaVersion.const, "1.0.0");
   assert.equal(catalogSchema.properties.kind.const, "ai_tavern_model_catalog_v1");
 });

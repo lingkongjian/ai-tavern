@@ -218,6 +218,19 @@ interface AiProviderAudit {
   checks: AiAuditCheck[];
 }
 
+interface AiProfileSummary {
+  id: string;
+  name: string;
+  provider: AiProviderId;
+  providerLabel: string;
+  baseUrl: string;
+  model: string;
+  jsonMode: AiJsonMode;
+  hasApiKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface AiSettingsResponse {
   provider: AiProviderId;
   providerLabel: string;
@@ -228,9 +241,13 @@ interface AiSettingsResponse {
   model: string;
   jsonMode: AiJsonMode;
   presets: AiProviderPreset[];
+  activeId: string | null;
+  profiles: AiProfileSummary[];
 }
 
 interface AiSettingsDraft {
+  id?: string;
+  name?: string;
   provider: AiProviderId;
   baseUrl: string;
   model: string;
@@ -582,8 +599,10 @@ export function TavernHome() {
   const [modelStatus, setModelStatus] = useState<AiSettingsResponse | null>(null);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [modelDraft, setModelDraft] = useState<AiSettingsDraft | null>(null);
+  const [modelProfiles, setModelProfiles] = useState<AiProfileSummary[]>([]);
+  const [modelActiveId, setModelActiveId] = useState<string | null>(null);
   const [modelOperation, setModelOperation] = useState<
-    "discover" | "audit" | "save" | "delete" | ""
+    "discover" | "audit" | "save" | "delete" | "switch" | ""
   >("");
   const [availableModels, setAvailableModels] = useState<AiAvailableModel[]>([]);
   const [modelCatalogFetchedAt, setModelCatalogFetchedAt] = useState("");
@@ -658,6 +677,8 @@ export function TavernHome() {
       jsonMode: status.jsonMode,
       clearApiKey: false,
     });
+    setModelProfiles(status.profiles ?? []);
+    setModelActiveId(status.activeId ?? null);
     setModelNotice("");
     setModelError("");
     setAvailableModels([]);
@@ -730,6 +751,7 @@ export function TavernHome() {
 
   async function submitModelConfiguration(
     operation: "discover" | "audit" | "save",
+    options: { asNew?: boolean } = {},
   ) {
     if (!modelDraft || modelOperation) return;
     setModelOperation(operation);
@@ -741,6 +763,7 @@ export function TavernHome() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...modelDraft,
+          id: options.asNew ? undefined : modelDraft.id,
           ...(operation === "discover"
             ? { operation: "discover_models" }
             : operation === "audit"
@@ -775,12 +798,18 @@ export function TavernHome() {
       } else if (operation === "save") {
         const status = body as AiSettingsResponse;
         setModelStatus(status);
+        setModelProfiles(status.profiles ?? []);
+        setModelActiveId(status.activeId ?? null);
         setModelDraft((current) =>
           current
             ? { ...current, apiKey: "", clearApiKey: false }
             : current,
         );
-        setModelNotice("配置已保存，并已在当前开发进程中生效。");
+        setModelNotice(
+          modelDraft.id
+            ? "已更新 API 配置并切换为当前使用。"
+            : "已保存为新 API 配置并切换为当前使用。",
+        );
       }
     } catch (reason) {
       setModelError(reason instanceof Error ? reason.message : "模型配置操作失败。");
@@ -789,25 +818,26 @@ export function TavernHome() {
     }
   }
 
-  async function deleteModelConfiguration() {
-    if (!modelStatus?.configured || modelOperation) return;
-    const confirmed = window.confirm(
-      `确定删除当前已配置的 ${modelStatus.providerLabel} API 吗？\n\n将清除供应商、地址、模型和密钥配置，但不会删除任何剧本、存档或模型目录导出文件。`,
-    );
-    if (!confirmed) return;
-
-    setModelOperation("delete");
+  async function switchModelProfileTo(profileId: string) {
+    if (modelOperation || profileId === modelActiveId) return;
+    setModelOperation("switch");
     setModelNotice("");
     setModelError("");
     try {
-      const response = await fetch("/api/settings/ai", { method: "DELETE" });
+      const response = await fetch("/api/settings/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "switch_profile", profileId }),
+      });
       const body = (await response.json()) as AiSettingsResponse & {
         error?: string;
       };
       if (!response.ok) {
-        throw new Error(body.error ?? "删除 API 配置失败。");
+        throw new Error(body.error ?? "切换 API 配置失败。");
       }
       setModelStatus(body);
+      setModelProfiles(body.profiles ?? []);
+      setModelActiveId(body.activeId ?? null);
       setModelDraft({
         provider: body.provider,
         baseUrl: body.baseUrl,
@@ -819,7 +849,95 @@ export function TavernHome() {
       setAvailableModels([]);
       setModelCatalogFetchedAt("");
       setModelAudit(null);
-      setModelNotice("已删除本机 API 配置；剧本与存档未受影响。");
+      setModelNotice("已切换到所选 API 配置，后续回合将使用该配置生成。");
+    } catch (reason) {
+      setModelError(
+        reason instanceof Error ? reason.message : "切换 API 配置失败。",
+      );
+    } finally {
+      setModelOperation("");
+    }
+  }
+
+  function editModelProfile(profile: AiProfileSummary) {
+    setModelDraft({
+      id: profile.id,
+      name: profile.name,
+      provider: profile.provider,
+      baseUrl: profile.baseUrl,
+      model: profile.model,
+      apiKey: "",
+      jsonMode: profile.jsonMode,
+      clearApiKey: false,
+    });
+    setModelNotice("");
+    setModelError("");
+    setAvailableModels([]);
+    setModelCatalogFetchedAt("");
+    setModelAudit(null);
+  }
+
+  function newModelProfile() {
+    setModelDraft({
+      provider: "opencode_go",
+      baseUrl:
+        modelStatus?.presets.find((preset) => preset.id === "opencode_go")
+          ?.defaultBaseUrl ?? "https://opencode.ai/zen/go/v1/chat/completions",
+      model: "deepseek-v4-flash",
+      apiKey: "",
+      jsonMode: "response_format",
+      clearApiKey: false,
+    });
+    setModelNotice("");
+    setModelError("");
+    setAvailableModels([]);
+    setModelCatalogFetchedAt("");
+    setModelAudit(null);
+  }
+
+  async function deleteModelConfiguration(profileId?: string) {
+    if (modelOperation) return;
+    const label = profileId
+      ? (modelProfiles.find((profile) => profile.id === profileId)?.name ??
+        "该 API")
+      : modelStatus?.configured
+        ? modelStatus.providerLabel
+        : null;
+    if (!label) return;
+    const confirmed = window.confirm(
+      `确定删除“${label}”吗？\n\n将清除该供应商、地址、模型和密钥配置，但不会删除任何剧本、存档或模型目录导出文件。`,
+    );
+    if (!confirmed) return;
+
+    setModelOperation("delete");
+    setModelNotice("");
+    setModelError("");
+    try {
+      const url = profileId
+        ? `/api/settings/ai?profileId=${encodeURIComponent(profileId)}`
+        : "/api/settings/ai";
+      const response = await fetch(url, { method: "DELETE" });
+      const body = (await response.json()) as AiSettingsResponse & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.error ?? "删除 API 配置失败。");
+      }
+      setModelStatus(body);
+      setModelProfiles(body.profiles ?? []);
+      setModelActiveId(body.activeId ?? null);
+      setModelDraft({
+        provider: body.provider,
+        baseUrl: body.baseUrl,
+        model: body.model,
+        apiKey: "",
+        jsonMode: body.jsonMode,
+        clearApiKey: false,
+      });
+      setAvailableModels([]);
+      setModelCatalogFetchedAt("");
+      setModelAudit(null);
+      setModelNotice("已删除 API 配置；剧本与存档未受影响。");
     } catch (reason) {
       setModelError(
         reason instanceof Error ? reason.message : "删除 API 配置失败。",
@@ -3303,7 +3421,90 @@ export function TavernHome() {
               )}
             </section>
 
+            <section
+              className="api-profile-list"
+              aria-labelledby="api-profile-list-title"
+            >
+              <header>
+                <div>
+                  <span>本机已保存</span>
+                  <strong id="api-profile-list-title">
+                    API 配置列表 · {modelProfiles.length}
+                  </strong>
+                </div>
+                <button
+                  type="button"
+                  disabled={Boolean(modelOperation)}
+                  onClick={newModelProfile}
+                >
+                  新建配置
+                </button>
+              </header>
+              {modelProfiles.length === 0 ? (
+                <p>还没有保存的 API 配置；填写下方表单后点击“保存并使用”即可新增。</p>
+              ) : (
+                <ul>
+                  {modelProfiles.map((profile) => (
+                    <li
+                      key={profile.id}
+                      className={profile.id === modelActiveId ? "active" : ""}
+                    >
+                      <div className="api-profile-detail">
+                        <strong>{profile.name}</strong>
+                        <small>
+                          {profile.providerLabel} · {profile.model} ·{" "}
+                          {profile.hasApiKey ? "已保存密钥" : "无密钥"}
+                        </small>
+                      </div>
+                      <div className="api-profile-actions">
+                        {profile.id === modelActiveId ? (
+                          <em>使用中</em>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={Boolean(modelOperation)}
+                            onClick={() => void switchModelProfileTo(profile.id)}
+                          >
+                            使用
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={Boolean(modelOperation)}
+                          onClick={() => editModelProfile(profile)}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(modelOperation)}
+                          onClick={() => void deleteModelConfiguration(profile.id)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
             <div className="model-settings-grid">
+              <label className="field">
+                <span>配置名称</span>
+                <input
+                  maxLength={100}
+                  value={modelDraft.name ?? ""}
+                  disabled={Boolean(modelOperation)}
+                  placeholder={modelDraft.id ? "编辑现有配置的名称" : "例如：OpenCode Go 主用"}
+                  onChange={(event) => {
+                    setModelDraft((current) =>
+                      current ? { ...current, name: event.target.value } : current,
+                    );
+                  }}
+                />
+                <small>用于在列表中区分不同的 API 配置。</small>
+              </label>
               <label className="field full-width-field">
                 <span>供应商类型</span>
                 <select
@@ -3567,6 +3768,15 @@ export function TavernHome() {
                 >
                   {modelOperation === "audit" ? "审核中……" : "审核可用性"}
                 </button>
+                {modelDraft.id ? (
+                  <button
+                    type="button"
+                    disabled={Boolean(modelOperation)}
+                    onClick={() => void submitModelConfiguration("save", { asNew: true })}
+                  >
+                    另存为新 API
+                  </button>
+                ) : null}
                 <button
                   className="primary-button"
                   type="button"
