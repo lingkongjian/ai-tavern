@@ -1226,6 +1226,65 @@ a {
   font-style: normal;
 }
 
+.streaming-scene {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgb(111 148 132 / 28%);
+  border-radius: 4px;
+  background: rgb(21 42 34 / 24%);
+}
+
+.streaming-scene header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.streaming-scene header > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #86a493;
+  animation: streaming-pulse 1.2s ease-in-out infinite;
+}
+
+.streaming-scene header strong {
+  color: #86a493;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+.streaming-scene p {
+  margin: 0;
+  color: #cfc6bc;
+  font-size: 0.82rem;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+
+@keyframes streaming-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.failover-notice {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border: 1px solid rgb(177 130 78 / 32%);
+  border-radius: 4px;
+  color: #c9a878;
+  background: rgb(102 66 34 / 14%);
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
 .model-settings-dialog header p:last-child,
 .model-settings-dialog > footer > span {
   max-width: 520px;

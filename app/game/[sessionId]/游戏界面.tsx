@@ -604,6 +604,8 @@ export function GameInterface({
   const [roleplayInput, setRoleplayInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [streamingScene, setStreamingScene] = useState("");
+  const [failoverNotice, setFailoverNotice] = useState("");
   const [regenerating, setRegenerating] = useState(false);
   const [regenerationError, setRegenerationError] = useState("");
   const [regenerationPanelOpen, setRegenerationPanelOpen] = useState(false);
@@ -964,36 +966,124 @@ export function GameInterface({
       directionInput.trim() !== initialDirection,
   );
 
+  async function streamTurnRequest(
+    url: string,
+    body: unknown,
+    onDelta: (text: string) => void,
+    onFailover?: (profileName: string) => void,
+  ): Promise<AdvanceTurnResponse> {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/event-stream")) {
+      const plain = (await response.json()) as AdvanceTurnResponse & {
+        error?: string;
+        issues?: string[];
+      };
+      if (!response.ok || !plain.adventure) {
+        throw new Error(
+          plain.issues?.[0] ?? plain.error ?? "生成本轮剧情失败。",
+        );
+      }
+      return plain;
+    }
+    if (!response.body) {
+      throw new Error("模型没有返回可读取的流式响应。");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let pendingResult: AdvanceTurnResponse | null = null;
+    let pendingError: Error | null = null;
+
+    function handleEventBlock(block: string) {
+      let event = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) return;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(data);
+      } catch {
+        return;
+      }
+      const record = payload as Record<string, unknown>;
+      if (event === "delta" && typeof record.text === "string") {
+        onDelta(record.text);
+      } else if (event === "failover" && typeof record.profileName === "string") {
+        onFailover?.(record.profileName);
+      } else if (event === "result") {
+        pendingResult = payload as AdvanceTurnResponse;
+      } else if (event === "error") {
+        pendingError = new Error(
+          typeof record.error === "string"
+            ? record.error
+            : "生成本轮剧情失败。",
+        );
+      }
+    }
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let split = buffer.indexOf("\n\n");
+      while (split !== -1) {
+        handleEventBlock(buffer.slice(0, split));
+        buffer = buffer.slice(split + 2);
+        split = buffer.indexOf("\n\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) handleEventBlock(buffer.trim());
+
+    if (pendingError) throw pendingError;
+    if (!pendingResult) {
+      throw new Error("生成本轮剧情失败：没有收到模型的完整结果。");
+    }
+    return pendingResult;
+  }
+
   async function submitTurn() {
     if (!canSubmit || submitting || regenerating) return;
     setSubmitting(true);
     setSubmitError("");
     setRegenerationError("");
+    setStreamingScene("");
+    setFailoverNotice("");
     pendingIdempotencyKey.current ??= crypto.randomUUID();
 
     try {
-      const response = await fetch(
+      const body = await streamTurnRequest(
         `/api/adventures/${adventure.session.id}/turns`,
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            expectedHeadTurnId: adventure.branchState.branch.headTurnId,
-            idempotencyKey: pendingIdempotencyKey.current,
-            selectedChoiceId: selectedChoice || undefined,
-            customChoice: customChoice.trim() || undefined,
-            roleplay: roleplayInput.trim()
-              ? { mode: roleplayMode, content: roleplayInput.trim() }
-              : undefined,
-            storyDirection: directionInput.trim(),
-          }),
+          expectedHeadTurnId: adventure.branchState.branch.headTurnId,
+          idempotencyKey: pendingIdempotencyKey.current,
+          selectedChoiceId: selectedChoice || undefined,
+          customChoice: customChoice.trim() || undefined,
+          roleplay: roleplayInput.trim()
+            ? { mode: roleplayMode, content: roleplayInput.trim() }
+            : undefined,
+          storyDirection: directionInput.trim(),
         },
+        (text) => setStreamingScene((current) => current + text),
+        (profileName) =>
+          setFailoverNotice(
+            `当前 API 生成失败，已自动切换到备用配置“${profileName}”。`,
+          ),
       );
-      const body = (await response.json()) as AdvanceTurnResponse;
-      if (!response.ok || !body.adventure) {
-        throw new Error(body.issues?.[0] ?? body.error ?? "生成本轮剧情失败。");
-      }
-
+      if (!body.adventure) throw new Error("生成本轮剧情失败。");
+      setStreamingScene("");
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
       setSelectedChoice("");
@@ -1009,6 +1099,7 @@ export function GameInterface({
       setDirectionInput(text(nextDirection?.state.content));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
+      setStreamingScene("");
       setSubmitError(
         error instanceof Error ? error.message : "生成本轮剧情失败。",
       );
@@ -1044,25 +1135,24 @@ export function GameInterface({
     }
     setRegenerating(true);
     setRegenerationError("");
+    setStreamingScene("");
+    setFailoverNotice("");
     try {
-      const response = await fetch(
+      const body = await streamTurnRequest(
         `/api/adventures/${adventure.session.id}/turns/regenerate`,
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            expectedHeadTurnId: latestTurn.id,
-            actionId: pendingRegenerationAction.current.actionId,
-            feedback,
-          }),
+          expectedHeadTurnId: latestTurn.id,
+          actionId: pendingRegenerationAction.current.actionId,
+          feedback,
         },
+        (text) => setStreamingScene((current) => current + text),
+        (profileName) =>
+          setFailoverNotice(
+            `当前 API 生成失败，已自动切换到备用配置“${profileName}”。`,
+          ),
       );
-      const body = (await response.json()) as AdvanceTurnResponse;
-      if (!response.ok || !body.adventure) {
-        throw new Error(
-          body.issues?.[0] ?? body.error ?? "重新生成最新剧情失败。",
-        );
-      }
+      if (!body.adventure) throw new Error("重新生成最新剧情失败。");
+      setStreamingScene("");
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
       setSelectedChoice("");
@@ -1077,6 +1167,7 @@ export function GameInterface({
       setDirectionInput(text(nextDirection?.state.content));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
+      setStreamingScene("");
       setRegenerationError(
         error instanceof Error ? error.message : "重新生成最新剧情失败。",
       );
@@ -2688,6 +2779,22 @@ export function GameInterface({
                   <div className="turn-error" role="alert">
                     <strong>本轮没有保存</strong>
                     <span>{submitError}</span>
+                  </div>
+                ) : null}
+
+                {failoverNotice ? (
+                  <p className="failover-notice" role="status">
+                    {failoverNotice}
+                  </p>
+                ) : null}
+
+                {submitting && streamingScene ? (
+                  <div className="streaming-scene" aria-live="polite">
+                    <header>
+                      <span aria-hidden="true" />
+                      <strong>AI 正在续写，流式生成中……</strong>
+                    </header>
+                    <p>{streamingScene}</p>
                   </div>
                 ) : null}
 

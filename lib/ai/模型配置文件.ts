@@ -319,6 +319,18 @@ export async function listAiProfiles(
   };
 }
 
+export async function listProfileRecords(
+  options: { filePath?: string } = {},
+): Promise<AiProfileRecord[]> {
+  const filePath = options.filePath ?? profilesFilePath();
+  const file = await readProfilesFile(filePath);
+  if (!file) {
+    const legacy = legacyProfileFromEnvironment();
+    return legacy ? [{ ...legacy }] : [];
+  }
+  return file.profiles.map((profile) => ({ ...profile }));
+}
+
 export async function saveAiProfile(
   input: SaveAiProfileInput,
   options: { filePath?: string } = {},

@@ -41,6 +41,10 @@ export interface AiRequestOptions {
   config?: AiProviderConfigInput;
 }
 
+export interface AiStreamCallbacks {
+  onDelta?: (text: string) => void;
+}
+
 export interface AiProviderPreset {
   id: AiProviderId;
   label: string;
@@ -345,6 +349,171 @@ export function getAiProviderStatus() {
   };
 }
 
+export async function requestAiJsonStream(
+  messages: AiMessage[],
+  options: AiRequestOptions & AiStreamCallbacks = {},
+): Promise<AiJsonResult> {
+  if (messages.length === 0) {
+    throw new AiRequestError("发送给模型的消息不能为空。");
+  }
+
+  const config = getAiProviderConfig(options.config);
+  const fetchImplementation = options.fetchImplementation ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 90_000;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+  };
+  if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+
+  const requestBody: Record<string, unknown> = {
+    model: config.model,
+    messages,
+    max_tokens: options.maxTokens ?? 6_000,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (config.jsonMode === "response_format") {
+    requestBody.response_format = { type: "json_object" };
+  }
+  if (config.provider === "deepseek" || config.provider === "opencode_go") {
+    requestBody.thinking = { type: "disabled" };
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImplementation(config.endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new AiRequestError(`${config.providerLabel} 响应超时，请稍后重试。`);
+    }
+    throw new AiRequestError(
+      `无法连接 ${config.providerLabel}，请检查地址、网络和服务状态。`,
+    );
+  }
+
+  if (!response.ok) {
+    let failureBody: unknown;
+    try {
+      failureBody = await response.json();
+    } catch {
+      failureBody = undefined;
+    }
+    throw requestErrorFromResponse(config, response.status, failureBody);
+  }
+  if (!response.body) {
+    throw new AiResponseError(`${config.providerLabel} 没有返回可读取的流式响应。`);
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  let content = "";
+  let finishReason: string | undefined;
+  let returnedModel: string | undefined;
+  let usage: AiUsage = {};
+  let sawFrame = false;
+
+  function consumeLine(line: string) {
+    if (!line.startsWith("data:")) return;
+    const data = line.slice(5).trim();
+    if (!data) return;
+    if (data === "[DONE]") return;
+    sawFrame = true;
+    let frame: unknown;
+    try {
+      frame = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (!isRecord(frame)) return;
+    if (typeof frame.model === "string") returnedModel = frame.model;
+    if (isRecord(frame.usage)) usage = readUsage(frame);
+    const choice = Array.isArray(frame.choices) ? frame.choices[0] : undefined;
+    if (!isRecord(choice)) return;
+    if (typeof choice.finish_reason === "string") {
+      finishReason = choice.finish_reason;
+    }
+    const delta = choice.delta;
+    if (!isRecord(delta)) return;
+    if (typeof delta.content === "string" && delta.content) {
+      content += delta.content;
+      options.onDelta?.(delta.content);
+    }
+  }
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        consumeLine(line);
+        newlineIndex = buffer.indexOf("\n");
+      }
+    }
+    buffer += decoder.decode();
+    for (const line of buffer.split("\n")) consumeLine(line);
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new AiRequestError(`${config.providerLabel} 流式响应超时，请稍后重试。`);
+    }
+    throw new AiRequestError(`${config.providerLabel} 流式响应中断，请稍后重试。`);
+  }
+
+  if (!sawFrame) {
+    throw new AiResponseError(`${config.providerLabel} 没有返回任何流式内容。`);
+  }
+  if (finishReason === "length") {
+    throw new AiResponseError(`${config.providerLabel} 输出被截断，请重试本轮。`);
+  }
+  if (!content.trim()) {
+    throw new AiResponseError(`${config.providerLabel} 没有返回剧情内容。`);
+  }
+
+  return {
+    content: parseJsonObject(content, config.providerLabel),
+    model: returnedModel ?? config.model,
+    usage,
+  };
+}
+
+function requestErrorFromResponse(
+  config: ResolvedAiProviderConfig,
+  status: number,
+  body: unknown,
+) {
+  const providerMessage = safeProviderMessage(
+    readProviderMessage(body),
+    config.apiKey,
+  );
+  let message = `${config.providerLabel} 请求失败，请稍后重试。`;
+  if (status === 401 || status === 403) {
+    message = `${config.providerLabel} API Key 无效、已失效或权限不足。`;
+  }
+  if (status === 402) {
+    message = `${config.providerLabel} 账户余额不足。`;
+  }
+  if (status === 429) {
+    message = `${config.providerLabel} 请求过于频繁，请稍后重试。`;
+  }
+  if (status >= 500) {
+    message = `${config.providerLabel} 服务暂时不可用，请稍后重试。`;
+  }
+  return new AiRequestError(
+    providerMessage ? `${message}（${providerMessage}）` : message,
+    status,
+  );
+}
+
 export async function requestAiJson(
   messages: AiMessage[],
   options: AiRequestOptions = {},
@@ -399,27 +568,7 @@ export async function requestAiJson(
   }
 
   if (!response.ok) {
-    const providerMessage = safeProviderMessage(
-      readProviderMessage(body),
-      config.apiKey,
-    );
-    let message = `${config.providerLabel} 请求失败，请稍后重试。`;
-    if (response.status === 401 || response.status === 403) {
-      message = `${config.providerLabel} API Key 无效、已失效或权限不足。`;
-    }
-    if (response.status === 402) {
-      message = `${config.providerLabel} 账户余额不足。`;
-    }
-    if (response.status === 429) {
-      message = `${config.providerLabel} 请求过于频繁，请稍后重试。`;
-    }
-    if (response.status >= 500) {
-      message = `${config.providerLabel} 服务暂时不可用，请稍后重试。`;
-    }
-    throw new AiRequestError(
-      providerMessage ? `${message}（${providerMessage}）` : message,
-      response.status,
-    );
+    throw requestErrorFromResponse(config, response.status, body);
   }
 
   if (!isRecord(body) || !Array.isArray(body.choices)) {

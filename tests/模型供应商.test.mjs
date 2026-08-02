@@ -5,13 +5,17 @@ import path from "node:path";
 import test from "node:test";
 import {
   AiConfigurationError,
+  AiRequestError,
+  AiResponseError,
   getAiProviderStatus,
   requestAiJson,
+  requestAiJsonStream,
 } from "../lib/ai/模型供应商.ts";
 import {
   auditAiProvider,
   discoverAiModels,
 } from "../lib/ai/模型可用性.ts";
+import { generateWithProfileFailover } from "../lib/story/回合服务.ts";
 import {
   deleteAiProviderConfig,
   listAiProfiles,
@@ -507,6 +511,146 @@ test("multiple API profiles can be saved, activated, and deleted", async () => {
     const configSource = await readFile(configFile, "utf8");
     assert.match(configSource, /^AI_PROVIDER=local_openai_compatible$/m);
     assert.match(configSource, /^AI_API_KEY=local-secret$/m);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+    restoreEnvironment();
+  }
+});
+
+test("streaming request parses SSE deltas and accumulates JSON content", async () => {
+  const streamChunks = [
+    'data: {"id":"1","model":"deepseek-v4-flash","choices":[{"delta":{"content":"{\\"status\\":"}}]}\n\n',
+    'data: {"id":"2","model":"deepseek-v4-flash","choices":[{"delta":{"content":"\\"ok\\"}"}}]}\n\n',
+    'data: {"id":"3","model":"deepseek-v4-flash","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+    'data: [DONE]\n\n',
+  ];
+  const deltas = [];
+  const result = await requestAiJsonStream([{ role: "user", content: "测试" }], {
+    config: {
+      provider: "opencode_go",
+      baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+      model: "deepseek-v4-flash",
+      apiKey: "go-secret",
+      jsonMode: "response_format",
+    },
+    fetchImplementation: async () =>
+      new Response(streamChunks.join(""), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    onDelta: (text) => deltas.push(text),
+  });
+
+  assert.deepEqual(deltas, ['{"status":', '"ok"}']);
+  assert.deepEqual(result.content, { status: "ok" });
+  assert.equal(result.model, "deepseek-v4-flash");
+});
+
+test("streaming request rejects truncated or empty responses", async () => {
+  const truncated = [
+    'data: {"id":"1","model":"m","choices":[{"delta":{"content":"partial"}}]}\n\n',
+    'data: {"id":"2","model":"m","choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+    'data: [DONE]\n\n',
+  ];
+  await assert.rejects(
+    requestAiJsonStream([{ role: "user", content: "测试" }], {
+      config: {
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        apiKey: "go-secret",
+        jsonMode: "response_format",
+      },
+      fetchImplementation: async () =>
+        new Response(truncated.join(""), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    }),
+    (error) =>
+      error instanceof AiResponseError && error.message.includes("截断"),
+  );
+
+  await assert.rejects(
+    requestAiJsonStream([{ role: "user", content: "测试" }], {
+      config: {
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        apiKey: "go-secret",
+        jsonMode: "response_format",
+      },
+      fetchImplementation: async () =>
+        new Response("data: [DONE]\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    }),
+    (error) =>
+      error instanceof AiResponseError && error.message.includes("没有返回"),
+  );
+});
+
+test("generation falls back to alternate API profiles when the active one fails", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "ai-tavern-failover-"),
+  );
+  const configFile = path.join(temporaryDirectory, "模型.env");
+  const profilesFile = path.join(temporaryDirectory, "api-configs.json");
+  try {
+    process.env.AI_TAVERN_CONFIG_FILE = configFile;
+    process.env.AI_TAVERN_DATA_DIR = temporaryDirectory;
+    await saveAiProfile(
+      {
+        name: "备用 API",
+        provider: "opencode_go",
+        baseUrl: "https://backup.example/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "backup-secret",
+      },
+      { filePath: profilesFile },
+    );
+    await saveAiProfile(
+      {
+        name: "主用 API",
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "go-secret",
+      },
+      { filePath: profilesFile },
+    );
+
+    const requestedEndpoints = [];
+    const requestedKeys = [];
+    const failovers = [];
+    const result = await generateWithProfileFailover(
+      [{ role: "user", content: "返回 JSON" }],
+      {
+        fetchImplementation: async (url, init) => {
+          requestedEndpoints.push(String(url));
+          requestedKeys.push(init.headers.Authorization);
+          if (String(url).includes("opencode.ai")) {
+            throw new AiRequestError("服务暂时不可用", 503);
+          }
+          return Response.json({
+            model: "deepseek-v4-flash",
+            choices: [
+              { finish_reason: "stop", message: { content: '{"status":"ok"}' } },
+            ],
+          });
+        },
+        onFailover: (name) => failovers.push(name),
+      },
+    );
+
+    assert.deepEqual(result.content, { status: "ok" });
+    assert.deepEqual(failovers, ["备用 API"]);
+    assert.equal(requestedEndpoints.length, 2);
+    assert.match(requestedEndpoints[1], /backup\.example/);
+    assert.equal(requestedKeys[1], "Bearer backup-secret");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
     restoreEnvironment();
