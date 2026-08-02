@@ -44,7 +44,7 @@ OpenCode Go 的官方目录为 `https://opencode.ai/zen/go/v1/models`。其套�
 [`lib/ai/模型供应商.ts`](../lib/ai/模型供应商.ts) 统一调用兼容 OpenAI 格式的 `/chat/completions`；[`lib/ai/深度求索.ts`](../lib/ai/深度求索.ts) 仅保留旧代码导入兼容：
 
 - `AI_JSON_MODE=response_format` 时发送 `response_format: { "type": "json_object" }`；若供应商不支持该字段，可改为 `prompt_only`，仅依靠系统提示要求 JSON。
-- 只有 DeepSeek 预设发送 `thinking: { "type": "disabled" }`；通用兼容服务不会收到供应商专属字段。
+- 只有 DeepSeek 与 OpenCode Go 预设发送 `thinking: { "type": "disabled" }`（OpenCode Go 的 DeepSeek/Kimi 推理模型会先输出思维链，占满输出预算导致空回复或截断）；其他通用兼容服务不会收到供应商专属字段。
 - 默认最长等待 90 秒。
 - 不使用流式输出；完整结果校验通过后一次显示。
 - 远程接口必须使用 HTTPS；只允许本机兼容服务使用 HTTP。

@@ -353,7 +353,7 @@ export async function requestAiJson(
   if (config.jsonMode === "response_format") {
     requestBody.response_format = { type: "json_object" };
   }
-  if (config.provider === "deepseek") {
+  if (config.provider === "deepseek" || config.provider === "opencode_go") {
     requestBody.thinking = { type: "disabled" };
   }
 

@@ -159,6 +159,38 @@ test("OpenCode Go automatically reads and classifies the plan model catalog", as
   );
 });
 
+test("OpenCode Go generation requests disable reasoning to avoid truncation", async () => {
+  let capturedRequest;
+  const result = await requestAiJson(
+    [{ role: "user", content: "返回 JSON" }],
+    {
+      config: {
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        apiKey: "go-secret",
+        jsonMode: "response_format",
+      },
+      fetchImplementation: async (url, init) => {
+        capturedRequest = { url, init, body: JSON.parse(init.body) };
+        return Response.json({
+          model: "deepseek-v4-flash",
+          choices: [
+            { finish_reason: "stop", message: { content: '{"status":"ok"}' } },
+          ],
+        });
+      },
+    },
+  );
+
+  assert.equal(
+    capturedRequest.url,
+    "https://opencode.ai/zen/go/v1/chat/completions",
+  );
+  assert.deepEqual(capturedRequest.body.thinking, { type: "disabled" });
+  assert.equal(result.content.status, "ok");
+});
+
 test("model discovery derives /models from a complete chat endpoint", async () => {
   let capturedUrl;
   await discoverAiModels({
