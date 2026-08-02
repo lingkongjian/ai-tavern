@@ -15,6 +15,8 @@
 5. 只把本地 `github-main` 推送为远端 `main`，不要使用 `git push --all`、`git push --mirror` 或推送本地私有 `main`。
 6. 推送后在 GitHub 网页重新检查仓库文件列表、提交历史、Actions 日志和 Release 附件。
 
+公开源码采用根目录 [`LICENSE`](../LICENSE) 中的 MIT License，项目元数据、README 和许可证文件应始终保持一致。
+
 远端地址尚未确定，因此本项目不会自动创建 `origin` 或执行任何网络推送。
 
 ## 必须保持为本地文件的内容

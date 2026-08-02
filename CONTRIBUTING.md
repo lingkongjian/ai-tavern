@@ -30,3 +30,5 @@ npm test
 ## 文档同步
 
 新功能需要同步更新 GitHub 首页、玩家操作手册及对应技术规范。文件流、导入格式或内部存储发生变化时，按 [`docs/FILE_LIFECYCLE.md`](docs/FILE_LIFECYCLE.md) 的文档责任表检查全部受影响文件。
+
+提交贡献即表示你同意以项目当前的 [MIT License](LICENSE) 发布该贡献。
