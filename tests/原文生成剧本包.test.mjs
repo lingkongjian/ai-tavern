@@ -129,6 +129,67 @@ test("从原文生成标准剧本包并原样内嵌本地参考正文", async ()
   assert.equal(capturedRequest.max_tokens, 12_000);
   assert.match(capturedRequest.messages[0].content, /untrusted|待分析文本/);
   assert.match(capturedRequest.messages[1].content, /雾城来信\.md/);
+  assert.match(capturedRequest.messages[0].content, /initialRelationships/);
+  assert.match(capturedRequest.messages[0].content, /locations/);
+  assert.match(capturedRequest.messages[0].content, /deadlineDay/);
+  assert.match(capturedRequest.messages[0].content, /双向记录/);
+  assert.match(capturedRequest.messages[0].content, /不要填 0/);
+});
+
+test("蓝图中的 deadlineDay 0 视为无期限且不报错", async () => {
+  const source = `# 第一章 雾城旧邮局\n\n${"雨点敲在邮局玻璃上，沈川看见林遥按住那封来自七日前的信。".repeat(15)}`;
+  const generated = await generateAdventureBundleFromSource(
+    { fileName: "雾城来信.md", content: source },
+    {
+      config: {
+        provider: "openai_compatible",
+        baseUrl: "https://models.example/v1",
+        model: "story-model",
+        apiKey: "secret",
+      },
+      fetchImplementation: async () =>
+        providerResponse(
+          blueprint({
+            storyModules: [
+              {
+                title: "核对来信",
+                objective: "查明第一封来信的来源。",
+                completionCriteria: ["找到信件进入邮局的可验证记录"],
+                activationConditions: [],
+                continuityNotes: "",
+                deadlineDay: 0,
+              },
+            ],
+            initialRelationships: [
+              {
+                sourceName: "沈川",
+                targetName: "林遥",
+                trust: 60,
+                affinity: 65,
+                respect: 50,
+                fear: 0,
+                hostility: 0,
+                summary: "旧识，重逢后相互试探。",
+              },
+            ],
+            locations: [
+              {
+                name: "旧邮局",
+                description: "雾城唯一的邮局，深夜仍亮着灯。",
+                characters: ["林遥"],
+                important: true,
+              },
+            ],
+          }),
+        ),
+    },
+  );
+  const modules = generated.preview.adventure.storyModules;
+  assert.equal(modules.length, 1);
+  assert.equal(Object.hasOwn(modules[0], "deadlineDay"), false);
+  assert.equal(generated.preview.adventure.initialRelationships.length, 1);
+  assert.equal(generated.preview.adventure.locations.length, 1);
+  assert.equal(generated.preview.adventure.locations[0].name, "旧邮局");
 });
 
 test("长原文只向供应商发送有章节标记的代表片段", () => {

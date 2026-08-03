@@ -431,6 +431,9 @@ function storyModuleSnapshotContent(module: AdventureStoryModuleInput) {
     `前置任务：${module.prerequisiteModuleIds?.join("、") || "（无）"}`,
     `连续性：${displayText(module.continuityNotes)}`,
     `自动接续：${module.autoContinue === false ? "否" : "是"}`,
+    ...(module.deadlineDay !== undefined && module.deadlineDay > 0
+      ? [`期限：第 ${module.deadlineDay} 日前完成`]
+      : []),
   ].join("\n");
 }
 

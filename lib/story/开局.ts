@@ -261,7 +261,7 @@ function readStoryModules(value: unknown, issues: string[]) {
         issues,
       ),
       autoContinue,
-      ...(item.deadlineDay !== undefined
+      ...(item.deadlineDay !== undefined && item.deadlineDay !== 0
         ? {
             deadlineDay: (() => {
               if (
