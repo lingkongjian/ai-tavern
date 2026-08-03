@@ -7147,6 +7147,35 @@ a {
   max-height: min(860px, calc(100vh - 48px));
 }
 
+.location-map-cards {
+  margin-top: 16px;
+  padding: 15px 16px;
+  border: 1px solid rgb(111 148 132 / 22%);
+  border-radius: 4px;
+  background: rgb(21 42 34 / 20%);
+}
+
+.location-map-cards > header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.location-map-cards > header strong {
+  color: #b8c9be;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.location-map-cards > header small {
+  color: #766d66;
+  font-size: 0.62rem;
+}
+
+.location-map-cards .map-location-list {
+  margin-top: 14px;
+}
+
 .map-manager > header p {
   color: #766d66;
   font-size: 0.7rem;

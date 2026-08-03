@@ -682,7 +682,6 @@ export function GameInterface({
     initialRecoveryPoints,
   );
   const [branchManagerOpen, setBranchManagerOpen] = useState(false);
-  const [mapOpen, setMapOpen] = useState(false);
   const [branchManagerError, setBranchManagerError] = useState("");
   const [branchBusyAction, setBranchBusyAction] = useState("");
   const [branchName, setBranchName] = useState("");
@@ -2390,18 +2389,25 @@ export function GameInterface({
         <div className="header-branch-actions">
           <button
             type="button"
-            onClick={() => setMapOpen(true)}
+            onClick={() => selectStoryWorkbenchTab("characters")}
           >
-            地图
-            <span>地点与人物位置</span>
+            人物
+            <span>角色卡与关系</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => selectStoryWorkbenchTab("locations")}
+          >
+            地点
+            <span>地图与人物位置</span>
           </button>
           <button
             className="story-workbench-launch"
             type="button"
-            onClick={() => selectStoryWorkbenchTab("characters")}
+            onClick={() => selectStoryWorkbenchTab("story_modules")}
           >
             编辑剧本
-            <span>人物、地点、任务、世界书与资料</span>
+            <span>任务、世界书、原文与记忆</span>
           </button>
           <button
             type="button"
@@ -4805,89 +4811,6 @@ export function GameInterface({
         </div>
       ) : null}
 
-      {mapOpen ? (
-        <div
-          className="character-manager-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setMapOpen(false);
-            }
-          }}
-        >
-          <section
-            className="character-manager story-workbench map-manager"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="map-manager-title"
-          >
-            <header>
-              <div>
-                <p className="eyebrow">世界地图 · 游戏内第 {gameTimeDay} 日</p>
-                <h2 id="map-manager-title">地点与人物位置</h2>
-                <p>
-                  {locations.length} 处地点 · {mapPresentCount} 名人物位置已知
-                  · 尚未登场或位置未知的人物不会显示。
-                </p>
-              </div>
-              <button
-                className="character-manager-close"
-                type="button"
-                aria-label="关闭地图"
-                onClick={() => setMapOpen(false)}
-              >
-                ×
-              </button>
-            </header>
-            {locations.length === 0 ? (
-              <p className="map-empty">还没有记录任何地点；剧情进入新地点后会自动建立。</p>
-            ) : (
-              <ul className="map-location-list">
-                {locations.map((location, index) => {
-                  const presentHere = charactersByLocation.get(location.id) ?? [];
-                  const isCurrent = location.id === currentLocationId;
-                  const description =
-                    location.description.length > 110
-                      ? `${location.description.slice(0, 110)}…`
-                      : location.description;
-                  return (
-                    <li
-                      key={location.id}
-                      className={isCurrent ? "current" : ""}
-                    >
-                      <div className="map-location-heading">
-                        <div className="map-location-name">
-                          <span className="map-location-index">
-                            {String(index + 1).padStart(2, "0")}
-                          </span>
-                          <strong>{location.name}</strong>
-                          {location.important ? (
-                            <em className="map-important">重要</em>
-                          ) : null}
-                          {isCurrent ? <em className="map-current">当前位置</em> : null}
-                        </div>
-                      </div>
-                      <p className="map-location-description">{description}</p>
-                      {presentHere.length > 0 ? (
-                        <div className="map-present-characters">
-                          {presentHere.map((name) => (
-                            <span key={name}>{name}</span>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="map-present-characters empty">
-                          <span>暂无人物在此</span>
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-        </div>
-      ) : null}
-
       {characterManagerOpen ? (
         <div
           className="character-manager-backdrop"
@@ -5549,6 +5472,63 @@ export function GameInterface({
                 ＋ 新增地点
               </button>
             </div>
+
+            {locations.length > 0 ? (
+              <section className="location-map-cards" aria-labelledby="location-map-title">
+                <header>
+                  <div>
+                    <strong id="location-map-title">
+                      世界地图 · 游戏内第 {gameTimeDay} 日
+                    </strong>
+                    <small>
+                      {locations.length} 处地点 · {mapPresentCount} 名人物位置已知
+                      · 尚未登场或位置未知的人物不会显示。
+                    </small>
+                  </div>
+                </header>
+                <ul className="map-location-list">
+                  {locations.map((location, index) => {
+                    const presentHere = charactersByLocation.get(location.id) ?? [];
+                    const isCurrent = location.id === currentLocationId;
+                    const description =
+                      location.description.length > 110
+                        ? `${location.description.slice(0, 110)}…`
+                        : location.description;
+                    return (
+                      <li
+                        key={location.id}
+                        className={isCurrent ? "current" : ""}
+                      >
+                        <div className="map-location-heading">
+                          <div className="map-location-name">
+                            <span className="map-location-index">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <strong>{location.name}</strong>
+                            {location.important ? (
+                              <em className="map-important">重要</em>
+                            ) : null}
+                            {isCurrent ? <em className="map-current">当前位置</em> : null}
+                          </div>
+                        </div>
+                        <p className="map-location-description">{description}</p>
+                        {presentHere.length > 0 ? (
+                          <div className="map-present-characters">
+                            {presentHere.map((name) => (
+                              <span key={name}>{name}</span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="map-present-characters empty">
+                            <span>暂无人物在此</span>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ) : null}
 
             {locationManagerError ? (
               <div className="character-manager-error" role="alert">
