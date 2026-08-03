@@ -3,6 +3,11 @@ import type {
   JsonValue,
   LoadedAdventure,
 } from "../storage/story-store.ts";
+import {
+  ATTRIBUTE_WHITELIST,
+  isAttributeName,
+  type AttributeName,
+} from "./判定服务.ts";
 
 export type RoleplayMode = "speech" | "action" | "mixed";
 
@@ -61,6 +66,30 @@ export interface GeneratedCharacterStateChange {
 }
 
 export type SceneTimeAdvance = "moment" | "hours" | "one_day" | "several_days";
+
+export interface GeneratedAttributeCheck {
+  id: string;
+  characterId: string;
+  attribute: AttributeName;
+  difficulty: number;
+  context: string;
+}
+
+export type GeneratedPlotThreadOperation = "seed" | "payoff";
+
+export interface GeneratedPlotThreadUpdate {
+  threadId: string;
+  operation: GeneratedPlotThreadOperation;
+  reason: string;
+  evidence: string[];
+}
+
+export interface GeneratedPlotTriggerUpdate {
+  triggerId: string;
+  operation: "fire";
+  reason: string;
+  evidence: string[];
+}
 
 export interface GeneratedSceneTransition {
   locationId: string;
@@ -134,6 +163,7 @@ export interface ValidatedGeneratedTurn {
     events: GeneratedEvent[];
     dialogue: GeneratedDialogue[];
   };
+  attributeChecks: GeneratedAttributeCheck[];
   decision: {
     context: "proposal_response" | "action_direction";
     prompt: string;
@@ -145,6 +175,8 @@ export interface ValidatedGeneratedTurn {
     relationshipChanges: GeneratedRelationshipChange[];
     characterCardChanges: GeneratedCharacterCardChange[];
     worldBookChanges: GeneratedWorldBookChange[];
+    plotThreadUpdates: GeneratedPlotThreadUpdate[];
+    plotTriggerUpdates: GeneratedPlotTriggerUpdate[];
     storyDirectionEvaluation: {
       status: "active" | "completed";
       reason: string;
@@ -195,6 +227,10 @@ export class RegenerateTurnInputError extends Error {
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readString(value: JsonValue | undefined) {
+  return typeof value === "string" ? value : "";
 }
 
 export function normalizeGeneratedTurnVersion(value: JsonObject): JsonObject {
@@ -539,6 +575,73 @@ export function validateGeneratedTurn(
   eventIds.forEach((id) => knownEvidenceIds.add(id));
   dialogueIds.forEach((id) => knownEvidenceIds.add(id));
 
+  const attributeCheckIds = new Set<string>();
+  const attributeChecks = (() => {
+    if (value.attributeChecks === undefined) return [];
+    if (!Array.isArray(value.attributeChecks)) {
+      issues.push("attributeChecks 必须是数组。");
+      return [];
+    }
+    if (value.attributeChecks.length > 4) {
+      issues.push("每轮最多提议 4 项属性判定。");
+    }
+    return value.attributeChecks.slice(0, 4).map(
+      (item, index): GeneratedAttributeCheck => {
+        const check = requiredObject(item, `attributeChecks[${index}]`, issues);
+        const checkId = requiredText(
+          check.id,
+          `attributeChecks[${index}].id`,
+          issues,
+          160,
+        );
+        if (attributeCheckIds.has(checkId)) {
+          issues.push(`属性判定 ID ${checkId} 重复。`);
+        }
+        attributeCheckIds.add(checkId);
+        const characterId = requiredText(
+          check.characterId,
+          `attributeChecks[${index}].characterId`,
+          issues,
+          160,
+        );
+        if (characterId && !characterIds.has(characterId)) {
+          issues.push(`属性判定引用了不存在的角色 ${characterId}。`);
+        }
+        const attribute = trimText(check.attribute, 80);
+        if (!isAttributeName(attribute)) {
+          issues.push(
+            `属性判定 ${checkId} 的属性“${attribute}”不在白名单中（允许：${ATTRIBUTE_WHITELIST.join("、")}）。`,
+          );
+        }
+        const difficulty =
+          typeof check.difficulty === "number" ? check.difficulty : Number.NaN;
+        if (
+          !Number.isInteger(difficulty) ||
+          difficulty < 1 ||
+          difficulty > 100
+        ) {
+          issues.push(
+            `属性判定 ${checkId} 的难度必须是 1 到 100 之间的整数。`,
+          );
+        }
+        return {
+          id: checkId,
+          characterId,
+          attribute: isAttributeName(attribute)
+            ? attribute
+            : ATTRIBUTE_WHITELIST[0],
+          difficulty: Number.isInteger(difficulty) ? difficulty : 50,
+          context: requiredText(
+            check.context,
+            `attributeChecks[${index}].context`,
+            issues,
+            500,
+          ),
+        };
+      },
+    );
+  })();
+
   const decisionObject = requiredObject(value.decision, "decision", issues);
   const context = oneOf(
     decisionObject.context,
@@ -775,6 +878,33 @@ export function validateGeneratedTurn(
         "人物进出场和所在地点必须写入 sceneTransition，不能写入普通角色状态补丁。",
       );
     }
+    if (patch.attributes !== undefined) {
+      if (!isObject(patch.attributes)) {
+        issues.push(
+          `角色状态补丁的 attributes 必须是对象，且只能包含白名单属性。`,
+        );
+      } else {
+        for (const [attributeName, attributeValue] of Object.entries(
+          patch.attributes,
+        )) {
+          if (!isAttributeName(attributeName)) {
+            issues.push(
+              `角色状态补丁的属性“${attributeName}”不在白名单中（允许：${ATTRIBUTE_WHITELIST.join("、")}）。`,
+            );
+          }
+          if (
+            typeof attributeValue !== "number" ||
+            !Number.isFinite(attributeValue) ||
+            attributeValue < 0 ||
+            attributeValue > 100
+          ) {
+            issues.push(
+              `角色状态补丁的属性“${attributeName}”必须是 0 到 100 之间的数值。`,
+            );
+          }
+        }
+      }
+    }
     return {
       characterId,
       patch,
@@ -994,6 +1124,136 @@ export function validateGeneratedTurn(
     return { operation, targetEntryId, ...common };
   });
 
+  const plotThreadStates = adventure.branchState.states.filter(
+    (state) => state.entityType === "plot_thread",
+  );
+  const plotThreadById = new Map(
+    plotThreadStates.map((state) => [readString(state.state.threadId), state]),
+  );
+  const plotThreadUpdates = (() => {
+    if (stateCommit.plotThreadUpdates === undefined) return [];
+    if (!Array.isArray(stateCommit.plotThreadUpdates)) {
+      issues.push("stateCommit.plotThreadUpdates 必须是数组。");
+      return [];
+    }
+    if (stateCommit.plotThreadUpdates.length > 10) {
+      issues.push("每轮最多报告 10 项伏笔变化。");
+    }
+    return stateCommit.plotThreadUpdates.slice(0, 10).map(
+      (item, index): GeneratedPlotThreadUpdate => {
+        const update = requiredObject(
+          item,
+          `stateCommit.plotThreadUpdates[${index}]`,
+          issues,
+        );
+        const threadId = requiredText(
+          update.threadId,
+          `stateCommit.plotThreadUpdates[${index}].threadId`,
+          issues,
+          160,
+        );
+        const operation = oneOf(
+          update.operation,
+          ["seed", "payoff"] as const,
+          `stateCommit.plotThreadUpdates[${index}].operation`,
+          issues,
+        );
+        const threadState = plotThreadById.get(threadId);
+        if (threadId && !threadState) {
+          issues.push(`伏笔变化引用了不存在的伏笔 ${threadId}。`);
+        } else if (threadState && threadState.isActive) {
+          const currentStatus = readString(threadState.state.status);
+          if (operation === "seed" && currentStatus !== "dormant") {
+            issues.push(
+              `伏笔 ${threadId} 的种子条件已经在之前的回合满足，不能再次报告 seed。`,
+            );
+          }
+          if (operation === "payoff" && currentStatus !== "seeded") {
+            issues.push(
+              `伏笔 ${threadId} 尚未激活，不能直接报告 payoff。`,
+            );
+          }
+        }
+        return {
+          threadId,
+          operation,
+          reason: requiredText(
+            update.reason,
+            `stateCommit.plotThreadUpdates[${index}].reason`,
+            issues,
+            1_000,
+          ),
+          evidence: readEvidence(
+            update.evidence,
+            `stateCommit.plotThreadUpdates[${index}].evidence`,
+            knownEvidenceIds,
+            issues,
+          ),
+        };
+      },
+    );
+  })();
+
+  const plotTriggerStates = adventure.branchState.states.filter(
+    (state) => state.entityType === "plot_trigger",
+  );
+  const plotTriggerById = new Map(
+    plotTriggerStates.map((state) => [readString(state.state.triggerId), state]),
+  );
+  const plotTriggerUpdates = (() => {
+    if (stateCommit.plotTriggerUpdates === undefined) return [];
+    if (!Array.isArray(stateCommit.plotTriggerUpdates)) {
+      issues.push("stateCommit.plotTriggerUpdates 必须是数组。");
+      return [];
+    }
+    if (stateCommit.plotTriggerUpdates.length > 10) {
+      issues.push("每轮最多报告 10 个触发器变化。");
+    }
+    return stateCommit.plotTriggerUpdates.slice(0, 10).map(
+      (item, index): GeneratedPlotTriggerUpdate => {
+        const update = requiredObject(
+          item,
+          `stateCommit.plotTriggerUpdates[${index}]`,
+          issues,
+        );
+        const triggerId = requiredText(
+          update.triggerId,
+          `stateCommit.plotTriggerUpdates[${index}].triggerId`,
+          issues,
+          160,
+        );
+        const operation = oneOf(
+          update.operation,
+          ["fire"] as const,
+          `stateCommit.plotTriggerUpdates[${index}].operation`,
+          issues,
+        );
+        const triggerState = plotTriggerById.get(triggerId);
+        if (triggerId && !triggerState) {
+          issues.push(`触发器变化引用了不存在的触发器 ${triggerId}。`);
+        } else if (triggerState && readString(triggerState.state.status) === "fired") {
+          issues.push(`触发器 ${triggerId} 已经触发，不能重复触发。`);
+        }
+        return {
+          triggerId,
+          operation,
+          reason: requiredText(
+            update.reason,
+            `stateCommit.plotTriggerUpdates[${index}].reason`,
+            issues,
+            1_000,
+          ),
+          evidence: readEvidence(
+            update.evidence,
+            `stateCommit.plotTriggerUpdates[${index}].evidence`,
+            knownEvidenceIds,
+            issues,
+          ),
+        };
+      },
+    );
+  })();
+
   let storyDirectionEvaluation: ValidatedGeneratedTurn["stateCommit"]["storyDirectionEvaluation"] = null;
   if (stateCommit.storyDirectionEvaluation !== null) {
     const evaluation = requiredObject(
@@ -1199,6 +1459,7 @@ export function validateGeneratedTurn(
           }
         : value,
     turn: { scene, events, dialogue },
+    attributeChecks,
     decision: {
       context,
       prompt: decisionPrompt,
@@ -1210,6 +1471,8 @@ export function validateGeneratedTurn(
       relationshipChanges,
       characterCardChanges,
       worldBookChanges,
+      plotThreadUpdates,
+      plotTriggerUpdates,
       storyDirectionEvaluation,
       summaryPatch,
     },

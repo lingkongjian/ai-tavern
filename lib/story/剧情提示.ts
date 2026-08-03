@@ -236,8 +236,54 @@ export function createStoryGenerationPrompt(input: {
     typeof sessionState?.state.gameTimeDay === "number"
       ? sessionState.state.gameTimeDay
       : 1;
-  const expiredDeadlines = storyModules
+  const plotThreadStates = usableStateRecords.filter(
+    (state) => state.entityType === "plot_thread",
+  );
+  const seededThreads = plotThreadStates.filter(
+    (state) => readText(state.state.status) === "seeded",
+  );
+  const relevantDormantThreads = plotThreadStates.filter((state) => {
+    if (readText(state.state.status) !== "dormant") return false;
+    const keywords = readArray(state.state.keywords)
+      .filter((item): item is string => typeof item === "string")
+      .join(" ");
+    return extractMemoryTerms(keywords).some((term) => queryTerms.has(term));
+  });
+  const plotThreadsForGeneration = [...seededThreads, ...relevantDormantThreads]
+    .map((state) => ({
+      threadId: readText(state.state.threadId),
+      status: readText(state.state.status),
+      keywords: readArray(state.state.keywords)
+        .filter((item): item is string => typeof item === "string")
+        .slice(0, 12),
+      seedCondition: readText(state.state.seedCondition).slice(0, 500),
+      payoffCondition: readText(state.state.payoffCondition).slice(0, 500),
+      payoffSummary: readText(state.state.payoffSummary).slice(0, 1_000),
+      characterNames: readArray(state.state.characters)
+        .filter((item): item is string => typeof item === "string")
+        .slice(0, 8),
+    }))
+    .slice(0, 12);
+  const plotTriggersForGeneration = usableStateRecords
     .filter(
+      (state) =>
+        state.entityType === "plot_trigger" &&
+        readText(state.state.status) !== "fired",
+    )
+    .map((state) => ({
+      triggerId: readText(state.state.triggerId),
+      when: readText(state.state.when).slice(0, 500),
+      consequence: readText(state.state.consequence).slice(0, 1_000),
+      deadlineDay:
+        typeof state.state.deadlineDay === "number"
+          ? state.state.deadlineDay
+          : null,
+      deadlineExpired:
+        typeof state.state.deadlineDay === "number" &&
+        state.state.deadlineDay <= gameTimeDay,
+    }))
+    .slice(0, 12);
+  const expiredDeadlines = storyModules.filter(
       (module) =>
         module.status === "active" &&
         module.deadlineDay !== null &&
@@ -314,6 +360,22 @@ export function createStoryGenerationPrompt(input: {
       ) {
         priority += 750;
       }
+      if (state.entityType === "plot_thread") {
+        const threadKeywords = readArray(state.state.keywords)
+          .filter((item): item is string => typeof item === "string")
+          .join(" ");
+        const threadRelevant = extractMemoryTerms(threadKeywords).some((term) =>
+          queryTerms.has(term),
+        );
+        if (readText(state.state.status) === "seeded") {
+          priority += 600;
+        } else if (threadRelevant) {
+          priority += 400;
+        }
+      }
+      if (state.entityType === "plot_trigger") {
+        priority += 350;
+      }
       if (state.entityType === "world_book_entry" && state.state.constant === true) {
         priority += 700;
       }
@@ -388,6 +450,9 @@ ${
 19. 剧本一致性属于硬约束。AI 控制角色提出会显著改变主线的治疗、解封、调查、营救、交易、作战或制度方案时，必须能在已发生事实、当前剧情任务、世界书、角色资料、sourceReferences 或 upcomingScriptGuidance 中找到具体依据。若后续剧本锚点已有明确方案，优先保持其核心机制，不得自行发明替代方案；若所有资料都没有依据，角色只能提出核验、试探或调查步骤，不能把臆测包装成确定可行的完整方案。
 20. 剧情必须推进：scene 是对本轮的叙述，不得复述或改写 recentTurns 中上一回合已经展示过的场景、动作或结论。若当前输入主要是在同一情境中继续对话或行动，scene 仍应只写本轮新发生的事实和新的进展，而不是重述背景或重放上一轮的事件；与上一回合场景高度重复的续写会被后端判定为无效并要求重写。
 21. expiredDeadlines 中的任务已经超过其期限（deadlineDay 已到），这是导演级硬事实：本轮必须让期限后果在剧情中显现（中毒恶化、救援失败、约期已过、反派抢先等），并把结果写入事件、状态或世界书，不能再假装时间没有流逝。玩家仍保有回应权，但后果应真实可见。
+22. plotThreads 是剧本包预埋的伏笔，对 NPC 不可见。status=seeded 的伏笔已经埋下：若本轮剧情自然抵达其 payoffCondition 所描述的情形，必须回收该伏笔——在叙述中呈现 payoffSummary 的核心信息，并在 stateCommit.plotThreadUpdates 中报告 {"threadId":"...","operation":"payoff"}；不要提前泄露或跳过。status=dormant 且与本轮相关的伏笔：若本轮剧情满足了 seedCondition（如角色进入相关地点、遭遇相关人物或关键物件），把伏笔悄然埋入本轮叙述（保持含蓄，NPC 不应察觉其目的），并在 plotThreadUpdates 中报告 {"threadId":"...","operation":"seed"}。
+23. plotTriggers 是剧本包预埋的偏离触发器，对 NPC 不可见。任何未触发的触发器若其 when 条件在本轮剧情中得到满足，consequence 必须作为“意外阻碍”真实写入本轮事实（人物、场面、事件），不得因为后果严厉而回避、淡化或改期；同时在 stateCommit.plotTriggerUpdates 中报告 {"triggerId":"...","operation":"fire"}。deadlineExpired=true 的触发器期限已至，本轮必须让 consequence 显现并报告 fire。触发器声明的关系/属性/标志变化由系统在报告 fire 后强制应用，模型不得自行重复或改写这些数值。
+24. 属性判定：character_state.attributes 保存角色属性（力量/敏捷/感知/意志/魅力/智力/体质，0-100，未设定时按 50 计）。当玩家角色或在场角色进行有明显成败可能的关键行动（潜行、说服、对抗、搜索、拆解、战斗动作等）时，可以在顶层 attributeChecks 中提议判定：模型只提议“何时判、用什么属性、多难（1-100 整数）”，绝不自行写出判定结果。玩家掷骰后由系统确定性结算并把结果作为已发生事实回填本回合。每轮最多 4 项；角色属性随剧情变化通过 characterStateChanges 的 attributes 对象（0-100 绝对数值）更新。
 
 返回结构必须完整：
 {
@@ -404,14 +469,17 @@ ${
   },
   "stateCommit": {
     "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"one_day（或 moment/hours/several_days）","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
-    "characterStateChanges": [{"characterId":"角色ID","patch":{},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
+    "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60}},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
     "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"]}],
     "characterCardChanges": [{"characterId":"角色ID","operation":"add","path":"允许路径","value":{},"reason":"原因","evidence":["事件或对话ID"],"sourceTurnId":"${turnId}"}],
     "worldBookChanges": [],
+    "plotThreadUpdates": [],
+    "plotTriggerUpdates": [],
     "storyDirectionEvaluation": {"status":"active 或 completed","reason":"评估原因","evidence":["完成时必须有证据"],"continuity":"aligned、diverged 或 uncertain","continuityReason":"与预埋剧本的连续性判定","recommendedModuleId":null,"suggestedNextDirection":null},
     "summaryPatch": "用于后续上下文的简短摘要"
   },
-  "warnings": []
+  "warnings": [],
+  "attributeChecks": []
 }
 
 worldBookChanges 按需使用以下结构之一：
@@ -419,7 +487,7 @@ worldBookChanges 按需使用以下结构之一：
 - update：{"operation":"update","targetEntryId":"现有条目ID","patch":{"content":"更新后的事实"},"sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 - deactivate：{"operation":"deactivate","targetEntryId":"现有条目ID","sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 
-没有某类变化时必须返回空数组。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
+没有某类变化时必须返回空数组。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
 
   const context: JsonObject = {
     nextTurnId: turnId,
@@ -443,6 +511,12 @@ worldBookChanges 按需使用以下结构之一：
     })),
     ...(expiredDeadlines.length > 0
       ? { expiredDeadlines, currentGameTimeDay: gameTimeDay }
+      : {}),
+    ...(plotThreadsForGeneration.length > 0
+      ? { plotThreads: plotThreadsForGeneration }
+      : {}),
+    ...(plotTriggersForGeneration.length > 0
+      ? { plotTriggers: plotTriggersForGeneration }
       : {}),
     activeStates,
     recentTurns: compactRecentTurns(
@@ -532,6 +606,7 @@ worldBookChanges 按需使用以下结构之一：
     ["剧本与会话", { campaign: context.campaign, session: context.session, branch: context.branch }],
     ["人物目录", context.characterDirectory],
     ["剧情任务", { modules: context.storyModules, progress: context.storyModuleProgress }],
+    ["伏笔与触发器", { threads: context.plotThreads ?? [], triggers: context.plotTriggers ?? [] }],
     ["当前状态", context.activeStates],
     ["近期回合", context.recentTurns],
     ["章节摘要", context.chapterSummaries],

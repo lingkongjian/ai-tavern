@@ -4,6 +4,8 @@ import {
   type ContentAssetManagementInput,
   LocalStoryStore,
   LocationManagementError,
+  PlotThreadManagementError,
+  PlotTriggerManagementError,
   StoryModuleManagementError,
   type StateAuditDashboard,
   WorldBookManagementError,
@@ -28,6 +30,11 @@ import {
   StoryModuleManagementInputError,
 } from "../story/剧情任务管理.ts";
 import {
+  parsePlotThreadManagementInput,
+  parsePlotTriggerManagementInput,
+  PlotElementManagementInputError,
+} from "../story/剧本元素管理.ts";
+import {
   parseWorldBookManagementInput,
   WorldBookManagementInputError,
 } from "../story/世界书管理.ts";
@@ -43,6 +50,8 @@ export type StoryContentDomain =
   | "locations"
   | "story_modules"
   | "world_book"
+  | "foreshadowing"
+  | "triggers"
   | "sources"
   | "memories";
 
@@ -93,6 +102,14 @@ type ParsedStoryContentCommand =
       input: ReturnType<typeof parseWorldBookManagementInput>;
     }
   | {
+      domain: "foreshadowing";
+      input: ReturnType<typeof parsePlotThreadManagementInput>;
+    }
+  | {
+      domain: "triggers";
+      input: ReturnType<typeof parsePlotTriggerManagementInput>;
+    }
+  | {
       domain: "sources" | "memories";
       input: ContentAssetManagementInput;
     };
@@ -102,6 +119,8 @@ const domains = new Set<StoryContentDomain>([
   "locations",
   "story_modules",
   "world_book",
+  "foreshadowing",
+  "triggers",
   "sources",
   "memories",
 ]);
@@ -315,6 +334,22 @@ export function parseStoryContentCommand(input: {
             value: { ...command, actionId },
           }),
         };
+      case "foreshadowing":
+        return {
+          domain: selectedDomain,
+          input: parsePlotThreadManagementInput({
+            sessionId: input.sessionId,
+            value: { ...command, actionId },
+          }),
+        };
+      case "triggers":
+        return {
+          domain: selectedDomain,
+          input: parsePlotTriggerManagementInput({
+            sessionId: input.sessionId,
+            value: { ...command, actionId },
+          }),
+        };
       case "world_book":
         return {
           domain: selectedDomain,
@@ -437,6 +472,7 @@ export function parseStoryContentCommand(input: {
       error instanceof CharacterManagementInputError ||
       error instanceof LocationManagementInputError ||
       error instanceof StoryModuleManagementInputError ||
+      error instanceof PlotElementManagementInputError ||
       error instanceof WorldBookManagementInputError ||
       error instanceof SourceReferenceInputError
     ) {
@@ -523,6 +559,28 @@ export function executeStoryContentCommand(input: {
       };
       break;
     }
+    case "foreshadowing": {
+      const managed = input.store.managePlotThread(command.input);
+      result = {
+        actionId: managed.actionId,
+        domain: command.domain,
+        operation: managed.operation,
+        targetId: managed.threadId,
+        reused: managed.reused,
+      };
+      break;
+    }
+    case "triggers": {
+      const managed = input.store.managePlotTrigger(command.input);
+      result = {
+        actionId: managed.actionId,
+        domain: command.domain,
+        operation: managed.operation,
+        targetId: managed.triggerId,
+        reused: managed.reused,
+      };
+      break;
+    }
     case "world_book": {
       const managed = input.store.manageWorldBook(command.input);
       result = {
@@ -560,6 +618,8 @@ export function isStoryContentManagementError(error: unknown) {
     error instanceof CharacterManagementError ||
     error instanceof LocationManagementError ||
     error instanceof StoryModuleManagementError ||
+    error instanceof PlotThreadManagementError ||
+    error instanceof PlotTriggerManagementError ||
     error instanceof WorldBookManagementError ||
     error instanceof ContentAssetManagementError ||
     error instanceof SourceReferenceInputError

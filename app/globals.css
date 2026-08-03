@@ -7312,3 +7312,159 @@ a {
     transition-duration: 0.01ms !important;
   }
 }
+
+.bad-end-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid rgb(196 84 78 / 55%);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgb(84 22 22 / 72%), rgb(58 15 18 / 78%));
+  color: #f3c9c3;
+}
+
+.bad-end-banner > strong {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid rgb(226 122 110 / 60%);
+  border-radius: 3px;
+  color: #f6d5cd;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.bad-end-banner > span {
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.dice-panel {
+  max-width: 520px;
+}
+
+.dice-panel-hint {
+  margin: 0 0 14px;
+  color: #887486;
+  font-size: 0.66rem;
+  line-height: 1.6;
+}
+
+.dice-check-list {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.dice-check-item {
+  padding: 12px 14px;
+  border: 1px solid rgb(148 102 151 / 26%);
+  border-radius: 4px;
+  background: rgb(148 102 151 / 7%);
+}
+
+.dice-check-item > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dice-check-item > header strong {
+  color: #e9d9e6;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.dice-check-item > header span {
+  color: #b395b2;
+  font-size: 0.66rem;
+}
+
+.dice-check-item > p {
+  margin: 8px 0;
+  color: #9c899a;
+  font-size: 0.66rem;
+  line-height: 1.6;
+}
+
+.dice-check-item > footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dice-roll {
+  color: #e9d9e6;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dice-verdict {
+  color: #b395b2;
+  font-size: 0.68rem;
+}
+
+.dice-verdict.dice-direct {
+  color: #d3b06b;
+}
+
+.dice-roll-button {
+  margin-left: auto;
+  padding: 6px 14px;
+  border: 1px solid rgb(195 143 190 / 45%);
+  border-radius: 3px;
+  background: rgb(195 143 190 / 12%);
+  color: #e9d9e6;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.dice-roll-button:hover:not(:disabled) {
+  background: rgb(195 143 190 / 22%);
+}
+
+.dice-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.dice-skip-button {
+  padding: 8px 14px;
+  border: 1px solid rgb(148 102 151 / 32%);
+  border-radius: 3px;
+  background: transparent;
+  color: #a08b9e;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.dice-confirm-button {
+  padding: 8px 18px;
+  border: 1px solid rgb(195 143 190 / 60%);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgb(195 143 190 / 26%), rgb(148 102 151 / 20%));
+  color: #f1e3ee;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dice-confirm-button:disabled,
+.dice-skip-button:disabled,
+.dice-roll-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.story-task-locked {
+  color: #8b7587;
+  font-size: 0.62rem;
+}

@@ -188,14 +188,17 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
     "relationshipChanges": [],
     "characterCardChanges": [],
     "worldBookChanges": [],
+    "plotThreadUpdates": [],
+    "plotTriggerUpdates": [],
     "storyDirectionEvaluation": null,
     "summaryPatch": ""
   },
-  "warnings": []
+  "warnings": [],
+  "attributeChecks": []
 }
 ```
 
-所有变化数组都允许为空。没有变化时必须返回空数组，不得编造无意义修改。
+所有变化数组都允许为空。没有变化时必须返回空数组，不得编造无意义修改。`attributeChecks` 是可选字段：没有属性判定时不返回该字段。
 
 ## 6. 剧情和对话生成
 
@@ -285,6 +288,10 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 如果角色死亡或失去行动能力，必须同步更新其状态。人物加入、离场和地点变化统一通过 `sceneTransition` 提交。
 
+### 10.1 角色属性（attributes）
+
+`character_state.attributes` 保存角色属性（0-100），白名单为：力量、敏捷、感知、意志、魅力、智力、体质。事件驱动的属性变化通过 `characterStateChanges` 的 `attributes` 对象写入最终数值（0-100）；后端校验白名单与范围，越界值会被拒绝或钳制。属性未设定时按 50 计。
+
 ## 11. 角色卡演化变更
 
 角色卡变更必须满足“已经发生、影响长期扮演、不是短期状态”三个条件。
@@ -348,6 +355,45 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 剧情走向完成时不一定修改角色卡或世界书；是否修改取决于完成它的事件是否产生了角色长期变化或持久世界事实。
 
+### 13.1 伏笔（plot_thread）生命周期
+
+剧本包可通过 `adventure.foreshadowing` 声明伏笔（`id`、`keywords`、`seedCondition`、`payoffCondition`、`payoffSummary`，可选 `characters`）。开局物化为 `plot_thread` 实体，状态为 `dormant`：
+
+- **埋设（seed）**：当本轮剧情自然满足某伏笔的 `seedCondition`（如角色进入相关地点、遭遇相关人物或关键物件），模型把伏笔含蓄地埋入叙述（NPC 不应察觉其目的），并在 `stateCommit.plotThreadUpdates` 中报告 `{"threadId": "...", "operation": "seed"}`；后端把状态改为 `seeded` 并记录 `seededAtTurnId`。
+- **进入上下文**：已埋设的伏笔获得高优先级，与当前输入相关的未埋设伏笔也按关键词相关度进入上下文（`rankedStates` 权重加成）；提示词中的 `plotThreads` 分区携带 `payoffCondition` 与 `payoffSummary`。
+- **回收（payoff）**：当剧情自然抵达某伏笔的 `payoffCondition` 时，模型必须在叙述中呈现 `payoffSummary` 的核心信息，并在 `plotThreadUpdates` 中报告 `operation: "payoff"`；后端把状态改为 `paid_off` 并记录 `paidOffAtTurnId`。不得提前泄露或把尚未回收的伏笔当成既定事实。
+- 校验规则：`seed` 只允许 `dormant` 状态，`payoff` 只允许 `seeded` 状态；`threadId` 必须存在；`evidence` 必须引用真实事件或对话。
+
+### 13.2 偏离触发器（plot_trigger）生命周期
+
+剧本包可通过 `adventure.triggers` 声明偏离触发器（`id`、`when`、`consequence`，可选 `stateEffects` 与 `deadline`）。开局物化为 `plot_trigger` 实体，状态为 `armed`：
+
+- **触发（fire）**：当本轮剧情满足某触发器的 `when` 条件时，`consequence` 必须作为“意外阻碍”真实写入本轮事实（不得因为后果严厉而回避或淡化），并在 `stateCommit.plotTriggerUpdates` 中报告 `{"triggerId": "...", "operation": "fire"}`；后端把状态改为 `fired` 并记录 `firedAtTurnId`。
+- **强制状态影响**：`stateEffects` 由系统在报告 `fire` 后确定性应用：`relations` 按角色姓名调整关系值（trust/affection/fear/hostility/respect，-100 ~ 100）；`attributes` 直接设定角色属性（白名单 0-100）；`flags` 中的 `bad_end` 在会话状态置位 `badEnd`，游戏页显示“结局警示”横幅。模型不得自行改写这些数值。
+- **期限（deadline）**：`deadline` 表示最迟必须在游戏内第几天前生效；超过期限后系统在回合提交时强制触发（`fireReason` 记录“期限已至”），后果与状态影响照常应用。
+- 校验规则：已 `fired` 的触发器不能重复触发；`triggerId` 必须存在；`evidence` 必须引用真实事件或对话。
+
+### 13.3 属性判定（attributeChecks）与骰子结算
+
+当玩家角色或在场角色进行有明显成败可能的关键行动（潜行、说服、对抗、搜索、拆解、战斗动作等）时，模型可以在输出顶层提议属性判定：
+
+```json
+"attributeChecks": [{
+  "id": "check-1",
+  "characterId": "character-id",
+  "attribute": "敏捷",
+  "difficulty": 70,
+  "context": "在不惊动守卫的情况下撬开旧锁"
+}]
+```
+
+- 模型只提议“何时判、用什么属性、多难”，**不自行写出判定结果**；每轮最多 4 项，属性必须是白名单内名称，难度必须是 1-100 整数。
+- 回合生成结果含判定请求时**不立即落库**：回合进入待确认草稿（`pending_turns`），分支头保持不变，界面弹出“属性 vs 难度 + 骰子”面板。
+- 玩家掷骰（可重掷）并确认后，后端 `lib/story/判定服务.ts` 确定性结算：`|属性−难度| ≥ 30` 时实力悬殊直接判定（成功/失败，无需掷骰）；否则按 `最终值 = 属性 + d100 × 30%` 与难度比较，`最终值 ≥ 难度` 为成功，`最终值 ≥ 难度 − 10` 为部分成功，否则失败。
+- 结算结果作为已发生事实事件（`attribute-check:<checkId>`）回填该回合，追加一条叙述消息，并把判定记录物化为 `plot_check` 状态实体进入状态审计（可在历史回看中查看）；不重新生成叙述。
+- 玩家可以跳过全部判定（记为“放弃判定”），回合仍会提交。重复确认按幂等处理；分支头变化后确认会返回冲突错误。
+- 角色属性随剧情变化通过 `characterStateChanges` 的 `attributes` 对象更新（0-100 绝对数值，白名单校验）。
+
 ## 14. 变化归类规则
 
 | 变化 | 保存位置 | 示例 |
@@ -361,7 +407,7 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 剧本包可以通过 `adventure.initialRelationships` 声明开局关系基线（按角色姓名引用，各维度 -100 到 100），开局时建立对应关系状态；未声明的角色关系保持中性（0）并标记“关系尚未建立”。
 
-剧本包可以通过 `adventure.locations` 预注册剧本中可能出现的地点（名称、描述、常驻角色与重要性标记），开局即建立地点实体；未预注册的地点仍可在剧情中动态建立。`adventure.storyModules` 中的任务可以声明 `deadlineDay`（游戏内期限），到期后每回合注入期限已至的硬事实，模型必须让后果在剧情中显现。
+剧本包可以通过 `adventure.locations` 预注册剧本中可能出现的地点（名称、描述、常驻角色与重要性标记），开局即建立地点实体；未预注册的地点仍可在剧情中动态建立。`adventure.storyModules` 中的任务可以声明 `deadlineDay`（游戏内期限），到期后每回合注入期限已至的硬事实，模型必须让后果在剧情中显现。剧本包还可以通过 `adventure.foreshadowing` 与 `adventure.triggers` 声明伏笔和偏离触发器（见 13.1、13.2）。
 
 一次事件可以产生多种变化。例如“角色在政变中成为新国王”应同时更新角色当前状态、角色演化层和世界书。
 
@@ -389,7 +435,9 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 - 哪些角色状态发生了变化。
 - 哪些角色卡演化项被新增或更新。
 - 哪些世界书条目被新增、更新或停用。
+- 哪些伏笔被埋设或回收、哪些偏离触发器被触发。
 - 当前剧情走向是否仍然有效或已经完成。
+- 本轮的属性判定请求与掷骰结算结果。
 
 玩家必须能够撤销尚未进入下一轮的状态提交。基础世界书不做破坏性永久合并；玩家通过可编辑、可停用、可恢复的修订覆盖层确认长期修改。
 

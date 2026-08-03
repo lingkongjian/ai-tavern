@@ -84,6 +84,9 @@ const stateLabels: Record<LoadedStateChange["entityType"], string> = {
   relationship: "角色关系",
   story_direction: "剧情走向",
   story_module: "剧情任务",
+  plot_thread: "伏笔",
+  plot_trigger: "偏离触发器",
+  plot_check: "属性判定",
   location: "地点",
   session_state: "场景状态",
 };
@@ -312,6 +315,43 @@ function formatTurnTime(value: string) {
 
 interface AdvanceTurnResponse {
   adventure?: LoadedAdventure;
+  committedTurn?: { id: string; sequence: number; reused?: boolean } | null;
+  error?: string;
+  issues?: string[];
+  pendingChecks?: PendingCheckInfo[];
+  pendingTurnId?: string;
+  expectedHeadTurnId?: string;
+  idempotencyKey?: string;
+}
+
+interface PendingCheckInfo {
+  checkId: string;
+  characterId: string;
+  characterName: string;
+  attribute: string;
+  attributeValue: number;
+  difficulty: number;
+  context: string;
+  direct: boolean;
+  margin: number;
+}
+
+interface AttributeCheckResolutionInfo {
+  checkId: string;
+  characterId: string;
+  attribute: string;
+  attributeValue: number;
+  difficulty: number;
+  roll: number | null;
+  finalValue: number;
+  outcome: string;
+  outcomeLabel: string;
+  direct: boolean;
+}
+
+interface AttributeCheckResolveResponse {
+  adventure?: LoadedAdventure;
+  resolutions?: AttributeCheckResolutionInfo[];
   error?: string;
   issues?: string[];
 }
@@ -326,6 +366,8 @@ type StoryContentDomain =
   | "locations"
   | "story_modules"
   | "world_book"
+  | "foreshadowing"
+  | "triggers"
   | "sources"
   | "memories";
 
@@ -421,6 +463,51 @@ const emptyStoryModuleForm: StoryModuleFormState = {
   autoContinue: true,
 };
 
+interface ForeshadowingFormState {
+  id: string;
+  keywords: string;
+  seedCondition: string;
+  payoffCondition: string;
+  payoffSummary: string;
+  characters: string;
+}
+
+const emptyForeshadowingForm: ForeshadowingFormState = {
+  id: "",
+  keywords: "",
+  seedCondition: "",
+  payoffCondition: "",
+  payoffSummary: "",
+  characters: "",
+};
+
+interface TriggerRelationFormState {
+  sourceCharacterName: string;
+  targetCharacterName: string;
+  dimension: string;
+  delta: string;
+}
+
+interface TriggerFormState {
+  id: string;
+  when: string;
+  consequence: string;
+  relations: TriggerRelationFormState[];
+  flags: string;
+  attributes: string;
+  deadlineDay: string;
+}
+
+const emptyTriggerForm: TriggerFormState = {
+  id: "",
+  when: "",
+  consequence: "",
+  relations: [],
+  flags: "",
+  attributes: "",
+  deadlineDay: "",
+};
+
 interface WorldBookFormState {
   comment: string;
   keys: string;
@@ -484,6 +571,8 @@ type StoryWorkbenchTab =
   | "characters"
   | "locations"
   | "story_modules"
+  | "foreshadowing"
+  | "triggers"
   | "world_book"
   | "sources"
   | "memories"
@@ -497,6 +586,8 @@ const storyWorkbenchTabs: Array<{
   { id: "characters", label: "人物", hint: "角色卡与出场" },
   { id: "locations", label: "地点", hint: "场景与阵容" },
   { id: "story_modules", label: "剧情任务", hint: "目标与接续" },
+  { id: "foreshadowing", label: "伏笔", hint: "埋设与回收" },
+  { id: "triggers", label: "触发器", hint: "意外阻碍" },
   { id: "world_book", label: "世界书", hint: "事实与覆盖层" },
   { id: "sources", label: "原文", hint: "参考资料" },
   { id: "memories", label: "记忆", hint: "长期上下文" },
@@ -615,6 +706,17 @@ export function GameInterface({
   );
   const [loadingHistoryTurnId, setLoadingHistoryTurnId] = useState("");
   const [historyError, setHistoryError] = useState("");
+  const [pendingChecks, setPendingChecks] = useState<PendingCheckInfo[] | null>(
+    null,
+  );
+  const [pendingTurnId, setPendingTurnId] = useState("");
+  const [pendingExpectedHeadTurnId, setPendingExpectedHeadTurnId] =
+    useState("");
+  const [checkRolls, setCheckRolls] = useState<Record<string, number | null>>(
+    {},
+  );
+  const [checkSubmitting, setCheckSubmitting] = useState(false);
+  const [checkError, setCheckError] = useState("");
   const [storyWorkbenchTab, setStoryWorkbenchTab] =
     useState<StoryWorkbenchTab | null>(null);
   const characterManagerOpen = storyWorkbenchTab === "characters";
@@ -644,6 +746,24 @@ export function GameInterface({
   );
   const [storyModuleManagerError, setStoryModuleManagerError] = useState("");
   const [savingStoryModule, setSavingStoryModule] = useState(false);
+  const foreshadowingManagerOpen = storyWorkbenchTab === "foreshadowing";
+  const setForeshadowingManagerOpen = (open: boolean) =>
+    setStoryWorkbenchTab(open ? "foreshadowing" : null);
+  const [editingForeshadowingId, setEditingForeshadowingId] = useState<
+    string | null
+  >(null);
+  const [foreshadowingForm, setForeshadowingForm] = useState(
+    emptyForeshadowingForm,
+  );
+  const [foreshadowingError, setForeshadowingError] = useState("");
+  const [savingForeshadowing, setSavingForeshadowing] = useState(false);
+  const triggerManagerOpen = storyWorkbenchTab === "triggers";
+  const setTriggerManagerOpen = (open: boolean) =>
+    setStoryWorkbenchTab(open ? "triggers" : null);
+  const [editingTriggerId, setEditingTriggerId] = useState<string | null>(null);
+  const [triggerForm, setTriggerForm] = useState(emptyTriggerForm);
+  const [triggerError, setTriggerError] = useState("");
+  const [savingTrigger, setSavingTrigger] = useState(false);
   const worldBookManagerOpen = storyWorkbenchTab === "world_book";
   const setWorldBookManagerOpen = (open: boolean) =>
     setStoryWorkbenchTab(open ? "world_book" : null);
@@ -715,6 +835,27 @@ export function GameInterface({
   const sessionState = adventure.branchState.states.find(
     (state) => state.entityType === "session_state" && state.entityId === "core",
   )?.state;
+  const firedBadEndTriggers = adventure.branchState.states
+    .filter((state) => {
+      if (state.entityType !== "plot_trigger") return false;
+      if (text(state.state.status) !== "fired") return false;
+      const stateEffects =
+        state.state.stateEffects !== null &&
+        typeof state.state.stateEffects === "object" &&
+        !Array.isArray(state.state.stateEffects)
+          ? state.state.stateEffects
+          : {};
+      const flags = Array.isArray(stateEffects.flags)
+        ? stateEffects.flags
+        : [];
+      return flags.includes("bad_end");
+    })
+    .map((state) => ({
+      triggerId: text(state.state.triggerId, state.entityId),
+      consequence: text(state.state.consequence, ""),
+      firedAtTurnId: text(state.state.firedAtTurnId),
+    }))
+    .sort((left, right) => right.firedAtTurnId.localeCompare(left.firedAtTurnId));
   const storyDirection = adventure.branchState.states.find(
     (state) => state.entityType === "story_direction" && state.isActive,
   )?.state;
@@ -1161,6 +1302,18 @@ export function GameInterface({
       );
       if (!body.adventure) throw new Error("生成本轮剧情失败。");
       setStreamingChars(0);
+      if (body.pendingChecks && body.pendingChecks.length > 0) {
+        setPendingChecks(body.pendingChecks);
+        setPendingTurnId(body.pendingTurnId ?? "");
+        setPendingExpectedHeadTurnId(body.expectedHeadTurnId ?? "");
+        setCheckRolls(
+          Object.fromEntries(
+            body.pendingChecks.map((check) => [check.checkId, null]),
+          ),
+        );
+        setCheckError("");
+        return;
+      }
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
       setSelectedChoice("");
@@ -1230,6 +1383,18 @@ export function GameInterface({
       );
       if (!body.adventure) throw new Error("重新生成最新剧情失败。");
       setStreamingChars(0);
+      if (body.pendingChecks && body.pendingChecks.length > 0) {
+        setPendingChecks(body.pendingChecks);
+        setPendingTurnId(body.pendingTurnId ?? "");
+        setPendingExpectedHeadTurnId(body.expectedHeadTurnId ?? "");
+        setCheckRolls(
+          Object.fromEntries(
+            body.pendingChecks.map((check) => [check.checkId, null]),
+          ),
+        );
+        setCheckError("");
+        return;
+      }
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
       setSelectedChoice("");
@@ -1253,6 +1418,85 @@ export function GameInterface({
     }
   }
 
+  function previewCheckOutcome(check: PendingCheckInfo, roll: number | null) {
+    if (check.direct) {
+      return check.margin > 0 ? "成功" : "失败";
+    }
+    if (roll === null) return null;
+    const finalValue =
+      Math.round((check.attributeValue + roll * 0.3) * 10) / 10;
+    if (finalValue >= check.difficulty) return `成功（最终 ${finalValue}）`;
+    if (finalValue >= check.difficulty - 10) {
+      return `部分成功（最终 ${finalValue}）`;
+    }
+    return `失败（最终 ${finalValue}）`;
+  }
+
+  function rollCheck(checkId: string) {
+    setCheckRolls((current) => ({
+      ...current,
+      [checkId]: 1 + Math.floor(Math.random() * 100),
+    }));
+  }
+
+  async function resolvePendingChecks(rollsOverride?: Record<string, number | null>) {
+    if (!pendingChecks || checkSubmitting) return;
+    setCheckSubmitting(true);
+    setCheckError("");
+    try {
+      const rolls = rollsOverride ?? checkRolls;
+      const results = pendingChecks.map((check) => ({
+        checkId: check.checkId,
+        roll: rolls[check.checkId] ?? null,
+      }));
+      const response = await fetch(
+        `/api/adventures/${adventure.session.id}/attribute-checks`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            actionId: crypto.randomUUID(),
+            pendingTurnId,
+            expectedHeadTurnId: pendingExpectedHeadTurnId,
+            results,
+          }),
+        },
+      );
+      const body = (await response.json()) as AttributeCheckResolveResponse;
+      if (!response.ok || !body.adventure) {
+        throw new Error(body.issues?.[0] ?? body.error ?? "属性判定结算失败。");
+      }
+      setAdventure(body.adventure);
+      setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
+      setPendingChecks(null);
+      setSelectedChoice("");
+      setCustomChoice("");
+      setRoleplayInput("");
+      setRegenerationPanelOpen(false);
+      setRegenerationFeedback("");
+      pendingRegenerationAction.current = null;
+      pendingIdempotencyKey.current = null;
+      const nextDirection = body.adventure.branchState.states.find(
+        (state) => state.entityType === "story_direction" && state.isActive,
+      );
+      setDirectionInput(text(nextDirection?.state.content));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setCheckError(
+        error instanceof Error ? error.message : "属性判定结算失败。",
+      );
+    } finally {
+      setCheckSubmitting(false);
+    }
+  }
+
+  function skipPendingChecks() {
+    if (!pendingChecks || checkSubmitting) return;
+    void resolvePendingChecks(
+      Object.fromEntries(pendingChecks.map((check) => [check.checkId, null])),
+    );
+  }
+
   async function viewHistoryTurn(turnId: string) {
     if (loadingHistoryTurnId) return;
     setHistoryError("");
@@ -1264,7 +1508,6 @@ export function GameInterface({
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
-
     setLoadingHistoryTurnId(turnId);
     try {
       const response = await fetch(
@@ -1827,6 +2070,281 @@ export function GameInterface({
       moduleId,
       active,
     });
+  }
+
+  const plotThreads = adventure.branchState.states
+    .filter((state) => state.entityType === "plot_thread" && state.isActive)
+    .map((state) => ({
+      id: text(state.state.threadId, state.entityId),
+      keywords: Array.isArray(state.state.keywords)
+        ? state.state.keywords
+            .filter((item): item is string => typeof item === "string")
+            .slice(0, 12)
+        : [],
+      seedCondition: text(state.state.seedCondition),
+      payoffCondition: text(state.state.payoffCondition),
+      payoffSummary: text(state.state.payoffSummary),
+      characters: Array.isArray(state.state.characters)
+        ? state.state.characters.filter(
+            (item): item is string => typeof item === "string",
+          )
+        : [],
+      status: text(state.state.status, "dormant"),
+    }));
+
+  function startAddingForeshadowing() {
+    setEditingForeshadowingId("__new__");
+    setForeshadowingForm(emptyForeshadowingForm);
+    setForeshadowingError("");
+  }
+
+  function startEditingForeshadowing(threadId: string) {
+    const thread = plotThreads.find((candidate) => candidate.id === threadId);
+    if (!thread || thread.status === "paid_off") return;
+    setEditingForeshadowingId(thread.id);
+    setForeshadowingForm({
+      id: thread.id,
+      keywords: thread.keywords.join("\n"),
+      seedCondition: thread.seedCondition,
+      payoffCondition: thread.payoffCondition,
+      payoffSummary: thread.payoffSummary,
+      characters: thread.characters.join("\n"),
+    });
+    setForeshadowingError("");
+  }
+
+  async function runForeshadowingOperation(payload: Record<string, unknown>) {
+    if (savingForeshadowing) return false;
+    setSavingForeshadowing(true);
+    setForeshadowingError("");
+    try {
+      await sendStoryContentCommand(
+        "foreshadowing",
+        payload,
+        "保存伏笔变化失败。",
+      );
+      return true;
+    } catch (error) {
+      setForeshadowingError(
+        error instanceof Error ? error.message : "保存伏笔变化失败。",
+      );
+      return false;
+    } finally {
+      setSavingForeshadowing(false);
+    }
+  }
+
+  async function submitForeshadowingForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const operation =
+      editingForeshadowingId === "__new__" ? "create" : "update";
+    const saved = await runForeshadowingOperation({
+      operation,
+      ...(operation === "update"
+        ? { threadId: editingForeshadowingId }
+        : {}),
+      thread: {
+        id: foreshadowingForm.id,
+        keywords: splitTaskLines(foreshadowingForm.keywords),
+        seedCondition: foreshadowingForm.seedCondition,
+        payoffCondition: foreshadowingForm.payoffCondition,
+        payoffSummary: foreshadowingForm.payoffSummary,
+        characters: splitTaskLines(foreshadowingForm.characters),
+      },
+    });
+    if (saved) setEditingForeshadowingId(null);
+  }
+
+  async function deleteForeshadowing(threadId: string) {
+    if (
+      !window.confirm(
+        "确定删除这个伏笔吗？\n\n删除后 AI 模型不再追踪该伏笔；已经回收的伏笔属于剧情历史，不能删除。",
+      )
+    ) {
+      return;
+    }
+    const removed = await runForeshadowingOperation({
+      operation: "delete",
+      threadId,
+    });
+    if (removed) setEditingForeshadowingId(null);
+  }
+
+  const plotTriggers = adventure.branchState.states
+    .filter((state) => state.entityType === "plot_trigger" && state.isActive)
+    .map((state) => ({
+      id: text(state.state.triggerId, state.entityId),
+      when: text(state.state.when),
+      consequence: text(state.state.consequence),
+      deadlineDay:
+        typeof state.state.deadlineDay === "number"
+          ? state.state.deadlineDay
+          : null,
+      status: text(state.state.status, "armed"),
+      firedAtTurnId: text(state.state.firedAtTurnId),
+    }));
+
+  function startAddingTrigger() {
+    setEditingTriggerId("__new__");
+    setTriggerForm(emptyTriggerForm);
+    setTriggerError("");
+  }
+
+  function startEditingTrigger(triggerId: string) {
+    const trigger = plotTriggers.find((candidate) => candidate.id === triggerId);
+    if (!trigger || trigger.status === "fired") return;
+    const rawState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "plot_trigger" &&
+        text(state.state.triggerId, state.entityId) === triggerId,
+    )?.state;
+    const stateEffects =
+      rawState &&
+      rawState.stateEffects !== null &&
+      typeof rawState.stateEffects === "object" &&
+      !Array.isArray(rawState.stateEffects)
+        ? rawState.stateEffects
+        : {};
+    const relations = Array.isArray(stateEffects.relations)
+      ? stateEffects.relations.map((relation) => {
+          const entry =
+            relation !== null && typeof relation === "object"
+              ? (relation as Record<string, unknown>)
+              : {};
+          return {
+            sourceCharacterName:
+              typeof entry.sourceCharacterName === "string"
+                ? entry.sourceCharacterName
+                : "",
+            targetCharacterName:
+              typeof entry.targetCharacterName === "string"
+                ? entry.targetCharacterName
+                : "",
+            dimension:
+              typeof entry.dimension === "string" ? entry.dimension : "",
+            delta:
+              typeof entry.delta === "number" ? String(entry.delta) : "",
+          };
+        })
+      : [];
+    const flags = Array.isArray(stateEffects.flags)
+      ? stateEffects.flags
+          .filter((item): item is string => typeof item === "string")
+          .join("\n")
+      : "";
+    const attributes = Array.isArray(stateEffects.attributes)
+      ? stateEffects.attributes.map((entry) => {
+          const item =
+            entry !== null && typeof entry === "object"
+              ? (entry as Record<string, unknown>)
+              : {};
+          return `${typeof item.characterName === "string" ? item.characterName : ""}:${typeof item.attribute === "string" ? item.attribute : ""}:${typeof item.value === "number" ? item.value : ""}`;
+        }).join("\n")
+      : "";
+    setEditingTriggerId(trigger.id);
+    setTriggerForm({
+      id: trigger.id,
+      when: trigger.when,
+      consequence: trigger.consequence,
+      relations,
+      flags,
+      attributes,
+      deadlineDay: trigger.deadlineDay === null ? "" : String(trigger.deadlineDay),
+    });
+    setTriggerError("");
+  }
+
+  async function runTriggerOperation(payload: Record<string, unknown>) {
+    if (savingTrigger) return false;
+    setSavingTrigger(true);
+    setTriggerError("");
+    try {
+      await sendStoryContentCommand(
+        "triggers",
+        payload,
+        "保存触发器变化失败。",
+      );
+      return true;
+    } catch (error) {
+      setTriggerError(
+        error instanceof Error ? error.message : "保存触发器变化失败。",
+      );
+      return false;
+    } finally {
+      setSavingTrigger(false);
+    }
+  }
+
+  async function submitTriggerForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const operation = editingTriggerId === "__new__" ? "create" : "update";
+    const relations = triggerForm.relations
+      .map((relation) => ({
+        sourceCharacterName: relation.sourceCharacterName.trim(),
+        targetCharacterName: relation.targetCharacterName.trim(),
+        dimension: relation.dimension.trim(),
+        delta: Number(relation.delta),
+      }))
+      .filter(
+        (relation) =>
+          relation.sourceCharacterName &&
+          relation.targetCharacterName &&
+          relation.dimension &&
+          Number.isFinite(relation.delta),
+      );
+    const attributes = splitTaskLines(triggerForm.attributes)
+      .map((line) => {
+        const [characterName, attribute, rawValue] = line
+          .split(":")
+          .map((part) => part.trim());
+        const value = Number(rawValue);
+        return { characterName, attribute, value };
+      })
+      .filter(
+        (entry) =>
+          entry.characterName && entry.attribute && Number.isFinite(entry.value),
+      );
+    const flags = splitTaskLines(triggerForm.flags);
+    const deadlineDay = triggerForm.deadlineDay.trim()
+      ? Number(triggerForm.deadlineDay)
+      : undefined;
+    const saved = await runTriggerOperation({
+      operation,
+      ...(operation === "update" ? { triggerId: editingTriggerId } : {}),
+      trigger: {
+        id: triggerForm.id,
+        when: triggerForm.when,
+        consequence: triggerForm.consequence,
+        ...(relations.length > 0 || flags.length > 0 || attributes.length > 0
+          ? {
+              stateEffects: {
+                ...(relations.length > 0 ? { relations } : {}),
+                ...(flags.length > 0 ? { flags } : {}),
+                ...(attributes.length > 0 ? { attributes } : {}),
+              },
+            }
+          : {}),
+        ...(Number.isInteger(deadlineDay) && (deadlineDay as number) >= 1
+          ? { deadlineDay }
+          : {}),
+      },
+    });
+    if (saved) setEditingTriggerId(null);
+  }
+
+  async function deleteTrigger(triggerId: string) {
+    if (
+      !window.confirm(
+        "确定删除这个偏离触发器吗？\n\n删除后 AI 模型不再追踪该意外阻碍；已经触发的触发器属于剧情历史，不能删除。",
+      )
+    ) {
+      return;
+    }
+    const removed = await runTriggerOperation({
+      operation: "delete",
+      triggerId,
+    });
+    if (removed) setEditingTriggerId(null);
   }
 
   function startAddingWorldBookEntry() {
@@ -2424,6 +2942,16 @@ export function GameInterface({
       </header>
 
       <div className="game-layout">
+        {sessionState?.badEnd === true ? (
+          <div className="bad-end-banner" role="alert">
+            <strong>结局警示</strong>
+            <span>
+              {firedBadEndTriggers.length > 0
+                ? firedBadEndTriggers[0].consequence
+                : "局势正在滑向坏结局方向，接下来的选择将决定最后的结果。"}
+            </span>
+          </div>
+        ) : null}
         <section className="story-stage" aria-labelledby="scene-title">
           <div className="scene-meta">
             <div className="scene-meta-copy">
@@ -2887,6 +3415,131 @@ export function GameInterface({
                   <p className="failover-notice" role="status">
                     {failoverNotice}
                   </p>
+                ) : null}
+
+                {pendingChecks && pendingChecks.length > 0 ? (
+                  <div
+                    className="character-manager-backdrop"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                      if (
+                        event.target === event.currentTarget &&
+                        !checkSubmitting
+                      ) {
+                        setPendingChecks(null);
+                        pendingIdempotencyKey.current = null;
+                      }
+                    }}
+                  >
+                    <section
+                      className="character-manager dice-panel"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-labelledby="dice-panel-title"
+                    >
+                      <header>
+                        <div>
+                          <p className="eyebrow">属性判定 · 掷骰结算</p>
+                          <h2 id="dice-panel-title">本轮需要一次关键判定</h2>
+                        </div>
+                        <button
+                          className="character-manager-close"
+                          type="button"
+                          disabled={checkSubmitting}
+                          onClick={() => {
+                            setPendingChecks(null);
+                            pendingIdempotencyKey.current = null;
+                          }}
+                        >
+                          ×
+                        </button>
+                      </header>
+                      {checkError ? (
+                        <div
+                          className="character-manager-error"
+                          role="alert"
+                        >
+                          {checkError}
+                        </div>
+                      ) : null}
+                      <p className="dice-panel-hint">
+                        模型只提议了“何时判定、用什么属性、难度多少”；结果由你掷骰后系统确定性结算，
+                        并作为已发生事实回填本回合。|属性−难度|≥30 时实力悬殊、无需掷骰。
+                      </p>
+                      <ul className="dice-check-list">
+                        {pendingChecks.map((check) => {
+                          const roll = checkRolls[check.checkId] ?? null;
+                          const preview = previewCheckOutcome(check, roll);
+                          return (
+                            <li key={check.checkId} className="dice-check-item">
+                              <header>
+                                <strong>
+                                  {check.characterName} · {check.attribute}{" "}
+                                  {check.attributeValue}
+                                </strong>
+                                <span>难度 {check.difficulty}</span>
+                              </header>
+                              <p>{check.context}</p>
+                              <footer>
+                                {check.direct ? (
+                                  <span className="dice-verdict dice-direct">
+                                    {check.margin > 0
+                                      ? "实力悬殊 → 直接成功"
+                                      : "实力悬殊 → 直接失败"}
+                                  </span>
+                                ) : (
+                                  <>
+                                    {roll === null ? (
+                                      <span className="dice-verdict">
+                                        尚未掷骰
+                                      </span>
+                                    ) : (
+                                      <>
+                                        <span className="dice-roll">
+                                          掷出 {roll}
+                                        </span>
+                                        <span className="dice-verdict">
+                                          {preview}
+                                        </span>
+                                      </>
+                                    )}
+                                  </>
+                                )}
+                                {!check.direct ? (
+                                  <button
+                                    type="button"
+                                    className="dice-roll-button"
+                                    disabled={checkSubmitting}
+                                    onClick={() => rollCheck(check.checkId)}
+                                  >
+                                    {roll === null ? "掷骰" : "重掷"}
+                                  </button>
+                                ) : null}
+                              </footer>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      <footer className="dice-panel-actions">
+                        <button
+                          type="button"
+                          className="dice-skip-button"
+                          disabled={checkSubmitting}
+                          onClick={() => skipPendingChecks()}
+                        >
+                          跳过本轮判定
+                        </button>
+                        <button
+                          type="button"
+                          className="dice-confirm-button"
+                          disabled={checkSubmitting}
+                          onClick={() => void resolvePendingChecks()}
+                        >
+                          {checkSubmitting ? "正在结算……" : "确认判定"}
+                        </button>
+                      </footer>
+                    </section>
+                  </div>
                 ) : null}
 
                 {submitting ? (
@@ -4405,6 +5058,533 @@ export function GameInterface({
                 </div>
               ) : null}
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {foreshadowingManagerOpen ? (
+        <div
+          className="character-manager-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !savingForeshadowing) {
+              setForeshadowingManagerOpen(false);
+              setEditingForeshadowingId(null);
+            }
+          }}
+        >
+          <section
+            className="character-manager story-workbench story-module-manager"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="foreshadowing-manager-title"
+          >
+            <header>
+              <div>
+                <p className="eyebrow">剧本工作台 · 剧情规划</p>
+                <h2 id="foreshadowing-manager-title">伏笔</h2>
+                <p>
+                  伏笔在满足出现条件后埋入剧情，在相关时刻进入模型上下文；回收条件满足时模型会呈现回收概要。修改从下一次生成开始生效。
+                </p>
+              </div>
+              <button
+                className="character-manager-close"
+                type="button"
+                aria-label="关闭伏笔管理"
+                disabled={savingForeshadowing}
+                onClick={() => {
+                  setForeshadowingManagerOpen(false);
+                  setEditingForeshadowingId(null);
+                }}
+              >
+                ×
+              </button>
+            </header>
+
+            <StoryWorkbenchNavigation
+              active="foreshadowing"
+              disabled={savingForeshadowing}
+              onSelect={selectStoryWorkbenchTab}
+            />
+
+            <div className="character-manager-toolbar">
+              <span>
+                {plotThreads.filter((thread) => thread.status !== "paid_off").length}{" "}
+                个未回收 · {plotThreads.length}/30 个已保存
+              </span>
+              <button
+                type="button"
+                disabled={savingForeshadowing || plotThreads.length >= 30}
+                onClick={startAddingForeshadowing}
+              >
+                ＋ 新增伏笔
+              </button>
+            </div>
+
+            {foreshadowingError ? (
+              <div className="character-manager-error" role="alert">
+                {foreshadowingError}
+              </div>
+            ) : null}
+
+            {editingForeshadowingId ? (
+              <form
+                className="character-editor story-module-editor"
+                onSubmit={submitForeshadowingForm}
+              >
+                <div className="character-editor-heading">
+                  <div>
+                    <small>
+                      {editingForeshadowingId === "__new__"
+                        ? "新增伏笔"
+                        : "编辑伏笔"}
+                    </small>
+                    <h3>
+                      {editingForeshadowingId === "__new__"
+                        ? "埋设新的伏笔"
+                        : `编辑 ${foreshadowingForm.id}`}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={savingForeshadowing}
+                    onClick={() => setEditingForeshadowingId(null)}
+                  >
+                    取消编辑
+                  </button>
+                </div>
+                <label>
+                  <span>伏笔 ID</span>
+                  <input
+                    value={foreshadowingForm.id}
+                    disabled={editingForeshadowingId !== "__new__"}
+                    maxLength={80}
+                    onChange={(event) =>
+                      setForeshadowingForm((current) => ({
+                        ...current,
+                        id: event.target.value,
+                      }))
+                    }
+                    placeholder="如 well-bell（仅文字、数字、点、下划线、连字符）"
+                  />
+                </label>
+                <label>
+                  <span>关键词（每行一个，用于把伏笔带进上下文）</span>
+                  <textarea
+                    rows={3}
+                    value={foreshadowingForm.keywords}
+                    onChange={(event) =>
+                      setForeshadowingForm((current) => ({
+                        ...current,
+                        keywords: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>出现条件（seedCondition）</span>
+                  <textarea
+                    rows={2}
+                    value={foreshadowingForm.seedCondition}
+                    maxLength={1000}
+                    onChange={(event) =>
+                      setForeshadowingForm((current) => ({
+                        ...current,
+                        seedCondition: event.target.value,
+                      }))
+                    }
+                    placeholder="如：角色进入古井附近，或听到钟声时"
+                  />
+                </label>
+                <label>
+                  <span>回收条件（payoffCondition）</span>
+                  <textarea
+                    rows={2}
+                    value={foreshadowingForm.payoffCondition}
+                    maxLength={1000}
+                    onChange={(event) =>
+                      setForeshadowingForm((current) => ({
+                        ...current,
+                        payoffCondition: event.target.value,
+                      }))
+                    }
+                    placeholder="如：玩家发现古井底部的钟"
+                  />
+                </label>
+                <label>
+                  <span>回收概要（payoffSummary，回收时应呈现的核心信息）</span>
+                  <textarea
+                    rows={4}
+                    value={foreshadowingForm.payoffSummary}
+                    maxLength={4000}
+                    onChange={(event) =>
+                      setForeshadowingForm((current) => ({
+                        ...current,
+                        payoffSummary: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>相关角色（每行一个角色名，可选）</span>
+                  <textarea
+                    rows={2}
+                    value={foreshadowingForm.characters}
+                    onChange={(event) =>
+                      setForeshadowingForm((current) => ({
+                        ...current,
+                        characters: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <footer className="character-editor-actions">
+                  <button type="submit" disabled={savingForeshadowing}>
+                    {savingForeshadowing ? "正在保存……" : "保存伏笔"}
+                  </button>
+                </footer>
+              </form>
+            ) : (
+              <div className="story-task-tree">
+                {plotThreads.map((thread) => (
+                  <article
+                    key={thread.id}
+                    className="module-completed"
+                  >
+                    <div className="story-task-rail">
+                      <span />
+                    </div>
+                    <div className="story-task-copy">
+                      <strong>{thread.id}</strong>
+                      <p>
+                        {thread.status === "seeded"
+                          ? "已埋入剧情，等待回收"
+                          : thread.status === "paid_off"
+                            ? "已回收"
+                            : `未埋入 · 关键词：${thread.keywords.join("、") || "无"}`}
+                      </p>
+                      <small>
+                        出现：{thread.seedCondition.slice(0, 60)}
+                        {thread.seedCondition.length > 60 ? "…" : ""}
+                      </small>
+                    </div>
+                    <div className="managed-character-actions">
+                      {thread.status === "paid_off" ? (
+                        <span className="story-task-locked">已锁定</span>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            disabled={savingForeshadowing}
+                            onClick={() => startEditingForeshadowing(thread.id)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            disabled={savingForeshadowing}
+                            onClick={() => void deleteForeshadowing(thread.id)}
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                ))}
+                {plotThreads.length === 0 ? (
+                  <div className="story-task-empty">
+                    <strong>还没有伏笔</strong>
+                    <p>伏笔可以跨章节保持目的，不会像剧情任务一样被短上下文遗忘。</p>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
+
+      {triggerManagerOpen ? (
+        <div
+          className="character-manager-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !savingTrigger) {
+              setTriggerManagerOpen(false);
+              setEditingTriggerId(null);
+            }
+          }}
+        >
+          <section
+            className="character-manager story-workbench story-module-manager"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="trigger-manager-title"
+          >
+            <header>
+              <div>
+                <p className="eyebrow">剧本工作台 · 剧情规划</p>
+                <h2 id="trigger-manager-title">偏离触发器</h2>
+                <p>
+                  当条件满足时，后果会作为“意外阻碍”写入剧情，系统同时强制应用声明的状态影响（关系、属性、bad_end 标志）。
+                </p>
+              </div>
+              <button
+                className="character-manager-close"
+                type="button"
+                aria-label="关闭偏离触发器管理"
+                disabled={savingTrigger}
+                onClick={() => {
+                  setTriggerManagerOpen(false);
+                  setEditingTriggerId(null);
+                }}
+              >
+                ×
+              </button>
+            </header>
+
+            <StoryWorkbenchNavigation
+              active="triggers"
+              disabled={savingTrigger}
+              onSelect={selectStoryWorkbenchTab}
+            />
+
+            <div className="character-manager-toolbar">
+              <span>
+                {plotTriggers.filter((trigger) => trigger.status !== "fired").length}{" "}
+                个待触发 · {plotTriggers.length}/30 个已保存
+              </span>
+              <button
+                type="button"
+                disabled={savingTrigger || plotTriggers.length >= 30}
+                onClick={startAddingTrigger}
+              >
+                ＋ 新增触发器
+              </button>
+            </div>
+
+            {triggerError ? (
+              <div className="character-manager-error" role="alert">
+                {triggerError}
+              </div>
+            ) : null}
+
+            {editingTriggerId ? (
+              <form
+                className="character-editor story-module-editor"
+                onSubmit={submitTriggerForm}
+              >
+                <div className="character-editor-heading">
+                  <div>
+                    <small>
+                      {editingTriggerId === "__new__"
+                        ? "新增触发器"
+                        : "编辑触发器"}
+                    </small>
+                    <h3>
+                      {editingTriggerId === "__new__"
+                        ? "建立新的意外阻碍"
+                        : `编辑 ${triggerForm.id}`}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={savingTrigger}
+                    onClick={() => setEditingTriggerId(null)}
+                  >
+                    取消编辑
+                  </button>
+                </div>
+                <label>
+                  <span>触发器 ID</span>
+                  <input
+                    value={triggerForm.id}
+                    disabled={editingTriggerId !== "__new__"}
+                    maxLength={80}
+                    onChange={(event) =>
+                      setTriggerForm((current) => ({
+                        ...current,
+                        id: event.target.value,
+                      }))
+                    }
+                    placeholder="如 ambush-den"
+                  />
+                </label>
+                <label>
+                  <span>触发条件（when）</span>
+                  <textarea
+                    rows={2}
+                    value={triggerForm.when}
+                    maxLength={1000}
+                    onChange={(event) =>
+                      setTriggerForm((current) => ({
+                        ...current,
+                        when: event.target.value,
+                      }))
+                    }
+                    placeholder="如：主角弱小时强闯反派地盘"
+                  />
+                </label>
+                <label>
+                  <span>后果（consequence）</span>
+                  <textarea
+                    rows={3}
+                    value={triggerForm.consequence}
+                    maxLength={4000}
+                    onChange={(event) =>
+                      setTriggerForm((current) => ({
+                        ...current,
+                        consequence: event.target.value,
+                      }))
+                    }
+                    placeholder="如：强大反派提前登场，主角陷入险境"
+                  />
+                </label>
+                <label>
+                  <span>
+                    关系影响（每行：源角色名→目标角色名 维度 数值）
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={triggerForm.relations
+                      .map(
+                        (relation) =>
+                          `${relation.sourceCharacterName}→${relation.targetCharacterName} ${relation.dimension} ${relation.delta}`,
+                      )
+                      .join("\n")}
+                    onChange={(event) => {
+                      const lines = event.target.value.split(/\r?\n/);
+                      const relations = lines
+                        .map((line) => {
+                          const match = line.match(
+                            /^\s*(.+?)\s*→\s*(.+?)\s+([a-z_]+)\s+(-?\d+(?:\.\d+)?)\s*$/,
+                          );
+                          if (!match) return null;
+                          return {
+                            sourceCharacterName: match[1].trim(),
+                            targetCharacterName: match[2].trim(),
+                            dimension: match[3],
+                            delta: match[4],
+                          };
+                        })
+                        .filter(
+                          (item): item is TriggerRelationFormState => item !== null,
+                        );
+                      setTriggerForm((current) => ({ ...current, relations }));
+                    }}
+                    placeholder={"正主→玩家 trust -20\n反派→玩家 hostility 30"}
+                  />
+                  <small>
+                    维度：trust / affection / fear / hostility / respect；delta 范围 -100 到 100。
+                  </small>
+                </label>
+                <label>
+                  <span>标志（每行一个，目前支持 bad_end）</span>
+                  <textarea
+                    rows={1}
+                    value={triggerForm.flags}
+                    onChange={(event) =>
+                      setTriggerForm((current) => ({
+                        ...current,
+                        flags: event.target.value,
+                      }))
+                    }
+                    placeholder="bad_end"
+                  />
+                </label>
+                <label>
+                  <span>属性影响（每行：角色名:属性:数值）</span>
+                  <textarea
+                    rows={2}
+                    value={triggerForm.attributes}
+                    onChange={(event) =>
+                      setTriggerForm((current) => ({
+                        ...current,
+                        attributes: event.target.value,
+                      }))
+                    }
+                    placeholder="反派:力量:80"
+                  />
+                  <small>属性只能是力量/敏捷/感知/意志/魅力/智力/体质，数值 0-100。</small>
+                </label>
+                <label>
+                  <span>期限（deadlineDay，游戏内第几天前必须生效，可选）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={triggerForm.deadlineDay}
+                    onChange={(event) =>
+                      setTriggerForm((current) => ({
+                        ...current,
+                        deadlineDay: event.target.value,
+                      }))
+                    }
+                    placeholder="留空表示没有期限"
+                  />
+                </label>
+                <footer className="character-editor-actions">
+                  <button type="submit" disabled={savingTrigger}>
+                    {savingTrigger ? "正在保存……" : "保存触发器"}
+                  </button>
+                </footer>
+              </form>
+            ) : (
+              <div className="story-task-tree">
+                {plotTriggers.map((trigger) => (
+                  <article
+                    key={trigger.id}
+                    className="module-completed"
+                  >
+                    <div className="story-task-rail">
+                      <span />
+                    </div>
+                    <div className="story-task-copy">
+                      <strong>{trigger.id}</strong>
+                      <p>
+                        {trigger.status === "fired"
+                          ? "已触发"
+                          : trigger.deadlineDay !== null
+                            ? `待触发 · 第 ${trigger.deadlineDay} 天前生效`
+                            : "待触发"}
+                      </p>
+                      <small>
+                        条件：{trigger.when.slice(0, 60)}
+                        {trigger.when.length > 60 ? "…" : ""}
+                      </small>
+                    </div>
+                    <div className="managed-character-actions">
+                      {trigger.status === "fired" ? (
+                        <span className="story-task-locked">已锁定</span>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            disabled={savingTrigger}
+                            onClick={() => startEditingTrigger(trigger.id)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            disabled={savingTrigger}
+                            onClick={() => void deleteTrigger(trigger.id)}
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                ))}
+                {plotTriggers.length === 0 ? (
+                  <div className="story-task-empty">
+                    <strong>还没有偏离触发器</strong>
+                    <p>触发器让“偏离主线”有真实的代价，例如强闯反派地盘会提前招来强敌。</p>
+                  </div>
+                ) : null}
+              </div>
+            )}
           </section>
         </div>
       ) : null}

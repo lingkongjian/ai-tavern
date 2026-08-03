@@ -23,6 +23,13 @@
       "items": {
         "type": "string"
       }
+    },
+    "attributeChecks": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/attributeCheck"
+      }
     }
   },
   "$defs": {
@@ -188,13 +195,27 @@
             "$ref": "#/$defs/characterCardChange"
           }
         },
-        "worldBookChanges": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/worldBookChange"
-          }
-        },
-        "storyDirectionEvaluation": {
+    "worldBookChanges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/worldBookChange"
+      }
+    },
+    "plotThreadUpdates": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/plotThreadUpdate"
+      }
+    },
+    "plotTriggerUpdates": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/plotTriggerUpdate"
+      }
+    },
+    "storyDirectionEvaluation": {
           "oneOf": [
             {
               "$ref": "#/$defs/storyDirectionEvaluation"
@@ -525,6 +546,68 @@
           }
         }
       ]
+    },
+    "attributeCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "characterId", "attribute", "difficulty", "context"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "characterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "attribute": {
+          "enum": ["力量", "敏捷", "感知", "意志", "魅力", "智力", "体质"]
+        },
+        "difficulty": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "context": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "plotThreadUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadId", "operation", "reason", "evidence"],
+      "properties": {
+        "threadId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "operation": {
+          "enum": ["seed", "payoff"]
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "plotTriggerUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["triggerId", "operation", "reason", "evidence"],
+      "properties": {
+        "triggerId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "operation": {
+          "const": "fire"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
     },
     "storyDirectionEvaluation": {
       "type": "object",

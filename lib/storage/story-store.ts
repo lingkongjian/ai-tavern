@@ -20,6 +20,12 @@ import {
   type SourceReferenceExcerpt,
   type SourceReferenceFidelity,
 } from "../reference/原文参考.ts";
+import {
+  ATTRIBUTE_ROLL_MAX,
+  ATTRIBUTE_ROLL_MIN,
+  resolveAttributeChecks,
+  type AttributeCheckRequest,
+} from "../story/判定服务.ts";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -35,6 +41,9 @@ export type StateEntityType =
   | "relationship"
   | "story_direction"
   | "story_module"
+  | "plot_thread"
+  | "plot_trigger"
+  | "plot_check"
   | "location"
   | "session_state";
 
@@ -241,6 +250,8 @@ export interface StateAuditAction {
     | "character_management"
     | "location_management"
     | "story_module_management"
+    | "plot_thread_management"
+    | "plot_trigger_management"
     | "world_book_management"
     | "rollback";
   title: string;
@@ -486,6 +497,133 @@ export interface ManagedStoryModuleResult {
   reused: boolean;
 }
 
+export type PlotThreadManagementInput =
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "create";
+      thread: AdventureForeshadowingInput;
+    }
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "update";
+      threadId: string;
+      thread: AdventureForeshadowingInput;
+    }
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "delete";
+      threadId: string;
+    };
+
+export interface ManagedPlotThreadResult {
+  actionId: string;
+  threadId: string;
+  operation: PlotThreadManagementInput["operation"];
+  reused: boolean;
+}
+
+export type PlotTriggerManagementInput =
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "create";
+      trigger: AdventureTriggerInput;
+    }
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "update";
+      triggerId: string;
+      trigger: AdventureTriggerInput;
+    }
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "delete";
+      triggerId: string;
+    };
+
+export interface ManagedPlotTriggerResult {
+  actionId: string;
+  triggerId: string;
+  operation: PlotTriggerManagementInput["operation"];
+  reused: boolean;
+}
+
+export interface PendingTurnRecord {
+  id: string;
+  sessionId: string;
+  branchId: string;
+  kind: "advance" | "regenerate";
+  expectedHeadTurnId: string;
+  expectedParentTurnId: string | null;
+  idempotencyKey: string;
+  feedback: string;
+  expectedRegenerationCount: number;
+  playerInput: JsonObject;
+  generatedOutput: JsonObject;
+  summaryPatch: string;
+  contextSnapshot: JsonObject;
+  memoryContext: JsonObject;
+  stateMutations: StateMutationInput[];
+  messages: TurnMessageInput[];
+  events: TurnEventInput[];
+  createdAt: string;
+}
+
+export interface SavePendingTurnInput {
+  id: string;
+  sessionId: string;
+  branchId: string;
+  kind: "advance" | "regenerate";
+  expectedHeadTurnId: string;
+  expectedParentTurnId: string | null;
+  idempotencyKey: string;
+  feedback: string;
+  expectedRegenerationCount: number;
+  playerInput: JsonObject;
+  generatedOutput: JsonObject;
+  summaryPatch: string;
+  contextSnapshot: JsonObject;
+  memoryContext: JsonObject;
+  stateMutations: StateMutationInput[];
+  messages: TurnMessageInput[];
+  events: TurnEventInput[];
+}
+
+export interface ResolvePendingTurnChecksInput {
+  sessionId: string;
+  pendingTurnId: string;
+  expectedHeadTurnId: string;
+  results: Array<{
+    checkId: string;
+    roll: number | null;
+  }>;
+}
+
+export interface AttributeCheckResolutionRecord {
+  checkId: string;
+  characterId: string;
+  attribute: string;
+  difficulty: number;
+  context: string;
+  attributeValue: number;
+  margin: number;
+  direct: boolean;
+  roll: number | null;
+  finalValue: number;
+  outcome: string;
+  outcomeLabel: string;
+}
+
+export interface ResolvedTurnBackfill {
+  committedTurn: CommittedTurn | ReplacedTurn;
+  resolutions: AttributeCheckResolutionRecord[];
+}
+
 export interface AdventureRelationshipInput {
   sourceCharacterName: string;
   targetCharacterName: string;
@@ -504,6 +642,42 @@ export interface AdventureDeclaredLocation {
   description: string;
   characters?: string[];
   important?: boolean;
+}
+
+export interface AdventureForeshadowingInput {
+  id: string;
+  keywords: string[];
+  seedCondition: string;
+  payoffCondition: string;
+  payoffSummary: string;
+  characters?: string[];
+}
+
+export type AdventureTriggerStateEffectRelation = {
+  sourceCharacterName: string;
+  targetCharacterName: string;
+  dimension: "trust" | "affection" | "fear" | "hostility" | "respect";
+  delta: number;
+};
+
+export type AdventureTriggerStateEffectAttribute = {
+  characterName: string;
+  attribute: string;
+  value: number;
+};
+
+export type AdventureTriggerStateEffects = {
+  relations?: AdventureTriggerStateEffectRelation[];
+  flags?: string[];
+  attributes?: AdventureTriggerStateEffectAttribute[];
+};
+
+export interface AdventureTriggerInput {
+  id: string;
+  when: string;
+  consequence: string;
+  stateEffects?: AdventureTriggerStateEffects;
+  deadlineDay?: number;
 }
 
 export interface StartAdventureInput {
@@ -529,6 +703,8 @@ export interface StartAdventureInput {
   initialStoryModuleId?: string;
   initialRelationships?: AdventureRelationshipInput[];
   locations?: AdventureDeclaredLocation[];
+  foreshadowing?: AdventureForeshadowingInput[];
+  triggers?: AdventureTriggerInput[];
 }
 
 export interface SourceDocumentUpdateInput {
@@ -729,6 +905,27 @@ interface TurnRow {
   created_at: string;
 }
 
+interface PendingTurnRow {
+  id: string;
+  session_id: string;
+  branch_id: string;
+  kind: string;
+  expected_head_turn_id: string;
+  expected_parent_turn_id: string | null;
+  idempotency_key: string;
+  feedback: string;
+  expected_regeneration_count: number;
+  player_input_json: string;
+  generated_output_json: string;
+  summary_patch: string;
+  context_snapshot_json: string;
+  memory_context_json: string;
+  state_mutations_json: string;
+  messages_json: string;
+  events_json: string;
+  created_at: string;
+}
+
 interface MaterializedStateRow {
   entity_type: StateEntityType;
   entity_id: string;
@@ -906,6 +1103,20 @@ export class StoryModuleManagementError extends Error {
   }
 }
 
+export class PlotThreadManagementError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlotThreadManagementError";
+  }
+}
+
+export class PlotTriggerManagementError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlotTriggerManagementError";
+  }
+}
+
 export class WorldBookManagementError extends Error {
   constructor(message: string) {
     super(message);
@@ -955,6 +1166,16 @@ export class TurnRegenerationConflictError extends Error {
   }
 }
 
+export class AttributeCheckResolutionError extends Error {
+  public readonly issues: string[];
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AttributeCheckResolutionError";
+    this.issues = [message];
+  }
+}
+
 function requireText(value: string, label: string) {
   if (!value.trim()) {
     throw new Error(`${label}不能为空。`);
@@ -981,8 +1202,89 @@ function parseStringArray(value: string) {
   return parsed.filter((item): item is string => typeof item === "string");
 }
 
+function parseArrayValue(value: string): JsonValue[] {
+  const parsed = JSON.parse(value) as JsonValue;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
 function readString(value: JsonValue | undefined) {
   return typeof value === "string" ? value : "";
+}
+
+function readObject(value: JsonValue | undefined) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
+function isValidAttributeRoll(value: number) {
+  return (
+    Number.isInteger(value) &&
+    value >= ATTRIBUTE_ROLL_MIN &&
+    value <= ATTRIBUTE_ROLL_MAX
+  );
+}
+
+function readAttributeChecks(
+  generatedOutput: JsonObject,
+): Array<{
+  id: string;
+  characterId: string;
+  attribute: string;
+  difficulty: number;
+  context: string;
+}> {
+  if (!Array.isArray(generatedOutput.attributeChecks)) return [];
+  return generatedOutput.attributeChecks.flatMap((value) => {
+    if (!isJsonObject(value)) return [];
+    const id = readString(value.id);
+    const characterId = readString(value.characterId);
+    const attribute = readString(value.attribute);
+    const difficulty =
+      typeof value.difficulty === "number" ? value.difficulty : 50;
+    const context = readString(value.context);
+    if (!id || !characterId || !attribute) return [];
+    return [
+      {
+        id,
+        characterId,
+        attribute,
+        difficulty,
+        context,
+      },
+    ];
+  });
+}
+
+function readAttributeCheckResults(
+  generatedOutput: JsonObject,
+): AttributeCheckResolutionRecord[] {
+  if (!Array.isArray(generatedOutput.attributeCheckResults)) return [];
+  return generatedOutput.attributeCheckResults.flatMap((value) => {
+    if (!isJsonObject(value)) return [];
+    return [
+      {
+        checkId: readString(value.checkId),
+        characterId: readString(value.characterId),
+        attribute: readString(value.attribute),
+        difficulty:
+          typeof value.difficulty === "number" ? value.difficulty : 0,
+        context: readString(value.context),
+        attributeValue:
+          typeof value.attributeValue === "number" ? value.attributeValue : 0,
+        margin: typeof value.margin === "number" ? value.margin : 0,
+        direct: value.direct === true,
+        roll:
+          value.roll === null || typeof value.roll !== "number"
+            ? null
+            : value.roll,
+        finalValue:
+          typeof value.finalValue === "number" ? value.finalValue : 0,
+        outcome: readString(value.outcome),
+        outcomeLabel: readString(value.outcomeLabel),
+      },
+    ];
+  });
 }
 
 function readOptionalNumber(value: JsonValue | undefined) {
@@ -2063,6 +2365,47 @@ export class LocalStoryStore {
         reason: startsActive
           ? "建立并启用剧本包的开场剧情任务"
           : "建立剧本包的后续剧情任务",
+        evidence: [openingEventId],
+      });
+    }
+
+    for (const thread of input.foreshadowing ?? []) {
+      stateMutations.push({
+        entityType: "plot_thread",
+        entityId: `plot-thread:${thread.id}`,
+        operation: "replace",
+        value: {
+          threadId: thread.id,
+          keywords: thread.keywords,
+          seedCondition: thread.seedCondition,
+          payoffCondition: thread.payoffCondition,
+          payoffSummary: thread.payoffSummary,
+          characters: thread.characters ?? [],
+          status: "dormant",
+        },
+        reason: "建立剧本包声明的伏笔",
+        evidence: [openingEventId],
+      });
+    }
+
+    for (const trigger of input.triggers ?? []) {
+      stateMutations.push({
+        entityType: "plot_trigger",
+        entityId: `plot-trigger:${trigger.id}`,
+        operation: "replace",
+        value: {
+          triggerId: trigger.id,
+          when: trigger.when,
+          consequence: trigger.consequence,
+          ...(trigger.stateEffects !== undefined
+            ? { stateEffects: trigger.stateEffects }
+            : {}),
+          ...(trigger.deadlineDay !== undefined
+            ? { deadlineDay: trigger.deadlineDay }
+            : {}),
+          status: "armed",
+        },
+        reason: "建立剧本包声明的偏离触发器",
         evidence: [openingEventId],
       });
     }
@@ -5064,6 +5407,325 @@ export class LocalStoryStore {
     }
   }
 
+  managePlotThread(input: PlotThreadManagementInput): ManagedPlotThreadResult {
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.database
+        .prepare(`
+          SELECT plot_thread_id FROM plot_thread_management_changes
+          WHERE session_id = ? AND action_id = ? ORDER BY ordinal LIMIT 1
+        `)
+        .get(input.sessionId, input.actionId) as
+        | { plot_thread_id: string }
+        | undefined;
+      if (existing) {
+        this.database.exec("COMMIT");
+        return {
+          actionId: input.actionId,
+          threadId: existing.plot_thread_id,
+          operation: input.operation,
+          reused: true,
+        };
+      }
+
+      const branch = this.database
+        .prepare(`
+          SELECT id, head_turn_id
+          FROM branches
+          WHERE id = (
+            SELECT active_branch_id FROM sessions WHERE id = ?
+          )
+        `)
+        .get(input.sessionId) as
+        | { id: string; head_turn_id: string | null }
+        | undefined;
+      if (!branch) throw new PlotThreadManagementError("没有找到当前剧情。");
+      if (!branch.head_turn_id) {
+        throw new PlotThreadManagementError(
+          "剧情尚未建立开场回合，无法管理伏笔。",
+        );
+      }
+
+      const threadRows = this.database
+        .prepare(`
+          SELECT entity_id, state_json, is_active
+          FROM materialized_states
+          WHERE session_id = ? AND branch_id = ?
+            AND entity_type = 'plot_thread'
+        `)
+        .all(input.sessionId, branch.id) as unknown as Array<{
+        entity_id: string;
+        state_json: string;
+        is_active: number;
+      }>;
+      const threads = threadRows.map((row) => ({
+        entityId: row.entity_id,
+        state: parseObject(row.state_json),
+        isActive: row.is_active === 1,
+      }));
+      const requestedThreadId =
+        input.operation === "create"
+          ? input.thread.id.trim()
+          : input.threadId.trim();
+      requireText(requestedThreadId, "伏笔 ID");
+      const currentThread = threads.find(
+        (thread) => readString(thread.state.threadId) === requestedThreadId,
+      );
+      if (input.operation === "create" && currentThread) {
+        throw new PlotThreadManagementError("伏笔 ID 已存在，请换一个 ID。");
+      }
+      if (input.operation !== "create" && !currentThread) {
+        throw new PlotThreadManagementError("没有找到指定的伏笔。");
+      }
+
+      const mutations: StateMutationInput[] = [];
+      if (input.operation === "create" || input.operation === "update") {
+        const threadInput = input.thread;
+        requireText(threadInput.id, "伏笔 ID");
+        requireText(threadInput.seedCondition, "伏笔出现条件");
+        requireText(threadInput.payoffCondition, "伏笔回收条件");
+        requireText(threadInput.payoffSummary, "伏笔回收概要");
+        if (threadInput.id.trim() !== requestedThreadId) {
+          throw new PlotThreadManagementError("编辑伏笔时不能修改伏笔 ID。");
+        }
+        if (threadInput.keywords.length === 0) {
+          throw new PlotThreadManagementError("伏笔至少需要一个关键词。");
+        }
+        if (input.operation === "create" && threads.length >= 30) {
+          throw new PlotThreadManagementError("一个剧本最多保存 30 个伏笔。");
+        }
+        const currentStatus = readString(currentThread?.state.status);
+        if (input.operation === "update" && currentStatus === "paid_off") {
+          throw new PlotThreadManagementError(
+            "已经回收的伏笔属于剧情历史，不能再编辑。",
+          );
+        }
+        const normalizedThread = {
+          threadId: requestedThreadId,
+          keywords: threadInput.keywords.map((item) => item.trim()),
+          seedCondition: threadInput.seedCondition.trim(),
+          payoffCondition: threadInput.payoffCondition.trim(),
+          payoffSummary: threadInput.payoffSummary.trim(),
+          characters: (threadInput.characters ?? []).map((item) => item.trim()),
+          status:
+            input.operation === "create"
+              ? "dormant"
+              : currentStatus || "dormant",
+        } satisfies JsonObject;
+        mutations.push({
+          entityType: "plot_thread",
+          entityId: `plot-thread:${requestedThreadId}`,
+          operation: input.operation === "create" ? "replace" : "merge",
+          value: normalizedThread,
+          reason:
+            input.operation === "create"
+              ? "玩家在剧本工作台中新增了伏笔"
+              : "玩家在剧本工作台中更新了伏笔",
+          evidence: [],
+        });
+      } else {
+        const currentStatus = readString(currentThread?.state.status);
+        if (currentStatus === "paid_off") {
+          throw new PlotThreadManagementError(
+            "已经回收的伏笔属于剧情历史，不能删除。",
+          );
+        }
+        mutations.push({
+          entityType: "plot_thread",
+          entityId: currentThread!.entityId,
+          operation: "deactivate",
+          reason: "玩家在剧本工作台中删除了伏笔",
+          evidence: [],
+        });
+      }
+
+      this.applyPlotElementManagementMutations({
+        actionId: input.actionId,
+        sessionId: input.sessionId,
+        branchId: branch.id,
+        referenceTurnId: branch.head_turn_id,
+        elementId: requestedThreadId,
+        table: "plot_thread_management_changes",
+        mutations,
+        now,
+      });
+      this.database
+        .prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
+        .run(now, input.sessionId);
+      this.database.exec("COMMIT");
+      return {
+        actionId: input.actionId,
+        threadId: requestedThreadId,
+        operation: input.operation,
+        reused: false,
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  managePlotTrigger(input: PlotTriggerManagementInput): ManagedPlotTriggerResult {
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.database
+        .prepare(`
+          SELECT plot_trigger_id FROM plot_trigger_management_changes
+          WHERE session_id = ? AND action_id = ? ORDER BY ordinal LIMIT 1
+        `)
+        .get(input.sessionId, input.actionId) as
+        | { plot_trigger_id: string }
+        | undefined;
+      if (existing) {
+        this.database.exec("COMMIT");
+        return {
+          actionId: input.actionId,
+          triggerId: existing.plot_trigger_id,
+          operation: input.operation,
+          reused: true,
+        };
+      }
+
+      const branch = this.database
+        .prepare(`
+          SELECT id, head_turn_id
+          FROM branches
+          WHERE id = (
+            SELECT active_branch_id FROM sessions WHERE id = ?
+          )
+        `)
+        .get(input.sessionId) as
+        | { id: string; head_turn_id: string | null }
+        | undefined;
+      if (!branch) throw new PlotTriggerManagementError("没有找到当前剧情。");
+      if (!branch.head_turn_id) {
+        throw new PlotTriggerManagementError(
+          "剧情尚未建立开场回合，无法管理偏离触发器。",
+        );
+      }
+
+      const triggerRows = this.database
+        .prepare(`
+          SELECT entity_id, state_json, is_active
+          FROM materialized_states
+          WHERE session_id = ? AND branch_id = ?
+            AND entity_type = 'plot_trigger'
+        `)
+        .all(input.sessionId, branch.id) as unknown as Array<{
+        entity_id: string;
+        state_json: string;
+        is_active: number;
+      }>;
+      const triggers = triggerRows.map((row) => ({
+        entityId: row.entity_id,
+        state: parseObject(row.state_json),
+        isActive: row.is_active === 1,
+      }));
+      const requestedTriggerId =
+        input.operation === "create"
+          ? input.trigger.id.trim()
+          : input.triggerId.trim();
+      requireText(requestedTriggerId, "触发器 ID");
+      const currentTrigger = triggers.find(
+        (trigger) => readString(trigger.state.triggerId) === requestedTriggerId,
+      );
+      if (input.operation === "create" && currentTrigger) {
+        throw new PlotTriggerManagementError("触发器 ID 已存在，请换一个 ID。");
+      }
+      if (input.operation !== "create" && !currentTrigger) {
+        throw new PlotTriggerManagementError("没有找到指定的触发器。");
+      }
+
+      const mutations: StateMutationInput[] = [];
+      if (input.operation === "create" || input.operation === "update") {
+        const triggerInput = input.trigger;
+        requireText(triggerInput.id, "触发器 ID");
+        requireText(triggerInput.when, "触发器条件");
+        requireText(triggerInput.consequence, "触发器后果");
+        if (triggerInput.id.trim() !== requestedTriggerId) {
+          throw new PlotTriggerManagementError(
+            "编辑触发器时不能修改触发器 ID。",
+          );
+        }
+        if (input.operation === "create" && triggers.length >= 30) {
+          throw new PlotTriggerManagementError(
+            "一个剧本最多保存 30 个偏离触发器。",
+          );
+        }
+        const currentStatus = readString(currentTrigger?.state.status);
+        if (input.operation === "update" && currentStatus === "fired") {
+          throw new PlotTriggerManagementError(
+            "已经触发的触发器属于剧情历史，不能再编辑。",
+          );
+        }
+        const normalizedTrigger = {
+          triggerId: requestedTriggerId,
+          when: triggerInput.when.trim(),
+          consequence: triggerInput.consequence.trim(),
+          ...(triggerInput.stateEffects !== undefined
+            ? { stateEffects: triggerInput.stateEffects }
+            : {}),
+          ...(triggerInput.deadlineDay !== undefined
+            ? { deadlineDay: triggerInput.deadlineDay }
+            : {}),
+          status:
+            input.operation === "create" ? "armed" : currentStatus || "armed",
+        } satisfies JsonObject;
+        mutations.push({
+          entityType: "plot_trigger",
+          entityId: `plot-trigger:${requestedTriggerId}`,
+          operation: input.operation === "create" ? "replace" : "merge",
+          value: normalizedTrigger,
+          reason:
+            input.operation === "create"
+              ? "玩家在剧本工作台中新增了偏离触发器"
+              : "玩家在剧本工作台中更新了偏离触发器",
+          evidence: [],
+        });
+      } else {
+        const currentStatus = readString(currentTrigger?.state.status);
+        if (currentStatus === "fired") {
+          throw new PlotTriggerManagementError(
+            "已经触发的触发器属于剧情历史，不能删除。",
+          );
+        }
+        mutations.push({
+          entityType: "plot_trigger",
+          entityId: currentTrigger!.entityId,
+          operation: "deactivate",
+          reason: "玩家在剧本工作台中删除了偏离触发器",
+          evidence: [],
+        });
+      }
+
+      this.applyPlotElementManagementMutations({
+        actionId: input.actionId,
+        sessionId: input.sessionId,
+        branchId: branch.id,
+        referenceTurnId: branch.head_turn_id,
+        elementId: requestedTriggerId,
+        table: "plot_trigger_management_changes",
+        mutations,
+        now,
+      });
+      this.database
+        .prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
+        .run(now, input.sessionId);
+      this.database.exec("COMMIT");
+      return {
+        actionId: input.actionId,
+        triggerId: requestedTriggerId,
+        operation: input.operation,
+        reused: false,
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   loadStateAudit(sessionId: string): StateAuditDashboard {
     requireText(sessionId, "sessionId");
     const branch = this.getActiveBranch(sessionId);
@@ -5168,10 +5830,48 @@ export class LocalStoryStore {
                story_module_management_changes.reason AS reason,
                '' AS summary_patch,
                story_module_management_changes.created_at AS created_at
-        FROM story_module_management_changes
+         FROM story_module_management_changes
         JOIN turns ON turns.id = story_module_management_changes.reference_turn_id
         WHERE story_module_management_changes.session_id = ?
           AND story_module_management_changes.branch_id = ?
+        UNION ALL
+        SELECT plot_thread_management_changes.id AS id,
+               turns.sequence AS sequence, 1 AS source_order,
+               plot_thread_management_changes.action_id AS action_id,
+               plot_thread_management_changes.ordinal AS ordinal,
+               'plot_thread_management' AS source,
+               plot_thread_management_changes.entity_type AS entity_type,
+               plot_thread_management_changes.entity_id AS entity_id,
+               plot_thread_management_changes.operation AS operation,
+               plot_thread_management_changes.payload_json AS payload_json,
+               NULL AS result_active,
+               plot_thread_management_changes.reference_turn_id AS updated_turn_id,
+               plot_thread_management_changes.reason AS reason,
+               '' AS summary_patch,
+               plot_thread_management_changes.created_at AS created_at
+        FROM plot_thread_management_changes
+        JOIN turns ON turns.id = plot_thread_management_changes.reference_turn_id
+        WHERE plot_thread_management_changes.session_id = ?
+          AND plot_thread_management_changes.branch_id = ?
+        UNION ALL
+        SELECT plot_trigger_management_changes.id AS id,
+               turns.sequence AS sequence, 1 AS source_order,
+               plot_trigger_management_changes.action_id AS action_id,
+               plot_trigger_management_changes.ordinal AS ordinal,
+               'plot_trigger_management' AS source,
+               plot_trigger_management_changes.entity_type AS entity_type,
+               plot_trigger_management_changes.entity_id AS entity_id,
+               plot_trigger_management_changes.operation AS operation,
+               plot_trigger_management_changes.payload_json AS payload_json,
+               NULL AS result_active,
+               plot_trigger_management_changes.reference_turn_id AS updated_turn_id,
+               plot_trigger_management_changes.reason AS reason,
+               '' AS summary_patch,
+               plot_trigger_management_changes.created_at AS created_at
+        FROM plot_trigger_management_changes
+        JOIN turns ON turns.id = plot_trigger_management_changes.reference_turn_id
+        WHERE plot_trigger_management_changes.session_id = ?
+          AND plot_trigger_management_changes.branch_id = ?
         UNION ALL
         SELECT world_book_management_changes.id AS id,
                turns.sequence AS sequence, 1 AS source_order,
@@ -5213,6 +5913,10 @@ export class LocalStoryStore {
         ORDER BY sequence, source_order, created_at, action_id, ordinal
       `)
       .all(
+        sessionId,
+        branch.id,
+        sessionId,
+        branch.id,
         sessionId,
         branch.id,
         sessionId,
@@ -5268,9 +5972,13 @@ export class LocalStoryStore {
                 ? `回合 ${row.sequence} 后 · 地点管理`
                 : row.source === "story_module_management"
                   ? `回合 ${row.sequence} 后 · 剧情任务管理`
-                  : row.source === "world_book_management"
-                    ? `回合 ${row.sequence} 后 · 世界书管理`
-                    : `回合 ${row.sequence} 后 · 状态回滚`;
+                  : row.source === "plot_thread_management"
+                    ? `回合 ${row.sequence} 后 · 伏笔管理`
+                    : row.source === "plot_trigger_management"
+                      ? `回合 ${row.sequence} 后 · 偏离触发器管理`
+                      : row.source === "world_book_management"
+                        ? `回合 ${row.sequence} 后 · 世界书管理`
+                        : `回合 ${row.sequence} 后 · 状态回滚`;
         action = {
           id: actionKey,
           source: row.source,
@@ -5607,6 +6315,395 @@ export class LocalStoryStore {
           regenerationCount: row.ordinal,
         }
       : null;
+  }
+
+  savePendingTurn(input: SavePendingTurnInput): PendingTurnRecord {
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database
+        .prepare(`
+          INSERT INTO pending_turns (
+            id, session_id, branch_id, kind, expected_head_turn_id,
+            expected_parent_turn_id, idempotency_key, feedback,
+            expected_regeneration_count, player_input_json,
+            generated_output_json, summary_patch, context_snapshot_json,
+            memory_context_json, state_mutations_json, messages_json,
+            events_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(session_id, idempotency_key) DO UPDATE SET
+            id = excluded.id,
+            branch_id = excluded.branch_id,
+            kind = excluded.kind,
+            expected_head_turn_id = excluded.expected_head_turn_id,
+            expected_parent_turn_id = excluded.expected_parent_turn_id,
+            feedback = excluded.feedback,
+            expected_regeneration_count = excluded.expected_regeneration_count,
+            player_input_json = excluded.player_input_json,
+            generated_output_json = excluded.generated_output_json,
+            summary_patch = excluded.summary_patch,
+            context_snapshot_json = excluded.context_snapshot_json,
+            memory_context_json = excluded.memory_context_json,
+            state_mutations_json = excluded.state_mutations_json,
+            messages_json = excluded.messages_json,
+            events_json = excluded.events_json,
+            created_at = excluded.created_at
+        `)
+        .run(
+          input.id,
+          input.sessionId,
+          input.branchId,
+          input.kind,
+          input.expectedHeadTurnId,
+          input.expectedParentTurnId,
+          input.idempotencyKey,
+          input.feedback,
+          input.expectedRegenerationCount,
+          stringifyJson(input.playerInput),
+          stringifyJson(input.generatedOutput),
+          input.summaryPatch,
+          stringifyJson(input.contextSnapshot as unknown as JsonValue),
+          stringifyJson(input.memoryContext as unknown as JsonValue),
+          stringifyJson(input.stateMutations as unknown as JsonValue),
+          stringifyJson(input.messages as unknown as JsonValue),
+          stringifyJson(input.events as unknown as JsonValue),
+          now,
+        );
+      this.database.exec("COMMIT");
+      return this.decodePendingTurnRow({
+        id: input.id,
+        session_id: input.sessionId,
+        branch_id: input.branchId,
+        kind: input.kind,
+        expected_head_turn_id: input.expectedHeadTurnId,
+        expected_parent_turn_id: input.expectedParentTurnId,
+        idempotency_key: input.idempotencyKey,
+        feedback: input.feedback,
+        expected_regeneration_count: input.expectedRegenerationCount,
+        player_input_json: stringifyJson(input.playerInput),
+        generated_output_json: stringifyJson(input.generatedOutput),
+        summary_patch: input.summaryPatch,
+        context_snapshot_json: stringifyJson(
+          input.contextSnapshot as unknown as JsonValue,
+        ),
+        memory_context_json: stringifyJson(
+          input.memoryContext as unknown as JsonValue,
+        ),
+        state_mutations_json: stringifyJson(
+          input.stateMutations as unknown as JsonValue,
+        ),
+        messages_json: stringifyJson(input.messages as unknown as JsonValue),
+        events_json: stringifyJson(input.events as unknown as JsonValue),
+        created_at: now,
+      });
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  loadPendingTurnById(sessionId: string, pendingTurnId: string) {
+    const row = this.database
+      .prepare(`
+        SELECT id, session_id, branch_id, kind, expected_head_turn_id,
+               expected_parent_turn_id, idempotency_key, feedback,
+               expected_regeneration_count, player_input_json,
+               generated_output_json, summary_patch, context_snapshot_json,
+               memory_context_json, state_mutations_json, messages_json,
+               events_json, created_at
+        FROM pending_turns
+        WHERE id = ? AND session_id = ?
+      `)
+      .get(pendingTurnId, sessionId) as PendingTurnRow | undefined;
+    return row ? this.decodePendingTurnRow(row) : null;
+  }
+
+  loadPendingTurnByKey(sessionId: string, idempotencyKey: string) {
+    const row = this.database
+      .prepare(`
+        SELECT id, session_id, branch_id, kind, expected_head_turn_id,
+               expected_parent_turn_id, idempotency_key, feedback,
+               expected_regeneration_count, player_input_json,
+               generated_output_json, summary_patch, context_snapshot_json,
+               memory_context_json, state_mutations_json, messages_json,
+               events_json, created_at
+        FROM pending_turns
+        WHERE session_id = ? AND idempotency_key = ?
+      `)
+      .get(sessionId, idempotencyKey) as PendingTurnRow | undefined;
+    return row ? this.decodePendingTurnRow(row) : null;
+  }
+
+  deletePendingTurn(pendingTurnId: string) {
+    this.database
+      .prepare("DELETE FROM pending_turns WHERE id = ?")
+      .run(pendingTurnId);
+  }
+
+  private decodePendingTurnRow(row: PendingTurnRow): PendingTurnRecord {
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      branchId: row.branch_id,
+      kind: row.kind === "regenerate" ? "regenerate" : "advance",
+      expectedHeadTurnId: row.expected_head_turn_id,
+      expectedParentTurnId: row.expected_parent_turn_id,
+      idempotencyKey: row.idempotency_key,
+      feedback: row.feedback,
+      expectedRegenerationCount: row.expected_regeneration_count,
+      playerInput: parseObject(row.player_input_json),
+      generatedOutput: parseObject(row.generated_output_json),
+      summaryPatch: row.summary_patch,
+      contextSnapshot: parseObject(row.context_snapshot_json),
+      memoryContext: parseObject(row.memory_context_json),
+      stateMutations: parseArrayValue(row.state_mutations_json) as unknown as StateMutationInput[],
+      messages: parseArrayValue(row.messages_json) as unknown as TurnMessageInput[],
+      events: parseArrayValue(row.events_json) as unknown as TurnEventInput[],
+      createdAt: row.created_at,
+    };
+  }
+
+  resolvePendingTurnChecks(
+    input: ResolvePendingTurnChecksInput,
+  ): ResolvedTurnBackfill {
+    requireText(input.sessionId, "sessionId");
+    requireText(input.pendingTurnId, "pendingTurnId");
+    requireText(input.expectedHeadTurnId, "expectedHeadTurnId");
+
+    const adventure = this.loadAdventure(input.sessionId);
+    if (adventure.branchState.branch.headTurnId !== input.expectedHeadTurnId) {
+      throw new BranchHeadConflictError(
+        input.expectedHeadTurnId,
+        adventure.branchState.branch.headTurnId,
+      );
+    }
+
+    if (adventure.branchState.branch.headTurnId === input.pendingTurnId) {
+      const committed = this.loadTurn(
+        adventure.branchState.branch.id,
+        input.pendingTurnId,
+      );
+      const recorded = readAttributeCheckResults(committed.generatedOutput);
+      if (recorded.length > 0) {
+        return {
+          committedTurn: {
+            id: committed.id,
+            branchId: committed.branchId,
+            parentTurnId: committed.parentTurnId,
+            sequence: committed.sequence,
+            createdAt: committed.createdAt,
+            reused: true,
+          },
+          resolutions: recorded,
+        };
+      }
+      throw new StoryNotFoundError("没有找到待确认的属性判定回合。");
+    }
+
+    const pending = this.loadPendingTurnById(
+      input.sessionId,
+      input.pendingTurnId,
+    );
+    if (!pending) {
+      throw new StoryNotFoundError("没有找到待确认的属性判定回合。");
+    }
+
+    const checks = readAttributeChecks(pending.generatedOutput);
+    if (checks.length === 0) {
+      throw new AttributeCheckResolutionError("该回合不包含属性判定。");
+    }
+    const knownCheckIds = new Set(checks.map((check) => check.id));
+    const rollByCheckId = new Map<string, number | null>();
+    for (const result of input.results) {
+      if (!knownCheckIds.has(result.checkId)) {
+        throw new AttributeCheckResolutionError(
+          `未知的属性判定 ${result.checkId}。`,
+        );
+      }
+      if (result.roll !== null && !isValidAttributeRoll(result.roll)) {
+        throw new AttributeCheckResolutionError(
+          `属性判定 ${result.checkId} 的骰子点数必须是 1 到 100 之间的整数。`,
+        );
+      }
+      rollByCheckId.set(result.checkId, result.roll);
+    }
+
+    const attributeValues: Record<string, Record<string, number>> = {};
+    for (const state of adventure.branchState.states) {
+      if (state.entityType !== "character_state") continue;
+      const attributes = readObject(state.state.attributes);
+      const values: Record<string, number> = {};
+      for (const [attribute, value] of Object.entries(attributes)) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          values[attribute] = value;
+        }
+      }
+      attributeValues[state.entityId] = values;
+    }
+    const resolutions = resolveAttributeChecks({
+      requests: checks as unknown as AttributeCheckRequest[],
+      attributeValues,
+      rolls: rollByCheckId,
+      skipUnrolled: true,
+    });
+
+    const characterNameById = new Map(
+      adventure.branchState.states
+        .filter((state) => state.entityType === "character_state")
+        .map((state) => [
+          state.entityId,
+          readString(state.state.name) || readString(state.state.role),
+        ]),
+    );
+    const resultMessages: TurnMessageInput[] = [];
+    const checkMutations: StateMutationInput[] = [];
+    const checkResultEvents: TurnEventInput[] = [];
+    for (const resolution of resolutions) {
+      if (resolution.outcome === "skipped") continue;
+      const characterName =
+        characterNameById.get(resolution.characterId) ?? resolution.characterId;
+      const rollText =
+        resolution.direct && resolution.roll === null
+          ? "实力悬殊，直接判定"
+          : `掷出 ${resolution.roll}，最终 ${resolution.finalValue}`;
+      const summary =
+        `属性判定：${resolution.context || "关键行动"}（${resolution.attribute} ${resolution.attributeValue} vs 难度 ${resolution.difficulty}，${rollText}）→ ${resolution.outcomeLabel}。`;
+      resultMessages.push({
+        role: "narrator",
+        content: summary,
+        metadata: { attributeCheck: resolution.checkId },
+      });
+      checkMutations.push({
+        entityType: "plot_check",
+        entityId: `plot-check:${pending.id}:${resolution.checkId}`,
+        operation: "replace",
+        value: {
+          checkId: resolution.checkId,
+          characterId: resolution.characterId,
+          attribute: resolution.attribute,
+          difficulty: resolution.difficulty,
+          context: resolution.context,
+          attributeValue: resolution.attributeValue,
+          margin: resolution.margin,
+          direct: resolution.direct,
+          roll: resolution.roll,
+          finalValue: resolution.finalValue,
+          outcome: resolution.outcome,
+          outcomeLabel: resolution.outcomeLabel,
+          turnId: pending.id,
+        },
+        reason: `${characterName}的属性判定结算`,
+        evidence: [`attribute-check:${resolution.checkId}`],
+      });
+      checkResultEvents.push({
+        id: `attribute-check:${resolution.checkId}`,
+        eventType: "attribute_check",
+        summary: `${characterName}进行了属性判定：${resolution.attribute} ${resolution.attributeValue} vs 难度 ${resolution.difficulty} → ${resolution.outcomeLabel}。`,
+        characterIds: [resolution.characterId],
+        payload: {
+          checkId: resolution.checkId,
+          attribute: resolution.attribute,
+          difficulty: resolution.difficulty,
+          attributeValue: resolution.attributeValue,
+          roll: resolution.roll,
+          finalValue: resolution.finalValue,
+          outcome: resolution.outcome,
+          direct: resolution.direct,
+        },
+      });
+    }
+
+    const finalOutput = structuredClone(pending.generatedOutput) as JsonObject;
+    const draftTurn = readObject(finalOutput.turn);
+    const existingTurnEvents = Array.isArray(draftTurn.events)
+      ? draftTurn.events
+      : [];
+    const resolvedTurnEvents: JsonValue[] = [
+      ...existingTurnEvents,
+      ...resolutions
+        .filter((resolution) => resolution.outcome !== "skipped")
+        .map((resolution) => ({
+          id: `attribute-check:${resolution.checkId}`,
+          type: "attribute_check",
+          summary: `${characterNameById.get(resolution.characterId) ?? resolution.characterId}进行了属性判定：${resolution.attribute} ${resolution.attributeValue} vs 难度 ${resolution.difficulty} → ${resolution.outcomeLabel}。`,
+          characterIds: [resolution.characterId],
+        })),
+    ];
+    draftTurn.events = resolvedTurnEvents;
+    finalOutput.turn = draftTurn;
+    finalOutput.attributeCheckResults = resolutions.map((resolution) => ({
+      checkId: resolution.checkId,
+      characterId: resolution.characterId,
+      attribute: resolution.attribute,
+      difficulty: resolution.difficulty,
+      context: resolution.context,
+      attributeValue: resolution.attributeValue,
+      margin: resolution.margin,
+      direct: resolution.direct,
+      roll: resolution.roll,
+      finalValue: resolution.finalValue,
+      outcome: resolution.outcome,
+      outcomeLabel: resolution.outcomeLabel,
+    }));
+
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const updated = this.database
+        .prepare(`
+          UPDATE pending_turns
+          SET generated_output_json = ?
+          WHERE id = ? AND session_id = ?
+        `)
+        .run(stringifyJson(finalOutput), input.pendingTurnId, input.sessionId);
+      if (updated.changes !== 1) {
+        throw new StoryNotFoundError("没有找到待确认的属性判定回合。");
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+
+    const committed =
+      pending.kind === "advance"
+        ? this.commitTurn({
+            id: pending.id,
+            sessionId: input.sessionId,
+            branchId: pending.branchId,
+            expectedHeadTurnId: pending.expectedHeadTurnId,
+            idempotencyKey: pending.idempotencyKey,
+            playerInput: pending.playerInput,
+            generatedOutput: finalOutput,
+            summaryPatch: pending.summaryPatch,
+            messages: [...pending.messages, ...resultMessages],
+            events: [...pending.events, ...checkResultEvents],
+            stateMutations: [...pending.stateMutations, ...checkMutations],
+            memoryContext: pending.memoryContext as unknown as StoryMemoryContext,
+            contextSnapshot:
+              pending.contextSnapshot as unknown as TurnContextSnapshotInput,
+          })
+        : this.replaceHeadTurn({
+            actionId: pending.idempotencyKey,
+            feedback: pending.feedback,
+            expectedRegenerationCount: pending.expectedRegenerationCount,
+            turnId: pending.id,
+            sessionId: input.sessionId,
+            branchId: pending.branchId,
+            expectedParentTurnId: pending.expectedParentTurnId ?? "",
+            generatedOutput: finalOutput,
+            summaryPatch: pending.summaryPatch,
+            messages: [...pending.messages, ...resultMessages],
+            events: [...pending.events, ...checkResultEvents],
+            stateMutations: [...pending.stateMutations, ...checkMutations],
+            memoryContext: pending.memoryContext as unknown as StoryMemoryContext,
+            contextSnapshot:
+              pending.contextSnapshot as unknown as TurnContextSnapshotInput,
+          });
+    this.deletePendingTurn(pending.id);
+    return {
+      committedTurn: committed,
+      resolutions,
+    };
   }
 
   prepareTurnRegeneration(
@@ -6150,6 +7247,14 @@ export class LocalStoryStore {
         WHERE session_id = ? AND branch_id = ? AND reference_turn_id = ?
         UNION ALL
         SELECT 1 AS found
+        FROM plot_thread_management_changes
+        WHERE session_id = ? AND branch_id = ? AND reference_turn_id = ?
+        UNION ALL
+        SELECT 1 AS found
+        FROM plot_trigger_management_changes
+        WHERE session_id = ? AND branch_id = ? AND reference_turn_id = ?
+        UNION ALL
+        SELECT 1 AS found
         FROM world_book_management_changes
         WHERE session_id = ? AND branch_id = ? AND reference_turn_id = ?
         UNION ALL
@@ -6181,10 +7286,16 @@ export class LocalStoryStore {
         sessionId,
         branchId,
         turnId,
+        sessionId,
+        branchId,
+        turnId,
+        sessionId,
+        branchId,
+        turnId,
       ) as { found: number } | undefined;
     if (row) {
       throw new TurnRegenerationError(
-        "最新回合之后已经手工修改过人物、地点、剧情任务、世界书、原文、记忆或持久状态。为避免覆盖这些修改，当前回合不能直接重新生成。",
+        "最新回合之后已经手工修改过人物、地点、剧情任务、伏笔、偏离触发器、世界书、原文、记忆或持久状态。为避免覆盖这些修改，当前回合不能直接重新生成。",
       );
     }
   }
@@ -6368,6 +7479,9 @@ export class LocalStoryStore {
       "relationship",
       "story_direction",
       "story_module",
+      "plot_thread",
+      "plot_trigger",
+      "plot_check",
       "location",
       "session_state",
     ]);
@@ -7090,6 +8204,109 @@ export class LocalStoryStore {
         input.referenceTurnId,
         ordinal,
         input.storyModuleId,
+        mutation.entityType,
+        mutation.entityId,
+        mutation.operation,
+        stringifyJson(mutationValue),
+        mutation.reason,
+        input.now,
+      );
+      upsertCurrent.run(
+        input.sessionId,
+        input.branchId,
+        mutation.entityType,
+        mutation.entityId,
+        stringifyJson(nextState),
+        isActive ? 1 : 0,
+        (current?.version ?? 0) + 1,
+        input.referenceTurnId,
+        input.now,
+      );
+    }
+  }
+
+  private applyPlotElementManagementMutations(input: {
+    actionId: string;
+    sessionId: string;
+    branchId: string;
+    referenceTurnId: string;
+    elementId: string;
+    table:
+      | "plot_thread_management_changes"
+      | "plot_trigger_management_changes";
+    mutations: StateMutationInput[];
+    now: string;
+  }) {
+    const idColumn =
+      input.table === "plot_thread_management_changes"
+        ? "plot_thread_id"
+        : "plot_trigger_id";
+    const readCurrent = this.database.prepare(`
+      SELECT state_json, is_active, version
+      FROM materialized_states
+      WHERE session_id = ? AND branch_id = ?
+        AND entity_type = ? AND entity_id = ?
+    `);
+    const insertChange = this.database.prepare(`
+      INSERT INTO ${input.table} (
+        id, action_id, session_id, branch_id, reference_turn_id,
+        ordinal, ${idColumn}, entity_type, entity_id, operation,
+        payload_json, reason, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const upsertCurrent = this.database.prepare(`
+      INSERT INTO materialized_states (
+        session_id, branch_id, entity_type, entity_id,
+        state_json, is_active, version, updated_turn_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, branch_id, entity_type, entity_id)
+      DO UPDATE SET
+        state_json = excluded.state_json,
+        is_active = excluded.is_active,
+        version = excluded.version,
+        updated_turn_id = excluded.updated_turn_id,
+        updated_at = excluded.updated_at
+    `);
+
+    for (const [ordinal, mutation] of input.mutations.entries()) {
+      const current = readCurrent.get(
+        input.sessionId,
+        input.branchId,
+        mutation.entityType,
+        mutation.entityId,
+      ) as
+        | { state_json: string; is_active: number; version: number }
+        | undefined;
+      const currentState = current ? parseObject(current.state_json) : {};
+      const mutationValue = mutation.value ?? {};
+      let nextState = currentState;
+      let isActive = current ? current.is_active === 1 : true;
+
+      switch (mutation.operation) {
+        case "replace":
+          nextState = structuredClone(mutationValue);
+          isActive = true;
+          break;
+        case "merge":
+          nextState = applyStateMergePatch(currentState, mutationValue);
+          break;
+        case "activate":
+          nextState = applyStateMergePatch(currentState, mutationValue);
+          isActive = true;
+          break;
+        case "deactivate":
+          isActive = false;
+          break;
+      }
+
+      insertChange.run(
+        randomUUID(),
+        input.actionId,
+        input.sessionId,
+        input.branchId,
+        input.referenceTurnId,
+        ordinal,
+        input.elementId,
         mutation.entityType,
         mutation.entityId,
         mutation.operation,

@@ -20,10 +20,15 @@ import {
 import {
   applyStateMergePatch,
   BranchHeadConflictError,
+  type CommittedTurn,
   type JsonObject,
   type JsonValue,
   type LocalStoryStore,
+  type ReplacedTurn,
   type StateMutationInput,
+  type TurnContextSnapshotInput,
+  type TurnEventInput,
+  type TurnMessageInput,
   TurnRegenerationError,
 } from "../storage/story-store.ts";
 import {
@@ -36,6 +41,7 @@ import {
   createStoryGenerationPrompt,
   resolvePlayerTurn,
 } from "./剧情提示.ts";
+import { DEFAULT_ATTRIBUTE_VALUE } from "./判定服务.ts";
 import type { SourceReferenceExcerpt } from "../reference/原文参考.ts";
 import {
   estimateStoryMemoryTokens,
@@ -148,12 +154,125 @@ function asNumber(value: JsonValue | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function readText(value: JsonValue | undefined) {
+  return typeof value === "string" ? value : "";
+}
+
 function clampRelationship(value: number) {
   return Math.max(-100, Math.min(100, value));
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+const relationshipStorageDimensions = [
+  "trust",
+  "affinity",
+  "fear",
+  "hostility",
+  "respect",
+] as const;
+
+function appendTriggerStateEffectMutations(input: {
+  adventure: ReturnType<LocalStoryStore["loadAdventure"]>;
+  characterIdByName: Map<string, string>;
+  stateEffects: JsonObject;
+  turnId: string;
+  mutations: StateMutationInput[];
+  reason: string;
+  evidence: string[];
+}) {
+  const {
+    adventure,
+    characterIdByName,
+    stateEffects,
+    turnId,
+    mutations,
+    reason,
+    evidence,
+  } = input;
+  const relationEffects = Array.isArray(stateEffects.relations)
+    ? stateEffects.relations.filter(isJsonObject)
+    : [];
+  for (const effect of relationEffects) {
+    const sourceName = readText(effect.sourceCharacterName);
+    const targetName = readText(effect.targetCharacterName);
+    const sourceId = characterIdByName.get(sourceName);
+    const targetId = characterIdByName.get(targetName);
+    const dimension = readText(effect.dimension);
+    const delta = asNumber(effect.delta);
+    if (!sourceId || !targetId || sourceId === targetId) continue;
+    if (
+      !relationshipStorageDimensions.includes(
+        dimension as (typeof relationshipStorageDimensions)[number],
+      )
+    ) {
+      continue;
+    }
+    const entityId = `${sourceId}:${targetId}`;
+    const current = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "relationship" && state.entityId === entityId,
+    );
+    const nextValue = clampRelationship(
+      asNumber(current?.state[dimension]) + delta,
+    );
+    mutations.push({
+      entityType: "relationship",
+      entityId,
+      operation: current ? "merge" : "replace",
+      value: {
+        sourceCharacterId: sourceId,
+        targetCharacterId: targetId,
+        [dimension]: nextValue,
+        lastChange: delta,
+      },
+      reason,
+      evidence,
+    });
+  }
+
+  const attributeEffects = Array.isArray(stateEffects.attributes)
+    ? stateEffects.attributes.filter(isJsonObject)
+    : [];
+  for (const effect of attributeEffects) {
+    const characterName = readText(effect.characterName);
+    const attribute = readText(effect.attribute);
+    const value = asNumber(effect.value);
+    const characterId = characterIdByName.get(characterName);
+    if (!characterId || !attribute) continue;
+    mutations.push({
+      entityType: "character_state",
+      entityId: characterId,
+      operation: "merge",
+      value: {
+        attributes: {
+          [attribute]: Math.max(0, Math.min(100, value)),
+        },
+        attributeUpdatedTurnId: turnId,
+      },
+      reason,
+      evidence,
+    });
+  }
+
+  const flags = Array.isArray(stateEffects.flags)
+    ? stateEffects.flags.filter((flag): flag is string => typeof flag === "string")
+    : [];
+  if (flags.includes("bad_end")) {
+    mutations.push({
+      entityType: "session_state",
+      entityId: "core",
+      operation: "merge",
+      value: {
+        badEnd: true,
+        badEndReason: reason,
+      },
+      reason: "偏离触发器把局势推向了坏结局方向",
+      evidence,
+    });
+  }
 }
 
 function recreatePlayerTurnRequest(input: {
@@ -305,6 +424,93 @@ function replaceableTurnDraft(output: JsonObject): JsonObject {
     if (value !== undefined) draft[key] = value;
   }
   return draft;
+}
+
+export interface PendingAttributeCheckInfo {
+  checkId: string;
+  characterId: string;
+  characterName: string;
+  attribute: string;
+  attributeValue: number;
+  difficulty: number;
+  context: string;
+  direct: boolean;
+  margin: number;
+}
+
+export function readDraftAttributeChecks(
+  generatedOutput: JsonObject,
+): Array<{
+  id: string;
+  characterId: string;
+  attribute: string;
+  difficulty: number;
+  context: string;
+}> {
+  const rawChecks = generatedOutput.attributeChecks;
+  if (!Array.isArray(rawChecks)) return [];
+  return rawChecks.flatMap((value) => {
+    if (!isJsonObject(value)) return [];
+    const id = readText(value.id);
+    const characterId = readText(value.characterId);
+    const attribute = readText(value.attribute);
+    if (!id || !characterId || !attribute) return [];
+    return [
+      {
+        id,
+        characterId,
+        attribute,
+        difficulty:
+          typeof value.difficulty === "number" &&
+          Number.isInteger(value.difficulty)
+            ? value.difficulty
+            : 50,
+        context: readText(value.context),
+      },
+    ];
+  });
+}
+
+export function buildPendingCheckInfos(
+  adventure: ReturnType<LocalStoryStore["loadAdventure"]>,
+  checks: ReturnType<typeof readDraftAttributeChecks>,
+): PendingAttributeCheckInfo[] {
+  const attributeValues: Record<string, Record<string, number>> = {};
+  const characterNameById = new Map<string, string>();
+  for (const state of adventure.branchState.states) {
+    if (state.entityType === "character_state") {
+      const name = readText(state.state.name) || readText(state.state.role);
+      if (name) characterNameById.set(state.entityId, name);
+      const attributes = isJsonObject(state.state.attributes)
+        ? state.state.attributes
+        : {};
+      const values: Record<string, number> = {};
+      for (const [attribute, value] of Object.entries(attributes)) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          values[attribute] = value;
+        }
+      }
+      attributeValues[state.entityId] = values;
+    }
+  }
+  return checks.map((check) => {
+    const attributeValue =
+      attributeValues[check.characterId]?.[check.attribute] ??
+      DEFAULT_ATTRIBUTE_VALUE;
+    const margin = attributeValue - check.difficulty;
+    return {
+      checkId: check.id,
+      characterId: check.characterId,
+      characterName:
+        characterNameById.get(check.characterId) ?? check.characterId,
+      attribute: check.attribute,
+      attributeValue,
+      difficulty: check.difficulty,
+      context: check.context,
+      direct: Math.abs(margin) >= 30,
+      margin,
+    };
+  });
 }
 
 async function generateValidatedTurn(input: {
@@ -709,6 +915,127 @@ function createStateMutations(input: {
     }
   }
 
+  for (const update of generated.stateCommit.plotThreadUpdates) {
+    mutations.push({
+      entityType: "plot_thread",
+      entityId: `plot-thread:${update.threadId}`,
+      operation: "merge",
+      value:
+        update.operation === "seed"
+          ? { status: "seeded", seededAtTurnId: turnId }
+          : { status: "paid_off", paidOffAtTurnId: turnId },
+      reason: update.reason,
+      evidence: update.evidence,
+    });
+  }
+
+  const characterIdByName = new Map<string, string>(
+    adventure.branchState.states
+      .filter(
+        (state) =>
+          (state.entityType === "character_card" ||
+            state.entityType === "character_state") &&
+          state.isActive,
+      )
+      .map((state) => [readText(state.state.name), state.entityId] as const)
+      .filter(([name]) => Boolean(name)),
+  );
+  const firedTriggerIds = new Set(
+    generated.stateCommit.plotTriggerUpdates.map((update) => update.triggerId),
+  );
+  for (const update of generated.stateCommit.plotTriggerUpdates) {
+    const triggerState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "plot_trigger" &&
+        readText(state.state.triggerId) === update.triggerId,
+    );
+    mutations.push({
+      entityType: "plot_trigger",
+      entityId: triggerState?.entityId ?? `plot-trigger:${update.triggerId}`,
+      operation: "merge",
+      value: {
+        status: "fired",
+        firedAtTurnId: turnId,
+        fireReason: update.reason,
+        fireEvidence: update.evidence,
+      },
+      reason: update.reason,
+      evidence: update.evidence,
+    });
+    const stateEffects = isJsonObject(triggerState?.state.stateEffects)
+      ? triggerState!.state.stateEffects
+      : undefined;
+    if (stateEffects) {
+      appendTriggerStateEffectMutations({
+        adventure,
+        characterIdByName,
+        stateEffects,
+        turnId,
+        mutations,
+        reason: `偏离触发器“${update.triggerId}”触发`,
+        evidence: update.evidence,
+      });
+    }
+  }
+
+  const sessionStateForDay = adventure.branchState.states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  );
+  const currentDayBeforeTurn =
+    typeof sessionStateForDay?.state.gameTimeDay === "number"
+      ? sessionStateForDay.state.gameTimeDay
+      : 1;
+  const dayDelta =
+    generated.stateCommit.sceneTransition?.timeAdvance === "several_days"
+      ? 3
+      : generated.stateCommit.sceneTransition?.timeAdvance === "one_day" ||
+          generated.stateCommit.sceneTransition?.timeAdvance === undefined
+        ? 1
+        : 0;
+  const currentDayAfterTurn = currentDayBeforeTurn + dayDelta;
+  const armedTriggers = adventure.branchState.states.filter(
+    (state) =>
+      state.entityType === "plot_trigger" &&
+      state.isActive &&
+      readText(state.state.status) !== "fired" &&
+      typeof state.state.deadlineDay === "number",
+  );
+  for (const triggerState of armedTriggers) {
+    const deadlineDay = typeof triggerState.state.deadlineDay === "number"
+      ? triggerState.state.deadlineDay
+      : 0;
+    const triggerId = readText(triggerState.state.triggerId);
+    if (firedTriggerIds.has(triggerId)) continue;
+    if (deadlineDay > currentDayAfterTurn) continue;
+    mutations.push({
+      entityType: "plot_trigger",
+      entityId: triggerState.entityId,
+      operation: "merge",
+      value: {
+        status: "fired",
+        firedAtTurnId: turnId,
+        fireReason: `偏离触发器“${triggerId}”的期限（第 ${deadlineDay} 天）已至，意外阻碍强制生效`,
+        fireEvidence: [firstEvidenceId ?? turnId],
+      },
+      reason: `偏离触发器“${triggerId}”的期限已至`,
+      evidence: [firstEvidenceId ?? turnId],
+    });
+    const stateEffects = isJsonObject(triggerState.state.stateEffects)
+      ? triggerState.state.stateEffects
+      : undefined;
+    if (stateEffects) {
+      appendTriggerStateEffectMutations({
+        adventure,
+        characterIdByName,
+        stateEffects,
+        turnId,
+        mutations,
+        reason: `偏离触发器“${triggerId}”期限已至`,
+        evidence: [firstEvidenceId ?? turnId],
+      });
+    }
+  }
+
   if (
     playerInput.storyDirection !== undefined &&
     playerInput.storyDirection !== previousStoryDirection
@@ -883,7 +1210,19 @@ function createStateMutations(input: {
   return mutations;
 }
 
-export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
+export type AdvanceTurnOutcome = {
+  adventure: ReturnType<LocalStoryStore["loadAdventure"]>;
+  committedTurn: CommittedTurn | null;
+  generation: { model: string; usage: AiUsage } | null;
+  pendingChecks?: PendingAttributeCheckInfo[];
+  pendingTurnId?: string;
+  expectedHeadTurnId?: string;
+  idempotencyKey?: string;
+};
+
+export async function advanceAdventureTurn(
+  options: AdvanceTurnOptions,
+): Promise<AdvanceTurnOutcome> {
   const { store, sessionId, input } = options;
   const existing = store.findCommittedTurnByIdempotency(
     sessionId,
@@ -894,6 +1233,25 @@ export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
       adventure: store.loadAdventure(sessionId),
       committedTurn: existing,
       generation: null,
+    };
+  }
+  const pendingByKey = store.loadPendingTurnByKey(
+    sessionId,
+    input.idempotencyKey,
+  );
+  if (pendingByKey) {
+    const adventure = store.loadAdventure(sessionId);
+    return {
+      adventure,
+      committedTurn: null,
+      generation: null,
+      pendingChecks: buildPendingCheckInfos(
+        adventure,
+        readDraftAttributeChecks(pendingByKey.generatedOutput),
+      ),
+      pendingTurnId: pendingByKey.id,
+      expectedHeadTurnId: pendingByKey.expectedHeadTurnId,
+      idempotencyKey: pendingByKey.idempotencyKey,
     };
   }
 
@@ -971,6 +1329,82 @@ export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
     previousStoryDirection: resolvedPlayerTurn.previousStoryDirection,
     generated: validated,
   });
+  const draftOutput = generatedOutputWithContext(
+    validated.raw,
+    sourceReferences,
+    scriptGuidanceReferences,
+    memoryContext,
+  );
+  const turnMessages: TurnMessageInput[] = [
+    {
+      role: "player",
+      content: resolvedPlayerTurn.displayMessage,
+    },
+    {
+      role: "narrator",
+      content: validated.turn.scene,
+      metadata: usageMetadata(generation.model, billedUsage),
+    },
+    ...validated.turn.dialogue.map((line) => ({
+      id: line.id,
+      role: "character" as const,
+      speakerId: line.speakerId,
+      content: line.content,
+      metadata: { addressedCharacterIds: line.addressedCharacterIds },
+    })),
+  ];
+  const turnEvents: TurnEventInput[] = validated.turn.events.map((event) => ({
+    id: event.id,
+    eventType: event.type,
+    summary: event.summary,
+    locationId: event.locationId,
+    characterIds: event.characterIds,
+  }));
+  const contextSnapshot: TurnContextSnapshotInput = {
+    ...prompt.snapshot,
+    model: generation.model,
+    messages: requestMessages,
+    estimatedTokens: estimatedRequestTokens,
+    ...(billedUsage.promptTokens !== undefined
+      ? { promptTokens: billedUsage.promptTokens }
+      : {}),
+    requestCount,
+    repairApplied,
+  };
+
+  if (validated.attributeChecks.length > 0) {
+    store.savePendingTurn({
+      id: turnId,
+      sessionId,
+      branchId: adventure.branchState.branch.id,
+      kind: "advance",
+      expectedHeadTurnId: input.expectedHeadTurnId ?? "",
+      expectedParentTurnId: null,
+      idempotencyKey: input.idempotencyKey,
+      feedback: "",
+      expectedRegenerationCount: 0,
+      playerInput: resolvedPlayerTurn.playerInput,
+      generatedOutput: draftOutput,
+      summaryPatch: validated.stateCommit.summaryPatch,
+      contextSnapshot: contextSnapshot as unknown as JsonObject,
+      memoryContext: memoryContext as unknown as JsonObject,
+      stateMutations,
+      messages: turnMessages,
+      events: turnEvents,
+    });
+    return {
+      adventure: store.loadAdventure(sessionId),
+      committedTurn: null,
+      generation: { model: generation.model, usage: billedUsage },
+      pendingChecks: buildPendingCheckInfos(
+        adventure,
+        validated.attributeChecks,
+      ),
+      pendingTurnId: turnId,
+      expectedHeadTurnId: input.expectedHeadTurnId ?? "",
+      idempotencyKey: input.idempotencyKey,
+    };
+  }
 
   const committedTurn = store.commitTurn({
     id: turnId,
@@ -979,51 +1413,13 @@ export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
     expectedHeadTurnId: input.expectedHeadTurnId,
     idempotencyKey: input.idempotencyKey,
     playerInput: resolvedPlayerTurn.playerInput,
-    generatedOutput: generatedOutputWithContext(
-      validated.raw,
-      sourceReferences,
-      scriptGuidanceReferences,
-      memoryContext,
-    ),
+    generatedOutput: draftOutput,
     summaryPatch: validated.stateCommit.summaryPatch,
-    messages: [
-      {
-        role: "player",
-        content: resolvedPlayerTurn.displayMessage,
-      },
-      {
-        role: "narrator",
-        content: validated.turn.scene,
-        metadata: usageMetadata(generation.model, billedUsage),
-      },
-      ...validated.turn.dialogue.map((line) => ({
-        id: line.id,
-        role: "character" as const,
-        speakerId: line.speakerId,
-        content: line.content,
-        metadata: { addressedCharacterIds: line.addressedCharacterIds },
-      })),
-    ],
-    events: validated.turn.events.map((event) => ({
-      id: event.id,
-      eventType: event.type,
-      summary: event.summary,
-      locationId: event.locationId,
-      characterIds: event.characterIds,
-    })),
+    messages: turnMessages,
+    events: turnEvents,
     stateMutations,
     memoryContext,
-    contextSnapshot: {
-      ...prompt.snapshot,
-      model: generation.model,
-      messages: requestMessages,
-      estimatedTokens: estimatedRequestTokens,
-      ...(billedUsage.promptTokens !== undefined
-        ? { promptTokens: billedUsage.promptTokens }
-        : {}),
-      requestCount,
-      repairApplied,
-    },
+    contextSnapshot,
   });
 
   return {
@@ -1035,7 +1431,15 @@ export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
 
 export async function regenerateLatestAdventureTurn(
   options: RegenerateTurnOptions,
-) {
+): Promise<{
+  adventure: ReturnType<LocalStoryStore["loadAdventure"]>;
+  replacedTurn: ReplacedTurn | null;
+  generation: { model: string; usage: AiUsage } | null;
+  pendingChecks?: PendingAttributeCheckInfo[];
+  pendingTurnId?: string;
+  expectedHeadTurnId?: string;
+  idempotencyKey?: string;
+}> {
   const { store, sessionId, expectedHeadTurnId, actionId, feedback } = options;
   const completed = store.findCompletedTurnRegeneration(sessionId, actionId);
   if (completed) {
@@ -1157,6 +1561,88 @@ export async function regenerateLatestAdventureTurn(
     previousStoryDirection: resolvedPlayerTurn.previousStoryDirection,
     generated: validated,
   });
+  const draftOutput = generatedOutputWithContext(
+    validated.raw,
+    sourceReferences,
+    scriptGuidanceReferences,
+    memoryContext,
+  );
+  const regenerationMessages: TurnMessageInput[] = [
+    { role: "player", content: resolvedPlayerTurn.displayMessage },
+    {
+      role: "narrator",
+      content: validated.turn.scene,
+      metadata: {
+        ...usageMetadata(generation.model, billedUsage),
+        regenerated: true,
+        regenerationNumber: prepared.regenerationCount + 1,
+        regenerationFeedback: feedback,
+      },
+    },
+    ...validated.turn.dialogue.map((line) => ({
+      id: line.id,
+      role: "character" as const,
+      speakerId: line.speakerId,
+      content: line.content,
+      metadata: { addressedCharacterIds: line.addressedCharacterIds },
+    })),
+  ];
+  const regenerationEvents: TurnEventInput[] = validated.turn.events.map(
+    (event) => ({
+      id: event.id,
+      eventType: event.type,
+      summary: event.summary,
+      locationId: event.locationId,
+      characterIds: event.characterIds,
+    }),
+  );
+  const regenerationContextSnapshot: TurnContextSnapshotInput = {
+    ...prompt.snapshot,
+    systemPrompt: regenerationSystemPrompt,
+    model: generation.model,
+    messages: requestMessages,
+    estimatedTokens: estimatedRequestTokens,
+    ...(billedUsage.promptTokens !== undefined
+      ? { promptTokens: billedUsage.promptTokens }
+      : {}),
+    requestCount,
+    repairApplied,
+  };
+
+  if (validated.attributeChecks.length > 0) {
+    store.savePendingTurn({
+      id: prepared.currentTurn.id,
+      sessionId,
+      branchId: prepared.adventureBeforeTurn.branchState.branch.id,
+      kind: "regenerate",
+      expectedHeadTurnId,
+      expectedParentTurnId: parentTurnId,
+      idempotencyKey: actionId,
+      feedback,
+      expectedRegenerationCount: prepared.regenerationCount,
+      playerInput: resolvedPlayerTurn.playerInput,
+      generatedOutput: draftOutput,
+      summaryPatch: validated.stateCommit.summaryPatch,
+      contextSnapshot: regenerationContextSnapshot as unknown as JsonObject,
+      memoryContext: memoryContext as unknown as JsonObject,
+      stateMutations,
+      messages: regenerationMessages,
+      events: regenerationEvents,
+    });
+    return {
+      adventure: store.loadAdventure(sessionId),
+      replacedTurn: null,
+      generation: { model: generation.model, usage: billedUsage },
+      pendingChecks: buildPendingCheckInfos(
+        prepared.adventureBeforeTurn,
+        validated.attributeChecks,
+      ),
+      pendingTurnId: prepared.currentTurn.id,
+      expectedHeadTurnId,
+      idempotencyKey: actionId,
+    };
+  }
+
   const replacedTurn = store.replaceHeadTurn({
     actionId,
     feedback,
@@ -1165,54 +1651,13 @@ export async function regenerateLatestAdventureTurn(
     sessionId,
     branchId: prepared.adventureBeforeTurn.branchState.branch.id,
     expectedParentTurnId: parentTurnId,
-    generatedOutput: generatedOutputWithContext(
-      validated.raw,
-      sourceReferences,
-      scriptGuidanceReferences,
-      memoryContext,
-    ),
+    generatedOutput: draftOutput,
     summaryPatch: validated.stateCommit.summaryPatch,
-    messages: [
-      { role: "player", content: resolvedPlayerTurn.displayMessage },
-      {
-        role: "narrator",
-        content: validated.turn.scene,
-        metadata: {
-          ...usageMetadata(generation.model, billedUsage),
-          regenerated: true,
-          regenerationNumber: prepared.regenerationCount + 1,
-          regenerationFeedback: feedback,
-        },
-      },
-      ...validated.turn.dialogue.map((line) => ({
-        id: line.id,
-        role: "character" as const,
-        speakerId: line.speakerId,
-        content: line.content,
-        metadata: { addressedCharacterIds: line.addressedCharacterIds },
-      })),
-    ],
-    events: validated.turn.events.map((event) => ({
-      id: event.id,
-      eventType: event.type,
-      summary: event.summary,
-      locationId: event.locationId,
-      characterIds: event.characterIds,
-    })),
+    messages: regenerationMessages,
+    events: regenerationEvents,
     stateMutations,
     memoryContext,
-    contextSnapshot: {
-      ...prompt.snapshot,
-      systemPrompt: regenerationSystemPrompt,
-      model: generation.model,
-      messages: requestMessages,
-      estimatedTokens: estimatedRequestTokens,
-      ...(billedUsage.promptTokens !== undefined
-        ? { promptTokens: billedUsage.promptTokens }
-        : {}),
-      requestCount,
-      repairApplied,
-    },
+    contextSnapshot: regenerationContextSnapshot,
   });
   return {
     adventure: store.loadAdventure(sessionId),

@@ -185,12 +185,12 @@ test("文件生命周期和玩家手册覆盖当前维护边界", async () => {
   assert.match(lifecycle, /目录可见|目录只反映/);
 
   assert.match(importGuide, /版本：`1\.9`/);
-  assert.match(importGuide, /当前为 `1\.7\.0`/);
+  assert.match(importGuide, /当前为 `1\.8\.0`/);
   assert.match(lifecycle, /原文生成剧本包/);
   assert.match(manual, /AI 原文分析与生成/);
   assert.match(importFormat, /从原文自动生成标准剧本包/);
   assert.match(importFormat, /分区重生成/);
-  assert.match(importFormat, /当前导出 `schemaVersion` 为 `1\.7\.0`/);
+  assert.match(importFormat, /当前导出 `schemaVersion` 为 `1\.8\.0`/);
   assert.doesNotMatch(
     importFormat,
     /`schemaVersion` 固定为 `1\.0\.0`/,

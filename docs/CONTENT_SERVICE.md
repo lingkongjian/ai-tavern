@@ -36,6 +36,8 @@
 | `characters` | `create`、`update`、`set_presence`、`set_active` | 人物卡、角色当前状态与在场状态 |
 | `locations` | `create`、`update`、`set_current`、`set_active` | 地点资料、当前位置与默认登场人物 |
 | `story_modules` | `create`、`update`、`set_active` | 任务目标、完成条件、前置关系与启停 |
+| `foreshadowing` | `create`、`update`、`delete` | 伏笔（关键词、出现/回收条件、回收概要） |
+| `triggers` | `create`、`update`、`delete` | 偏离触发器（条件、后果、状态影响与期限） |
 | `world_book` | `create`、`update`、`set_enabled`、`remove`、`restore_base` | 世界书玩家层、覆盖层与基础恢复 |
 | `sources` | `import`、`update`、`remove`、`rollback` | 原文全文、章节进度、防剧透、贴合度与安全恢复 |
 | `memories` | `update_entry`、`update_settings`、`rebuild`、`rollback` | 记忆修正、预算设置、自动索引重建与安全恢复 |
@@ -108,7 +110,7 @@
 - 自动撤销只允许当前活动分支、仍处于原参考回合、同一对象的最新修订，且记录含完整恢复快照。剧情已经继续、对象有更新修订、动作已经撤销或来自旧版只读记录时必须拒绝。
 - 原文删除使用软删除标记；撤销删除恢复原设置和检索资格。原文导入本身也可在安全窗口内撤销。
 - `rebuild` 不能自动撤销；撤销动作本身只进入审计，不提供“撤销撤销”。
-- 完整存档 `1.7.0` 保存恢复快照和软删除标记；`1.6.0` 内容动作按无恢复快照的只读历史导入，更早缺失该表的存档按空历史导入。
+- 完整存档 `1.8.0` 保存恢复快照、软删除标记，并新增伏笔、偏离触发器与属性判定的管理审计表；`1.7.0` 内容动作按无恢复快照的只读历史导入，更早缺失该表的存档按空历史导入。
 
 ## 7. 数据边界
 

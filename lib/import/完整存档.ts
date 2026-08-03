@@ -3,14 +3,15 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { StoryNotFoundError } from "../storage/story-store.ts";
 
 export const COMPLETE_ARCHIVE_SPEC = "ai_tavern_runtime_archive_v1";
-export const COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.7.0";
-export const PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.6.0";
-export const OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.5.0";
-export const EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.4.0";
-export const ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.3.0";
-export const HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.2.0";
-export const FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.1.0";
-export const LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.0.0";
+export const COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.8.0";
+export const PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.7.0";
+export const OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.6.0";
+export const EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.5.0";
+export const ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.4.0";
+export const HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.3.0";
+export const FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.2.0";
+export const LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.1.0";
+export const FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.0.0";
 export const COMPLETE_ARCHIVE_MAX_BYTES = 100_000_000;
 
 type ArchiveValue = string | number | null;
@@ -168,6 +169,36 @@ const TABLE_COLUMNS = {
     "reference_turn_id",
     "ordinal",
     "story_module_id",
+    "entity_type",
+    "entity_id",
+    "operation",
+    "payload_json",
+    "reason",
+    "created_at",
+  ],
+  plot_thread_management_changes: [
+    "id",
+    "action_id",
+    "session_id",
+    "branch_id",
+    "reference_turn_id",
+    "ordinal",
+    "plot_thread_id",
+    "entity_type",
+    "entity_id",
+    "operation",
+    "payload_json",
+    "reason",
+    "created_at",
+  ],
+  plot_trigger_management_changes: [
+    "id",
+    "action_id",
+    "session_id",
+    "branch_id",
+    "reference_turn_id",
+    "ordinal",
+    "plot_trigger_id",
     "entity_type",
     "entity_id",
     "operation",
@@ -356,7 +387,11 @@ type ArchiveTableName = keyof typeof TABLE_COLUMNS;
 type ArchiveData = { [K in ArchiveTableName]: ArchiveRow[] };
 
 const TABLE_NAMES = Object.keys(TABLE_COLUMNS) as ArchiveTableName[];
-const PREVIOUS_TABLE_NAMES = TABLE_NAMES;
+const PREVIOUS_TABLE_NAMES = TABLE_NAMES.filter(
+  (table) =>
+    table !== "plot_thread_management_changes" &&
+    table !== "plot_trigger_management_changes",
+);
 const OLDER_TABLE_NAMES = PREVIOUS_TABLE_NAMES.filter(
   (table) => table !== "content_asset_management_changes",
 );
@@ -378,6 +413,7 @@ const FOUNDATIONAL_TABLE_NAMES = HISTORIC_TABLE_NAMES.filter(
 const LEGACY_TABLE_NAMES = FOUNDATIONAL_TABLE_NAMES.filter(
   (table) => !table.startsWith("memory_"),
 );
+const FOUNDING_TABLE_NAMES = LEGACY_TABLE_NAMES;
 const JSON_COLUMNS = new Set([
   "player_input_json",
   "generated_output_json",
@@ -446,7 +482,8 @@ export interface CompleteAdventureArchive {
     | typeof ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION
     | typeof HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION
     | typeof FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
-    | typeof LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION;
+    | typeof LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION
+    | typeof FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION;
   archiveId: string;
   exportedAt: string;
   summary: CompleteArchiveSummary;
@@ -808,7 +845,8 @@ export function parseCompleteArchiveDocument(
     schemaVersion === ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
     schemaVersion === HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
     schemaVersion === FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
-    schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION;
+    schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
+    schemaVersion === FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION;
   if (!supportedVersion) {
     issues.push(
       `schemaVersion 必须是 ${LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION} 或 ${COMPLETE_ARCHIVE_SCHEMA_VERSION}。`,
@@ -822,10 +860,12 @@ export function parseCompleteArchiveDocument(
   }
   if (!isRecord(value.data)) issues.push("完整存档缺少 data。");
   const requiredTables =
-    schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION
-      ? LEGACY_TABLE_NAMES
-      : schemaVersion === FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
-        ? FOUNDATIONAL_TABLE_NAMES
+    schemaVersion === FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION
+      ? FOUNDING_TABLE_NAMES
+      : schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION
+        ? LEGACY_TABLE_NAMES
+        : schemaVersion === FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
+          ? FOUNDATIONAL_TABLE_NAMES
         : schemaVersion === HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION
           ? HISTORIC_TABLE_NAMES
           : schemaVersion === ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION

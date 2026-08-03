@@ -15,6 +15,7 @@ import {
   type ImportedAdventureBundle,
 } from "./剧本包.ts";
 import { ImportFileError } from "./酒馆文件.ts";
+import { isAttributeName } from "../story/判定服务.ts";
 
 export const GENERATED_BUNDLE_SOURCE_MAX_CHARACTERS = 900_000;
 export const GENERATED_BUNDLE_SAMPLE_MAX_CHARACTERS = 48_000;
@@ -84,7 +85,7 @@ export class SourceBundleGenerationOutputError extends Error {
   }
 }
 
-interface BlueprintCharacter {
+type BlueprintCharacter = {
   name: string;
   description: string;
   personality: string;
@@ -93,14 +94,14 @@ interface BlueprintCharacter {
   presentAtOpening: boolean;
 }
 
-interface BlueprintWorldEntry {
+type BlueprintWorldEntry = {
   title: string;
   keys: string[];
   content: string;
   constant: boolean;
 }
 
-interface BlueprintStoryModule {
+type BlueprintStoryModule = {
   title: string;
   objective: string;
   completionCriteria: string[];
@@ -109,7 +110,7 @@ interface BlueprintStoryModule {
   deadlineDay: number | null;
 }
 
-interface BlueprintInitialRelationship {
+type BlueprintInitialRelationship = {
   sourceName: string;
   targetName: string;
   trust: number;
@@ -120,14 +121,46 @@ interface BlueprintInitialRelationship {
   summary: string;
 }
 
-interface BlueprintLocation {
+type BlueprintLocation = {
   name: string;
   description: string;
   characters: string[];
   important: boolean;
 }
 
-interface SourceBundleBlueprint {
+type BlueprintForeshadowing = {
+  keywords: string[];
+  seedCondition: string;
+  payoffCondition: string;
+  payoffSummary: string;
+  characters: string[];
+}
+
+type BlueprintTriggerStateEffectRelation = {
+  sourceCharacterName: string;
+  targetCharacterName: string;
+  dimension: string;
+  delta: number;
+}
+
+type BlueprintTriggerStateEffectAttribute = {
+  characterName: string;
+  attribute: string;
+  value: number;
+}
+
+type BlueprintTrigger = {
+  when: string;
+  consequence: string;
+  stateEffects: {
+    relations: BlueprintTriggerStateEffectRelation[];
+    flags: string[];
+    attributes: BlueprintTriggerStateEffectAttribute[];
+  };
+  deadlineDay: number | null;
+}
+
+type SourceBundleBlueprint = {
   campaignName: string;
   campaignDescription: string;
   worldName: string;
@@ -143,6 +176,8 @@ interface SourceBundleBlueprint {
   storyModules: BlueprintStoryModule[];
   initialRelationships: BlueprintInitialRelationship[];
   locations: BlueprintLocation[];
+  foreshadowing: BlueprintForeshadowing[];
+  triggers: BlueprintTrigger[];
 }
 
 export interface RepresentativeSource {
@@ -683,6 +718,8 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
     storyModules,
     initialRelationships: [],
     locations: [],
+    foreshadowing: [],
+    triggers: [],
   };
   const names = [
     result.player.name,
@@ -810,6 +847,255 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
       });
     }
   }
+// 由脚本插入到 原文生成剧本包.ts 的 parseBlueprint 尾部
+  const rawForeshadowing = value.foreshadowing;
+  if (rawForeshadowing !== undefined) {
+    if (!Array.isArray(rawForeshadowing)) {
+      issues.push("foreshadowing 必须是数组。");
+    } else {
+      rawForeshadowing.slice(0, 15).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`foreshadowing[${index}] 必须是 JSON 对象。`);
+          return;
+        }
+        const keywords = textList(
+          item.keywords ?? [],
+          `foreshadowing[${index}].keywords`,
+          20,
+          80,
+          issues,
+        );
+        if (keywords.length === 0) {
+          issues.push(`foreshadowing[${index}] 至少需要一个关键词。`);
+        }
+        const seedCondition = requiredText(
+          item,
+          "seedCondition",
+          `foreshadowing[${index}].seedCondition`,
+          1_000,
+          issues,
+        );
+        const payoffCondition = requiredText(
+          item,
+          "payoffCondition",
+          `foreshadowing[${index}].payoffCondition`,
+          1_000,
+          issues,
+        );
+        const payoffSummary = requiredText(
+          item,
+          "payoffSummary",
+          `foreshadowing[${index}].payoffSummary`,
+          2_000,
+          issues,
+        );
+        const characters = textList(
+          item.characters ?? [],
+          `foreshadowing[${index}].characters`,
+          20,
+          80,
+          issues,
+        );
+        for (const characterName of characters) {
+          if (!knownNames.has(characterName.toLocaleLowerCase("zh-CN"))) {
+            issues.push(
+              `foreshadowing[${index}] 引用了不存在的角色“${characterName}”。`,
+            );
+          }
+        }
+        if (keywords.length > 0 && seedCondition && payoffCondition && payoffSummary) {
+          result.foreshadowing.push({
+            keywords,
+            seedCondition,
+            payoffCondition,
+            payoffSummary,
+            characters,
+          });
+        }
+      });
+    }
+  }
+
+  const rawTriggers = value.triggers;
+  if (rawTriggers !== undefined) {
+    if (!Array.isArray(rawTriggers)) {
+      issues.push("triggers 必须是数组。");
+    } else {
+      rawTriggers.slice(0, 15).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`triggers[${index}] 必须是 JSON 对象。`);
+          return;
+        }
+        const when = requiredText(item, "when", `triggers[${index}].when`, 1_000, issues);
+        const consequence = requiredText(
+          item,
+          "consequence",
+          `triggers[${index}].consequence`,
+          2_000,
+          issues,
+        );
+        const relations: BlueprintTriggerStateEffectRelation[] = [];
+        const flags: string[] = [];
+        const attributes: BlueprintTriggerStateEffectAttribute[] = [];
+        const stateEffectsSource = item.stateEffects;
+        if (stateEffectsSource !== undefined) {
+          if (!isRecord(stateEffectsSource)) {
+            issues.push(`triggers[${index}].stateEffects 必须是 JSON 对象。`);
+          } else {
+            const rawRelations = stateEffectsSource.relations;
+            if (rawRelations !== undefined) {
+              if (!Array.isArray(rawRelations)) {
+                issues.push(`triggers[${index}].stateEffects.relations 必须是数组。`);
+              } else {
+                rawRelations.slice(0, 15).forEach((relation, relationIndex) => {
+                  if (!isRecord(relation)) {
+                    issues.push(`triggers[${index}].stateEffects.relations[${relationIndex}] 必须是 JSON 对象。`);
+                    return;
+                  }
+                  const sourceCharacterName = requiredText(
+                    relation,
+                    "sourceCharacterName",
+                    `triggers[${index}].relations[${relationIndex}].sourceCharacterName`,
+                    80,
+                    issues,
+                  );
+                  const targetCharacterName = requiredText(
+                    relation,
+                    "targetCharacterName",
+                    `triggers[${index}].relations[${relationIndex}].targetCharacterName`,
+                    80,
+                    issues,
+                  );
+                  for (const name of [sourceCharacterName, targetCharacterName]) {
+                    if (name && !knownNames.has(name.toLocaleLowerCase("zh-CN"))) {
+                      issues.push(
+                        `triggers[${index}].relations[${relationIndex}] 引用了不存在的角色“${name}”。`,
+                      );
+                    }
+                  }
+                  const dimension = optionalText(relation, "dimension", 80);
+                  if (
+                    dimension &&
+                    !["trust", "affection", "fear", "hostility", "respect"].includes(dimension)
+                  ) {
+                    issues.push(`triggers[${index}].relations[${relationIndex}].dimension 必须是 trust、affection、fear、hostility 或 respect。`);
+                  }
+                  const rawDelta = relation.delta;
+                  if (
+                    typeof rawDelta !== "number" ||
+                    !Number.isFinite(rawDelta) ||
+                    rawDelta < -100 ||
+                    rawDelta > 100
+                  ) {
+                    issues.push(`triggers[${index}].relations[${relationIndex}].delta 必须是 -100 到 100 之间的数值。`);
+                  }
+                  if (
+                    sourceCharacterName &&
+                    targetCharacterName &&
+                    dimension &&
+                    typeof rawDelta === "number"
+                  ) {
+                    relations.push({
+                      sourceCharacterName,
+                      targetCharacterName,
+                      dimension,
+                      delta: rawDelta,
+                    });
+                  }
+                });
+              }
+            }
+            const rawFlags = stateEffectsSource.flags;
+            if (rawFlags !== undefined) {
+              if (!Array.isArray(rawFlags)) {
+                issues.push(`triggers[${index}].stateEffects.flags 必须是数组。`);
+              } else {
+                for (const [flagIndex, flag] of rawFlags.slice(0, 10).entries()) {
+                  if (typeof flag !== "string" || !flag.trim()) {
+                    issues.push(`triggers[${index}].flags[${flagIndex}] 必须是文本。`);
+                  } else {
+                    flags.push(flag.trim().slice(0, 50));
+                  }
+                }
+              }
+            }
+            const rawAttributes = stateEffectsSource.attributes;
+            if (rawAttributes !== undefined) {
+              if (!Array.isArray(rawAttributes)) {
+                issues.push(`triggers[${index}].stateEffects.attributes 必须是数组。`);
+              } else {
+                rawAttributes.slice(0, 15).forEach((attributeEffect, attributeIndex) => {
+                  if (!isRecord(attributeEffect)) {
+                    issues.push(`triggers[${index}].attributes[${attributeIndex}] 必须是 JSON 对象。`);
+                    return;
+                  }
+                  const characterName = requiredText(
+                    attributeEffect,
+                    "characterName",
+                    `triggers[${index}].attributes[${attributeIndex}].characterName`,
+                    80,
+                    issues,
+                  );
+                  if (characterName && !knownNames.has(characterName.toLocaleLowerCase("zh-CN"))) {
+                    issues.push(
+                      `triggers[${index}].attributes[${attributeIndex}] 引用了不存在的角色“${characterName}”。`,
+                    );
+                  }
+                  const attribute = requiredText(
+                    attributeEffect,
+                    "attribute",
+                    `triggers[${index}].attributes[${attributeIndex}].attribute`,
+                    80,
+                    issues,
+                  );
+                  if (attribute && !isAttributeName(attribute)) {
+                    issues.push(
+                      `triggers[${index}].attributes[${attributeIndex}].attribute 不在白名单中（允许：力量/敏捷/感知/意志/魅力/智力/体质）。`,
+                    );
+                  }
+                  const rawValue = attributeEffect.value;
+                  if (
+                    typeof rawValue !== "number" ||
+                    !Number.isFinite(rawValue) ||
+                    rawValue < 0 ||
+                    rawValue > 100
+                  ) {
+                    issues.push(`triggers[${index}].attributes[${attributeIndex}].value 必须是 0 到 100 之间的数值。`);
+                  }
+                  if (characterName && attribute && typeof rawValue === "number") {
+                    attributes.push({ characterName, attribute, value: rawValue });
+                  }
+                });
+              }
+            }
+          }
+        }
+        const deadlineDay = (() => {
+          const raw = item.deadlineDay;
+          if (raw === undefined || raw === null || raw === 0) return null;
+          if (
+            typeof raw !== "number" ||
+            !Number.isInteger(raw) ||
+            raw < 1 ||
+            raw > 10_000
+          ) {
+            issues.push(`triggers[${index}].deadlineDay 必须是 1 到 10000 之间的整数。`);
+            return null;
+          }
+          return raw;
+        })();
+        if (when && consequence) {
+          result.triggers.push({
+            when,
+            consequence,
+            stateEffects: { relations, flags, attributes },
+            deadlineDay,
+          });
+        }
+      });
+    }
+  }
+
   if (issues.length > 0) throw new SourceBundleGenerationOutputError(issues);
   return result;
 }
@@ -920,6 +1206,8 @@ function buildBundleDocument(
   }
   const worldEntryIds = new Set<string>();
   const moduleIds = new Set<string>();
+  const threadIds = new Set<string>();
+  const triggerIds = new Set<string>();
   const storyModules = blueprint.storyModules.map((storyModule, index) => {
     const previousModuleId =
       index === 0 ? undefined : [...moduleIds].at(-1);
@@ -1037,6 +1325,59 @@ function buildBundleDocument(
             })),
           }
         : {}),
+      ...(blueprint.foreshadowing.length > 0
+        ? {
+            foreshadowing: blueprint.foreshadowing.map((thread, index) => ({
+              id: uniqueIdentifier(
+                thread.keywords[0] ?? thread.seedCondition,
+                "thread",
+                index,
+                threadIds,
+              ),
+              keywords: thread.keywords,
+              seedCondition: thread.seedCondition,
+              payoffCondition: thread.payoffCondition,
+              payoffSummary: thread.payoffSummary,
+              ...(thread.characters.length > 0
+                ? { characters: thread.characters }
+                : {}),
+            })),
+          }
+        : {}),
+      ...(blueprint.triggers.length > 0
+        ? {
+            triggers: blueprint.triggers.map((trigger, index) => ({
+              id: uniqueIdentifier(
+                trigger.when,
+                "trigger",
+                index,
+                triggerIds,
+              ),
+              when: trigger.when,
+              consequence: trigger.consequence,
+              ...(trigger.stateEffects.relations.length > 0 ||
+              trigger.stateEffects.flags.length > 0 ||
+              trigger.stateEffects.attributes.length > 0
+                ? {
+                    stateEffects: {
+                      ...(trigger.stateEffects.relations.length > 0
+                        ? { relations: trigger.stateEffects.relations }
+                        : {}),
+                      ...(trigger.stateEffects.flags.length > 0
+                        ? { flags: trigger.stateEffects.flags }
+                        : {}),
+                      ...(trigger.stateEffects.attributes.length > 0
+                        ? { attributes: trigger.stateEffects.attributes }
+                        : {}),
+                    },
+                  }
+                : {}),
+              ...(trigger.deadlineDay !== null
+                ? { deadline: trigger.deadlineDay }
+                : {}),
+            })),
+          }
+        : {}),
     },
   };
   try {
@@ -1079,6 +1420,8 @@ const blueprintShape = `{
   "storyModules": [{ "title": "", "objective": "", "completionCriteria": [""], "activationConditions": [""], "continuityNotes": "", "deadlineDay": 1 }],
   "initialRelationships": [{ "sourceName": "", "targetName": "", "trust": 0, "affinity": 0, "fear": 0, "hostility": 0, "respect": 0, "summary": "" }],
   "locations": [{ "name": "", "description": "", "characters": [""], "important": false }],
+  "foreshadowing": [{ "keywords": [""], "seedCondition": "", "payoffCondition": "", "payoffSummary": "", "characters": [""] }],
+  "triggers": [{ "when": "", "consequence": "", "stateEffects": { "relations": [{ "sourceCharacterName": "", "targetCharacterName": "", "dimension": "trust", "delta": -10 }], "flags": [""], "attributes": [{ "characterName": "", "attribute": "力量", "value": 30 }] }, "deadlineDay": null }],
   "opening": { "sourceChapterIndex": 1, "locationName": "", "scene": "", "initialStoryDirection": "" }
 }`;
 
@@ -1120,6 +1463,8 @@ worldBookEntries 提取 8 至 30 条稳定世界事实。只有每轮都必须�
 storyModules 按原作自然阶段排序，生成 3 至 10 个可接续但不会强迫玩家照原作行动的任务。每项完成条件必须是剧情中可观察的事实；不要输出 ID 或前置 ID，程序会建立稳定线性任务链。deadlineDay 表示该任务在游戏内第几天前必须完成（如中毒三日内解毒、宴会前送回聘礼），超过后剧情会强制显现期限后果；没有明确时限的任务省略 deadlineDay 字段（不要填 0，也不要省略整个任务）。
 initialRelationships 描述开局时已确立的角色关系基线（最多 30 条）：sourceName 与 targetName 必须来自 characters 中的真实姓名，数值范围 -100 到 100（信任、好感、恐惧、敌意、敬意），0 表示中性未建立；summary 用一两句话概括关系性质（如“青梅竹马”“多年仇敌”“名义上的未婚夫妻”）。原作中确有的关系就按原作设定，不要把所有关系都填 0。每对关系只写一条即可，程序会自动建立双向记录，不要为同一对角色重复书写正反两个方向。
 locations 提取故事中可能出现或将被提及的全部地点（最多 40 个），name 用故事中的稳定称呼；description 概括该地点在故事中的地位与功能；characters 列出常驻或与该地点密切相关的主要角色姓名（可选）；important=true 表示对主线至关重要、需要稳定进入上下文的地点。不要遗漏后续任务可能涉及的地点；与开场地点同名的地点无需列出（开局地点由 opening.locationName 单独覆盖）。
+foreshadowing 提取原文中先埋设、日后揭晓的伏笔（最多 15 条）：keywords 是能触发伏笔进入上下文的稳定关键词（2 至 5 个）；seedCondition 描述伏笔埋入剧情的自然时机（如“角色进入古井附近”）；payoffCondition 描述伏笔回收时必须发生的剧情情形（如“玩家发现古井底部的钟”）；payoffSummary 是回收时应呈现的核心信息，必须忠实于原文事实；characters 列出与伏笔密切相关的主要角色（可选）。不要为原文没有的悬念虚构伏笔。
+triggers 提取原文中“偏离主线就会招致后果”的意外阻碍（最多 15 条）：when 描述触发条件（如“主角弱小时强闯反派地盘”“已婚状态下与异性单独接触”）；consequence 描述触发后必须显现的后果（如“强大反派提前登场”“正主起疑、敌我关系大幅转变”）；stateEffects 是系统强制应用的状态影响：relations 按角色名调整关系值（dimension 只能是 trust/affection/fear/hostility/respect，delta -100 到 100），flags 目前支持 bad_end（剧情滑向坏结局，游戏页会显示结局警示），attributes 直接设定角色属性值（0-100，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质）；没有对应影响就留空数组。deadlineDay 表示该意外阻碍最迟必须在第几天前生效，超过后系统会强制触发；没有明确期限时填 null。
 opening.sourceChapterIndex 必须填写实际作为开场依据的原文章节或场景序号。opening.scene 必须是可以直接给玩家阅读的开场正文：基于选定的有效场景，明确时间、地点、在场人物和眼前冲突，在等待玩家回应的位置结束。不得写“请扮演”“根据设定”“故事开始”等提示词。
 原作中明确成年的角色之间自愿的亲密关系可以作为人物与关系依据，不因内容亲密而自动删去；不得把身份不明、拒绝或非自愿内容改写成玩家已经同意。
 ${confirmedSelection}

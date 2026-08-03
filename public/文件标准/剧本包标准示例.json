@@ -239,6 +239,41 @@
         ],
         "important": true
       }
+    ],
+    "foreshadowing": [
+      {
+        "id": "stained-seal",
+        "keywords": [
+          "封蜡",
+          "红印"
+        ],
+        "seedCondition": "记录员或林雾触碰过带红色封蜡的旧档案",
+        "payoffCondition": "玩家查验失踪者档案背面的红色封蜡",
+        "payoffSummary": "封蜡内侧烙着林雾家族的徽记，失踪者记录的改写与她有旧关联。",
+        "characters": [
+          "林雾"
+        ]
+      }
+    ],
+    "triggers": [
+      {
+        "id": "night-patrol-encounter",
+        "when": "玩家在夜间离开档案馆或翻窗外出时被巡夜人撞见",
+        "consequence": "巡夜人起疑并盘查，林雾与巡夜人的关系转为对立。",
+        "stateEffects": {
+          "relations": [
+            {
+              "sourceCharacterName": "巡夜人",
+              "targetCharacterName": "记录员",
+              "dimension": "trust",
+              "delta": -25
+            }
+          ],
+          "flags": [],
+          "attributes": []
+        },
+        "deadline": null
+      }
     ]
   }
 }

@@ -13,6 +13,10 @@ import {
   parseSourceDocumentInput,
   SourceReferenceInputError,
 } from "../reference/原文参考.ts";
+import {
+  ATTRIBUTE_WHITELIST,
+  isAttributeName,
+} from "./判定服务.ts";
 
 const limits = {
   short: 80,
@@ -681,6 +685,350 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
     }
   }
 
+  const elementIdPattern = /^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u;
+  const foreshadowing: StartAdventureInput["foreshadowing"] = [];
+  if (value.foreshadowing !== undefined) {
+    if (!Array.isArray(value.foreshadowing)) {
+      issues.push("伏笔分区必须是数组。");
+    } else {
+      if (value.foreshadowing.length > 30) {
+        issues.push("剧本包最多允许 30 个伏笔。");
+      }
+      const threadIds = new Set<string>();
+      value.foreshadowing.slice(0, 30).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`伏笔 ${index + 1} 格式无效。`);
+          return;
+        }
+        const id = readRequiredText(
+          item,
+          "id",
+          `伏笔 ${index + 1} ID`,
+          limits.short,
+          issues,
+        );
+        if (id && !elementIdPattern.test(id)) {
+          issues.push(
+            `伏笔 ${index + 1} ID 只能包含文字、数字、点、下划线和连字符。`,
+          );
+        }
+        if (id) {
+          if (threadIds.has(id)) {
+            issues.push(`伏笔 ID “${id}”重复。`);
+          }
+          threadIds.add(id);
+        }
+        const keywords = readTextList(
+          item.keywords,
+          `伏笔 ${index + 1} 关键词`,
+          20,
+          limits.short,
+          issues,
+        );
+        if (keywords.length === 0) {
+          issues.push(`伏笔 ${index + 1} 至少需要一个关键词。`);
+        }
+        const seedCondition = readRequiredText(
+          item,
+          "seedCondition",
+          `伏笔 ${index + 1} 出现条件`,
+          limits.direction,
+          issues,
+        );
+        const payoffCondition = readRequiredText(
+          item,
+          "payoffCondition",
+          `伏笔 ${index + 1} 回收条件`,
+          limits.direction,
+          issues,
+        );
+        const payoffSummary = readRequiredText(
+          item,
+          "payoffSummary",
+          `伏笔 ${index + 1} 回收概要`,
+          limits.scene,
+          issues,
+        );
+        const characters =
+          item.characters === undefined
+            ? []
+            : readTextList(
+                item.characters,
+                `伏笔 ${index + 1} 相关角色`,
+                20,
+                limits.short,
+                issues,
+              );
+        for (const characterName of characters) {
+          if (!knownCharacterNames.has(characterName.toLocaleLowerCase("zh-CN"))) {
+            issues.push(
+              `伏笔 ${index + 1} 引用了不存在的角色“${characterName}”。`,
+            );
+          }
+        }
+        if (id && keywords.length > 0 && seedCondition && payoffCondition && payoffSummary) {
+          foreshadowing.push({
+            id,
+            keywords,
+            seedCondition,
+            payoffCondition,
+            payoffSummary,
+            ...(characters.length > 0 ? { characters } : {}),
+          });
+        }
+      });
+    }
+  }
+
+  const triggers: StartAdventureInput["triggers"] = [];
+  if (value.triggers !== undefined) {
+    if (!Array.isArray(value.triggers)) {
+      issues.push("偏离触发器分区必须是数组。");
+    } else {
+      if (value.triggers.length > 30) {
+        issues.push("剧本包最多允许 30 个偏离触发器。");
+      }
+      const triggerIds = new Set<string>();
+      value.triggers.slice(0, 30).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`偏离触发器 ${index + 1} 格式无效。`);
+          return;
+        }
+        const id = readRequiredText(
+          item,
+          "id",
+          `偏离触发器 ${index + 1} ID`,
+          limits.short,
+          issues,
+        );
+        if (id && !elementIdPattern.test(id)) {
+          issues.push(
+            `偏离触发器 ${index + 1} ID 只能包含文字、数字、点、下划线和连字符。`,
+          );
+        }
+        if (id) {
+          if (triggerIds.has(id)) {
+            issues.push(`偏离触发器 ID “${id}”重复。`);
+          }
+          triggerIds.add(id);
+        }
+        const when = readRequiredText(
+          item,
+          "when",
+          `偏离触发器 ${index + 1} 条件`,
+          limits.direction,
+          issues,
+        );
+        const consequence = readRequiredText(
+          item,
+          "consequence",
+          `偏离触发器 ${index + 1} 后果`,
+          limits.scene,
+          issues,
+        );
+        const stateEffectsSource = item.stateEffects;
+        const stateEffects: NonNullable<
+          NonNullable<StartAdventureInput["triggers"]>[number]["stateEffects"]
+        > = {};
+        if (stateEffectsSource !== undefined) {
+          if (!isRecord(stateEffectsSource)) {
+            issues.push(`偏离触发器 ${index + 1} 的 stateEffects 必须是对象。`);
+          } else {
+            if (stateEffectsSource.relations !== undefined) {
+              if (!Array.isArray(stateEffectsSource.relations)) {
+                issues.push(
+                  `偏离触发器 ${index + 1} 的 relations 必须是数组。`,
+                );
+              } else {
+                const relations: NonNullable<typeof stateEffects.relations> = [];
+                stateEffectsSource.relations.slice(0, 30).forEach((relation, relationIndex) => {
+                  if (!isRecord(relation)) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的关系影响 ${relationIndex + 1} 格式无效。`,
+                    );
+                    return;
+                  }
+                  const sourceCharacterName = readRequiredText(
+                    relation,
+                    "sourceCharacterName",
+                    `偏离触发器 ${index + 1} 关系影响 ${relationIndex + 1} 源角色名`,
+                    limits.short,
+                    issues,
+                  );
+                  const targetCharacterName = readRequiredText(
+                    relation,
+                    "targetCharacterName",
+                    `偏离触发器 ${index + 1} 关系影响 ${relationIndex + 1} 目标角色名`,
+                    limits.short,
+                    issues,
+                  );
+                  for (const characterName of [sourceCharacterName, targetCharacterName]) {
+                    if (
+                      characterName &&
+                      !knownCharacterNames.has(
+                        characterName.toLocaleLowerCase("zh-CN"),
+                      )
+                    ) {
+                      issues.push(
+                        `偏离触发器 ${index + 1} 的关系影响引用了不存在的角色“${characterName}”。`,
+                      );
+                    }
+                  }
+                  const dimension = readOptionalText(
+                    relation,
+                    "dimension",
+                    `偏离触发器 ${index + 1} 关系影响 ${relationIndex + 1} 维度`,
+                    80,
+                    issues,
+                  );
+                  if (
+                    dimension &&
+                    !["trust", "affection", "fear", "hostility", "respect"].includes(
+                      dimension,
+                    )
+                  ) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的关系影响维度必须是 trust、affection、fear、hostility 或 respect。`,
+                    );
+                  }
+                  const rawDelta = relation.delta;
+                  if (
+                    typeof rawDelta !== "number" ||
+                    !Number.isFinite(rawDelta) ||
+                    rawDelta < -100 ||
+                    rawDelta > 100
+                  ) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的关系影响 delta 必须是 -100 到 100 之间的数值。`,
+                    );
+                  }
+                  if (
+                    sourceCharacterName &&
+                    targetCharacterName &&
+                    dimension &&
+                    typeof rawDelta === "number"
+                  ) {
+                    relations.push({
+                      sourceCharacterName,
+                      targetCharacterName,
+                      dimension: dimension as "trust",
+                      delta: rawDelta,
+                    });
+                  }
+                });
+                if (relations.length > 0) stateEffects.relations = relations;
+              }
+            }
+            if (stateEffectsSource.flags !== undefined) {
+              if (!Array.isArray(stateEffectsSource.flags)) {
+                issues.push(`偏离触发器 ${index + 1} 的 flags 必须是数组。`);
+              } else {
+                const flags = stateEffectsSource.flags
+                  .slice(0, 10)
+                  .flatMap((flag) => {
+                    if (typeof flag !== "string" || !flag.trim()) {
+                      issues.push(
+                        `偏离触发器 ${index + 1} 的 flags 项必须是文本。`,
+                      );
+                      return [];
+                    }
+                    return [flag.trim().slice(0, 50)];
+                  });
+                if (flags.length > 0) stateEffects.flags = flags;
+              }
+            }
+            if (stateEffectsSource.attributes !== undefined) {
+              if (!Array.isArray(stateEffectsSource.attributes)) {
+                issues.push(`偏离触发器 ${index + 1} 的 attributes 必须是数组。`);
+              } else {
+                const attributes: NonNullable<typeof stateEffects.attributes> = [];
+                stateEffectsSource.attributes.slice(0, 30).forEach((attributeEffect, attributeIndex) => {
+                  if (!isRecord(attributeEffect)) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的属性影响 ${attributeIndex + 1} 格式无效。`,
+                    );
+                    return;
+                  }
+                  const characterName = readRequiredText(
+                    attributeEffect,
+                    "characterName",
+                    `偏离触发器 ${index + 1} 属性影响 ${attributeIndex + 1} 角色名`,
+                    limits.short,
+                    issues,
+                  );
+                  if (
+                    characterName &&
+                    !knownCharacterNames.has(
+                      characterName.toLocaleLowerCase("zh-CN"),
+                    )
+                  ) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的属性影响引用了不存在的角色“${characterName}”。`,
+                    );
+                  }
+                  const attribute = readRequiredText(
+                    attributeEffect,
+                    "attribute",
+                    `偏离触发器 ${index + 1} 属性影响 ${attributeIndex + 1} 属性`,
+                    80,
+                    issues,
+                  );
+                  if (
+                    attribute &&
+                    !isAttributeName(attribute)
+                  ) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的属性“${attribute}”不在白名单中（允许：${ATTRIBUTE_WHITELIST.join("、")}）。`,
+                    );
+                  }
+                  const rawValue = attributeEffect.value;
+                  if (
+                    typeof rawValue !== "number" ||
+                    !Number.isFinite(rawValue) ||
+                    rawValue < 0 ||
+                    rawValue > 100
+                  ) {
+                    issues.push(
+                      `偏离触发器 ${index + 1} 的属性值必须是 0 到 100 之间的数值。`,
+                    );
+                  }
+                  if (characterName && attribute && typeof rawValue === "number") {
+                    attributes.push({ characterName, attribute, value: rawValue });
+                  }
+                });
+                if (attributes.length > 0) stateEffects.attributes = attributes;
+              }
+            }
+          }
+        }
+        let deadlineDay: number | undefined;
+        if (item.deadline !== undefined && item.deadline !== null && item.deadline !== 0) {
+          if (
+            typeof item.deadline !== "number" ||
+            !Number.isInteger(item.deadline) ||
+            item.deadline < 1 ||
+            item.deadline > 10_000
+          ) {
+            issues.push(
+              `偏离触发器 ${index + 1} 的 deadline 必须是 1 到 10000 之间的整数。`,
+            );
+          } else {
+            deadlineDay = item.deadline;
+          }
+        }
+        if (id && when && consequence) {
+          triggers.push({
+            id,
+            when,
+            consequence,
+            ...(Object.keys(stateEffects).length > 0 ? { stateEffects } : {}),
+            ...(deadlineDay !== undefined ? { deadlineDay } : {}),
+          });
+        }
+      });
+    }
+  }
+
   if (issues.length > 0) {
     throw new AdventureInputError(issues);
   }
@@ -688,5 +1036,7 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
     ...result,
     ...(initialRelationships.length > 0 ? { initialRelationships } : {}),
     ...(locations.length > 0 ? { locations } : {}),
+    ...(foreshadowing.length > 0 ? { foreshadowing } : {}),
+    ...(triggers.length > 0 ? { triggers } : {}),
   };
 }

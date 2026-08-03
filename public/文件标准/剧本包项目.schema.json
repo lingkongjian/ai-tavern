@@ -71,6 +71,26 @@
           "maxItems": 30,
           "items": { "$ref": "剧本包.schema.json#/$defs/storyModule" }
         },
+        "initialRelationships": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "剧本包.schema.json#/$defs/initialRelationship" }
+        },
+        "locations": {
+          "type": "array",
+          "maxItems": 60,
+          "items": { "$ref": "剧本包.schema.json#/$defs/storyLocation" }
+        },
+        "foreshadowing": {
+          "type": "array",
+          "maxItems": 30,
+          "items": { "$ref": "剧本包.schema.json#/$defs/foreshadowing" }
+        },
+        "triggers": {
+          "type": "array",
+          "maxItems": 30,
+          "items": { "$ref": "剧本包.schema.json#/$defs/plotTrigger" }
+        },
         "initialStoryModuleId": {
           "type": "string",
           "minLength": 1,

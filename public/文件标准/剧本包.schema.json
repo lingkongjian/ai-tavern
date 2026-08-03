@@ -3,14 +3,40 @@
   "$id": "https://local.ai-tavern/schema/剧本包.schema.json",
   "title": "AI 酒馆完整剧本导入包 v1.1",
   "type": "object",
-  "required": ["spec", "spec_version", "name", "description", "adventure"],
+  "required": [
+    "spec",
+    "spec_version",
+    "name",
+    "description",
+    "adventure"
+  ],
   "properties": {
-    "spec": { "const": "ai_tavern_adventure_bundle_v1" },
-    "spec_version": { "enum": ["1.0", "1.1"] },
-    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-    "description": { "type": "string", "maxLength": 2000 },
-    "creator": { "type": "string", "maxLength": 200 },
-    "bundle_version": { "type": "string", "maxLength": 120 },
+    "spec": {
+      "const": "ai_tavern_adventure_bundle_v1"
+    },
+    "spec_version": {
+      "enum": [
+        "1.0",
+        "1.1"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "creator": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "bundle_version": {
+      "type": "string",
+      "maxLength": 120
+    },
     "adventure": {
       "type": "object",
       "required": [
@@ -24,50 +50,99 @@
         "opening"
       ],
       "properties": {
-        "campaignName": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "campaignDescription": { "type": "string", "maxLength": 2000 },
+        "campaignName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "campaignDescription": {
+          "type": "string",
+          "maxLength": 2000
+        },
         "world": {
           "type": "object",
-          "required": ["name", "premise"],
+          "required": [
+            "name",
+            "premise"
+          ],
           "properties": {
-            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-            "premise": { "type": "string", "minLength": 1, "maxLength": 6000 }
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "premise": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            }
           },
           "additionalProperties": false
         },
         "player": {
           "type": "object",
-          "required": ["card"],
+          "required": [
+            "card"
+          ],
           "properties": {
-            "card": { "$ref": "人物卡.schema.json" },
-            "description": { "type": "string", "maxLength": 2000 }
+            "card": {
+              "$ref": "人物卡.schema.json"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 2000
+            }
           },
           "additionalProperties": false
         },
-        "mainCharacter": { "$ref": "#/$defs/storyCharacter" },
+        "mainCharacter": {
+          "$ref": "#/$defs/storyCharacter"
+        },
         "additionalCharacters": {
           "type": "array",
           "maxItems": 20,
-          "items": { "$ref": "#/$defs/additionalCharacter" }
+          "items": {
+            "$ref": "#/$defs/additionalCharacter"
+          }
         },
-        "worldBook": { "$ref": "世界书.schema.json" },
+        "worldBook": {
+          "$ref": "世界书.schema.json"
+        },
         "referenceDocuments": {
           "type": "array",
           "maxItems": 5,
-          "items": { "$ref": "#/$defs/referenceDocument" }
+          "items": {
+            "$ref": "#/$defs/referenceDocument"
+          }
         },
         "storyModules": {
           "type": "array",
           "maxItems": 30,
-          "items": { "$ref": "#/$defs/storyModule" }
+          "items": {
+            "$ref": "#/$defs/storyModule"
+          }
         },
         "opening": {
           "type": "object",
-          "required": ["locationName", "scene", "initialStoryDirection"],
+          "required": [
+            "locationName",
+            "scene",
+            "initialStoryDirection"
+          ],
           "properties": {
-            "locationName": { "type": "string", "maxLength": 80 },
-            "scene": { "type": "string", "minLength": 1, "maxLength": 8000 },
-            "initialStoryDirection": { "type": "string", "maxLength": 1000 },
+            "locationName": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "scene": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000
+            },
+            "initialStoryDirection": {
+              "type": "string",
+              "maxLength": 1000
+            },
             "initialStoryModuleId": {
               "type": "string",
               "minLength": 1,
@@ -81,13 +156,33 @@
           "type": "array",
           "maxItems": 100,
           "description": "开局角色之间的初始关系基线（按角色姓名引用）",
-          "items": { "$ref": "#/$defs/initialRelationship" }
+          "items": {
+            "$ref": "#/$defs/initialRelationship"
+          }
         },
         "locations": {
           "type": "array",
           "maxItems": 60,
           "description": "剧本中可能出现的地点清单（按姓名预注册，未进入前即被声明）",
-          "items": { "$ref": "#/$defs/storyLocation" }
+          "items": {
+            "$ref": "#/$defs/storyLocation"
+          }
+        },
+        "foreshadowing": {
+          "type": "array",
+          "maxItems": 30,
+          "description": "跨章节伏笔清单：seedCondition 满足后埋入剧情，payoffCondition 满足时回收并呈现 payoffSummary",
+          "items": {
+            "$ref": "#/$defs/foreshadowing"
+          }
+        },
+        "triggers": {
+          "type": "array",
+          "maxItems": 30,
+          "description": "偏离触发器：when 条件满足时后果作为意外阻碍显现，stateEffects 由系统强制应用",
+          "items": {
+            "$ref": "#/$defs/plotTrigger"
+          }
         }
       },
       "additionalProperties": false
@@ -96,15 +191,30 @@
   "$defs": {
     "storyLocation": {
       "type": "object",
-      "required": ["name", "description"],
+      "required": [
+        "name",
+        "description"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "description": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
         "characters": {
           "type": "array",
           "maxItems": 30,
           "description": "默认在该地点活动的角色姓名",
-          "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
         },
         "important": {
           "type": "boolean",
@@ -115,28 +225,67 @@
     },
     "initialRelationship": {
       "type": "object",
-      "required": ["sourceCharacterName", "targetCharacterName"],
+      "required": [
+        "sourceCharacterName",
+        "targetCharacterName"
+      ],
       "properties": {
-        "sourceCharacterName": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "targetCharacterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "sourceCharacterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "targetCharacterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
         "dimensions": {
           "type": "object",
           "properties": {
-            "trust": { "type": "number", "minimum": -100, "maximum": 100 },
-            "affinity": { "type": "number", "minimum": -100, "maximum": 100 },
-            "fear": { "type": "number", "minimum": -100, "maximum": 100 },
-            "hostility": { "type": "number", "minimum": -100, "maximum": 100 },
-            "respect": { "type": "number", "minimum": -100, "maximum": 100 }
+            "trust": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "affinity": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "fear": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "hostility": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "respect": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100
+            }
           },
           "additionalProperties": false
         },
-        "summary": { "type": "string", "maxLength": 2000 }
+        "summary": {
+          "type": "string",
+          "maxLength": 2000
+        }
       },
       "additionalProperties": false
     },
     "storyModule": {
       "type": "object",
-      "required": ["id", "title", "objective", "completionCriteria"],
+      "required": [
+        "id",
+        "title",
+        "objective",
+        "completionCriteria"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -144,27 +293,53 @@
           "maxLength": 120,
           "pattern": "^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]*$"
         },
-        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "objective": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
         "completionCriteria": {
           "type": "array",
           "minItems": 1,
           "maxItems": 12,
-          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
         },
         "activationConditions": {
           "type": "array",
           "maxItems": 12,
-          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
         },
         "prerequisiteModuleIds": {
           "type": "array",
           "maxItems": 20,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
         },
-        "continuityNotes": { "type": "string", "maxLength": 2000 },
-        "autoContinue": { "type": "boolean", "default": true },
+        "continuityNotes": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "autoContinue": {
+          "type": "boolean",
+          "default": true
+        },
         "deadlineDay": {
           "type": "integer",
           "minimum": 1,
@@ -176,28 +351,53 @@
     },
     "storyCharacter": {
       "type": "object",
-      "required": ["card"],
+      "required": [
+        "card"
+      ],
       "properties": {
-        "card": { "$ref": "人物卡.schema.json" },
-        "firstMessage": { "type": "string", "maxLength": 2000 }
+        "card": {
+          "$ref": "人物卡.schema.json"
+        },
+        "firstMessage": {
+          "type": "string",
+          "maxLength": 2000
+        }
       },
       "additionalProperties": false
     },
     "additionalCharacter": {
       "type": "object",
-      "required": ["card", "presentAtOpening"],
+      "required": [
+        "card",
+        "presentAtOpening"
+      ],
       "properties": {
-        "card": { "$ref": "人物卡.schema.json" },
-        "firstMessage": { "type": "string", "maxLength": 2000 },
-        "presentAtOpening": { "type": "boolean" }
+        "card": {
+          "$ref": "人物卡.schema.json"
+        },
+        "firstMessage": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "presentAtOpening": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "referenceDocument": {
       "type": "object",
-      "required": ["name", "fileName", "content"],
+      "required": [
+        "name",
+        "fileName",
+        "content"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
         "fileName": {
           "type": "string",
           "minLength": 1,
@@ -209,16 +409,210 @@
           "minLength": 1,
           "maxLength": 2000000
         },
-        "enabled": { "type": "boolean", "default": true },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
         "currentChapter": {
           "type": "integer",
           "minimum": 1,
           "default": 1
         },
-        "preventFuture": { "type": "boolean", "default": true },
+        "preventFuture": {
+          "type": "boolean",
+          "default": true
+        },
         "fidelity": {
-          "enum": ["balanced", "faithful"],
+          "enum": [
+            "balanced",
+            "faithful"
+          ],
           "default": "balanced"
+        }
+      },
+      "additionalProperties": false
+    },
+    "foreshadowing": {
+      "type": "object",
+      "required": [
+        "id",
+        "keywords",
+        "seedCondition",
+        "payoffCondition",
+        "payoffSummary"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]*$"
+        },
+        "keywords": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": "稳定关键词：相关时刻把伏笔带进上下文"
+        },
+        "seedCondition": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "payoffCondition": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "payoffSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "characters": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": "与伏笔密切相关的主要角色姓名"
+        }
+      },
+      "additionalProperties": false
+    },
+    "plotTrigger": {
+      "type": "object",
+      "required": [
+        "id",
+        "when",
+        "consequence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]*$"
+        },
+        "when": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "触发条件描述"
+        },
+        "consequence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "条件满足后必须显现的意外阻碍"
+        },
+        "stateEffects": {
+          "$ref": "#/$defs/triggerStateEffects"
+        },
+        "deadline": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "期限（游戏内第几天前必须生效）；超过后系统强制触发"
+        }
+      },
+      "additionalProperties": false
+    },
+    "triggerStateEffects": {
+      "type": "object",
+      "properties": {
+        "relations": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "object",
+            "required": [
+              "sourceCharacterName",
+              "targetCharacterName",
+              "dimension",
+              "delta"
+            ],
+            "properties": {
+              "sourceCharacterName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "targetCharacterName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "dimension": {
+                "enum": [
+                  "trust",
+                  "affection",
+                  "fear",
+                  "hostility",
+                  "respect"
+                ]
+              },
+              "delta": {
+                "type": "number",
+                "minimum": -100,
+                "maximum": 100
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "flags": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50
+          },
+          "description": "标志：bad_end 置位后游戏页显示结局警示"
+        },
+        "attributes": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "object",
+            "required": [
+              "characterName",
+              "attribute",
+              "value"
+            ],
+            "properties": {
+              "characterName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "attribute": {
+                "enum": [
+                  "力量",
+                  "敏捷",
+                  "感知",
+                  "意志",
+                  "魅力",
+                  "智力",
+                  "体质"
+                ]
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

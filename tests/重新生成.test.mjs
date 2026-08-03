@@ -383,7 +383,7 @@ test("regenerates the latest AI turn from its parent state atomically", async ()
         }),
       (error) =>
         error instanceof TurnRegenerationError &&
-        /手工修改过人物、地点、剧情任务、世界书、原文、记忆或持久状态/.test(
+        /手工修改过人物、地点、剧情任务、伏笔、偏离触发器、世界书、原文、记忆或持久状态/.test(
           error.message,
         ),
     );

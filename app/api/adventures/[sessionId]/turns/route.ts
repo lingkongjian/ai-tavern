@@ -117,7 +117,12 @@ export async function POST(
         input,
       });
       return noStoreJson(result, {
-        status: result.committedTurn.reused ? 200 : 201,
+        status:
+          result.committedTurn === null
+            ? 202
+            : result.committedTurn.reused
+              ? 200
+              : 201,
       });
     }
 
@@ -133,10 +138,19 @@ export async function POST(
               sseEvent(controller, "failover", { profileName }),
           });
           sseEvent(controller, "result", {
-            status: result.committedTurn.reused ? 200 : 201,
+            status:
+              result.committedTurn === null
+                ? 202
+                : result.committedTurn.reused
+                  ? 200
+                  : 201,
             adventure: result.adventure,
             committedTurn: result.committedTurn,
             generation: result.generation,
+            pendingChecks: result.pendingChecks,
+            pendingTurnId: result.pendingTurnId,
+            expectedHeadTurnId: result.expectedHeadTurnId,
+            idempotencyKey: result.idempotencyKey,
           });
         } catch (error) {
           if (

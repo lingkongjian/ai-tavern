@@ -247,6 +247,12 @@ export function parseAdventureBundleDocument(
       ...(Array.isArray(source.locations) && source.locations.length > 0
         ? { locations: source.locations }
         : {}),
+      ...(Array.isArray(source.foreshadowing) && source.foreshadowing.length > 0
+        ? { foreshadowing: source.foreshadowing }
+        : {}),
+      ...(Array.isArray(source.triggers) && source.triggers.length > 0
+        ? { triggers: source.triggers }
+        : {}),
     });
   } catch (error) {
     if (error instanceof AdventureInputError) {

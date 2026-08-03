@@ -38,6 +38,8 @@ export interface BundleProjectReport {
     worldBookEntries: number;
     referenceDocuments: number;
     storyModules: number;
+    plotThreads: number;
+    plotTriggers: number;
   };
   checks: string[];
   warnings: string[];
@@ -446,6 +448,22 @@ export async function assembleBundleProject(
       locations = structuredClone(campaign.locations) as JsonValue[];
     }
   }
+  let foreshadowing: JsonValue[] | undefined;
+  if (campaign.foreshadowing !== undefined) {
+    if (!Array.isArray(campaign.foreshadowing)) {
+      issues.push("campaign.foreshadowing 必须是数组。");
+    } else {
+      foreshadowing = structuredClone(campaign.foreshadowing) as JsonValue[];
+    }
+  }
+  let triggers: JsonValue[] | undefined;
+  if (campaign.triggers !== undefined) {
+    if (!Array.isArray(campaign.triggers)) {
+      issues.push("campaign.triggers 必须是数组。");
+    } else {
+      triggers = structuredClone(campaign.triggers) as JsonValue[];
+    }
+  }
 
   const bundleName = requiredText(
     bundleSettings.name,
@@ -701,6 +719,8 @@ export async function assembleBundleProject(
       ...(storyModules ? { storyModules } : {}),
       ...(initialRelationships ? { initialRelationships } : {}),
       ...(locations ? { locations } : {}),
+      ...(foreshadowing ? { foreshadowing } : {}),
+      ...(triggers ? { triggers } : {}),
       opening: {
         locationName: openingLocationName,
         scene: openingScene,
@@ -790,6 +810,8 @@ export async function assembleBundleProject(
       worldBookEntries: worldBook.entries.length,
       referenceDocuments: referenceDocuments.length,
       storyModules: validated.adventure.storyModules?.length ?? 0,
+      plotThreads: validated.adventure.foreshadowing?.length ?? 0,
+      plotTriggers: validated.adventure.triggers?.length ?? 0,
     },
     checks: [
       "维护清单格式有效",
@@ -797,6 +819,7 @@ export async function assembleBundleProject(
       "人物卡、世界书和原文参考可解析",
       "角色姓名与维护清单一致且不重复",
       "剧情任务 ID、前置关系和初始任务有效且无循环",
+      "伏笔与偏离触发器的 ID、角色引用和属性白名单有效",
       "生成结果可被 AI 酒馆完整剧本包导入器接受",
     ],
     warnings: uniqueWarnings,

@@ -560,6 +560,118 @@ export const turnRegenerations = sqliteTable(
   ],
 );
 
+export const pendingTurns = sqliteTable(
+  "pending_turns",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull().default("advance"),
+    expectedHeadTurnId: text("expected_head_turn_id").notNull(),
+    expectedParentTurnId: text("expected_parent_turn_id"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    feedback: text("feedback").notNull().default(""),
+    expectedRegenerationCount: integer("expected_regeneration_count")
+      .notNull()
+      .default(0),
+    playerInputJson: text("player_input_json").notNull(),
+    generatedOutputJson: text("generated_output_json").notNull(),
+    summaryPatch: text("summary_patch").notNull().default(""),
+    contextSnapshotJson: text("context_snapshot_json").notNull().default("{}"),
+    memoryContextJson: text("memory_context_json").notNull().default("{}"),
+    stateMutationsJson: text("state_mutations_json").notNull().default("[]"),
+    messagesJson: text("messages_json").notNull().default("[]"),
+    eventsJson: text("events_json").notNull().default("[]"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("idx_pending_turns_session_key").on(
+      table.sessionId,
+      table.idempotencyKey,
+    ),
+    index("idx_pending_turns_session_branch").on(
+      table.sessionId,
+      table.branchId,
+    ),
+  ],
+);
+
+export const plotThreadManagementChanges = sqliteTable(
+  "plot_thread_management_changes",
+  {
+    id: text("id").primaryKey(),
+    actionId: text("action_id").notNull(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    referenceTurnId: text("reference_turn_id")
+      .notNull()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    plotThreadId: text("plot_thread_id").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("idx_plot_thread_management_action_ordinal").on(
+      table.actionId,
+      table.ordinal,
+    ),
+    index("idx_plot_thread_management_branch_thread").on(
+      table.branchId,
+      table.plotThreadId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const plotTriggerManagementChanges = sqliteTable(
+  "plot_trigger_management_changes",
+  {
+    id: text("id").primaryKey(),
+    actionId: text("action_id").notNull(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    referenceTurnId: text("reference_turn_id")
+      .notNull()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    plotTriggerId: text("plot_trigger_id").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("idx_plot_trigger_management_action_ordinal").on(
+      table.actionId,
+      table.ordinal,
+    ),
+    index("idx_plot_trigger_management_branch_trigger").on(
+      table.branchId,
+      table.plotTriggerId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const materializedStates = sqliteTable(
   "materialized_states",
   {
