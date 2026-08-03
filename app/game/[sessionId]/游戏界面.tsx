@@ -1015,10 +1015,6 @@ export function GameInterface({
       ? change.payload.gameTimeDay
       : undefined;
   }
-  const mapPresentCount = [...charactersByLocation.values()].reduce(
-    (total, names) => total + names.length,
-    0,
-  );
   function auditTargetLabel(
     change: Pick<StateAuditChange, "entityType" | "entityId">,
   ) {
@@ -5473,63 +5469,6 @@ export function GameInterface({
               </button>
             </div>
 
-            {locations.length > 0 ? (
-              <section className="location-map-cards" aria-labelledby="location-map-title">
-                <header>
-                  <div>
-                    <strong id="location-map-title">
-                      世界地图 · 游戏内第 {gameTimeDay} 日
-                    </strong>
-                    <small>
-                      {locations.length} 处地点 · {mapPresentCount} 名人物位置已知
-                      · 尚未登场或位置未知的人物不会显示。
-                    </small>
-                  </div>
-                </header>
-                <ul className="map-location-list">
-                  {locations.map((location, index) => {
-                    const presentHere = charactersByLocation.get(location.id) ?? [];
-                    const isCurrent = location.id === currentLocationId;
-                    const description =
-                      location.description.length > 110
-                        ? `${location.description.slice(0, 110)}…`
-                        : location.description;
-                    return (
-                      <li
-                        key={location.id}
-                        className={isCurrent ? "current" : ""}
-                      >
-                        <div className="map-location-heading">
-                          <div className="map-location-name">
-                            <span className="map-location-index">
-                              {String(index + 1).padStart(2, "0")}
-                            </span>
-                            <strong>{location.name}</strong>
-                            {location.important ? (
-                              <em className="map-important">重要</em>
-                            ) : null}
-                            {isCurrent ? <em className="map-current">当前位置</em> : null}
-                          </div>
-                        </div>
-                        <p className="map-location-description">{description}</p>
-                        {presentHere.length > 0 ? (
-                          <div className="map-present-characters">
-                            {presentHere.map((name) => (
-                              <span key={name}>{name}</span>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="map-present-characters empty">
-                            <span>暂无人物在此</span>
-                          </div>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ) : null}
-
             {locationManagerError ? (
               <div className="character-manager-error" role="alert">
                 {locationManagerError}
@@ -5674,6 +5613,21 @@ export function GameInterface({
                         <small className="location-roster-summary">
                           默认登场：{rosterNames || "仅玩家角色"}
                         </small>
+                        {(() => {
+                          const presentHere =
+                            charactersByLocation.get(location.id) ?? [];
+                          if (presentHere.length === 0) return null;
+                          return (
+                            <div className="location-present-characters">
+                              <span className="location-present-label">
+                                当前在此
+                              </span>
+                              {presentHere.map((name) => (
+                                <span key={name}>{name}</span>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                     <div className="managed-character-actions">
