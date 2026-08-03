@@ -248,10 +248,17 @@
               "minimum": -100,
               "maximum": 100
             },
-            "affinity": {
+            "affection": {
               "type": "number",
               "minimum": -100,
               "maximum": 100
+            },
+            "affinity": {
+              "type": "number",
+              "minimum": -100,
+              "maximum": 100,
+              "deprecated": true,
+              "description": "好感维度的旧别名，新内容一律使用 affection。"
             },
             "fear": {
               "type": "number",

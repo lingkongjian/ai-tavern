@@ -33,7 +33,7 @@ test("build renders the complete Chinese operation manual", async () => {
   assert.match(html, /<title>操作手册 · AI 酒馆<\/title>/i);
   assert.match(html, /<h1[^>]*>AI 酒馆完整操作手册<\/h1>/i);
   assert.match(html, /候选选项与三种输入/);
-  assert.match(html, /人物、地点、剧情任务、世界书、原文、记忆、修改记录/);
+  assert.match(html, /人物、地点、剧情任务、伏笔、触发器、世界书、原文、记忆、修改记录/);
   assert.match(html, /完整存档与整库备份/);
   assert.match(html, /下载 Markdown 原文/);
 });

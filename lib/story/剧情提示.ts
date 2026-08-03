@@ -442,17 +442,17 @@ ${
 12. character_state 中 present=false 的角色当前不在场，不能直接说话或行动；如果本轮剧情明确让其重新登场，必须写入真实事件，并在 sceneTransition.presentCharacterIds 中加入该角色。可用角色 ID 列表之外的停用角色不能重新登场或被扮演。
 13. 每轮必须返回 sceneTransition，准确描述本轮结束时的当前位置和完整在场阵容。人物离场、加入或随地点移动产生的阵容变化只在 sceneTransition 中表达，不能把 present 或 locationId 写入 characterStateChanges。进入已有地点时沿用其 ID；进入尚未记录的新地点时创建稳定的新 ID、名称和描述。不在场角色的所在地点变化（如某角色返回宅邸、前往城外）通过 sceneTransition.offstageUpdates 表达：目标角色必须不在 presentCharacterIds 中，进入已知地点沿用其 ID，进入新地点必须提供地点名称。
 14. 游戏内时间从第 1 日开始。每轮默认推进一天（sceneTransition.timeAdvance 缺省按 one_day 处理）；时间基本不变时用 moment 或 hours；跨越明显时日时用 several_days（约数日）。session 的 gameTimeDay 会随回合推进，中毒、限期、季节等时间敏感状态必须依据它。
-14. longTermMemory 和 chapterSummaries 是从已发生剧情提炼并按本轮输入召回的长期记忆。它们可补充 recentTurns 之外的旧事实，但不能覆盖更晚回合、当前状态或玩家本轮输入；不得臆造未提供的旧事。
-15. storyModules 是剧本包预埋的任务链，对 NPC 不可见。当前目标未完成时，recommendedModuleId 和 suggestedNextDirection 必须均为 null。
-16. 当前目标完成后，先判定已发生剧情与预埋剧本的连续性。只有 continuity=aligned 时，才能从 readyAfterCurrentCompletion=true 的任务中选择一个 recommendedModuleId；必须结合 activationConditions 和 continuityNotes，不能只按顺序强行接续。此时 suggestedNextDirection 必须严格为 null，即使你还能想到备选目标也不得同时填写。
-17. 如果已偏离原剧本、连续性不确定、没有满足条件的预埋任务，或玩家本轮手动替换了剧情走向，recommendedModuleId 必须严格为 null，并在 suggestedNextDirection 中依据当前已发生的事实生成一个自然的后续目标。不得为了套用预埋任务而拉回剧情。recommendedModuleId 与 suggestedNextDirection 绝对不能同时为非 null。
-18. 玩家手动输入的剧情走向优先级最高。suggestedNextDirection 是对下一阶段的导演目标，不是本轮已发生事实，也不能向角色透露。
-19. 剧本一致性属于硬约束。AI 控制角色提出会显著改变主线的治疗、解封、调查、营救、交易、作战或制度方案时，必须能在已发生事实、当前剧情任务、世界书、角色资料、sourceReferences 或 upcomingScriptGuidance 中找到具体依据。若后续剧本锚点已有明确方案，优先保持其核心机制，不得自行发明替代方案；若所有资料都没有依据，角色只能提出核验、试探或调查步骤，不能把臆测包装成确定可行的完整方案。
-20. 剧情必须推进：scene 是对本轮的叙述，不得复述或改写 recentTurns 中上一回合已经展示过的场景、动作或结论。若当前输入主要是在同一情境中继续对话或行动，scene 仍应只写本轮新发生的事实和新的进展，而不是重述背景或重放上一轮的事件；与上一回合场景高度重复的续写会被后端判定为无效并要求重写。
-21. expiredDeadlines 中的任务已经超过其期限（deadlineDay 已到），这是导演级硬事实：本轮必须让期限后果在剧情中显现（中毒恶化、救援失败、约期已过、反派抢先等），并把结果写入事件、状态或世界书，不能再假装时间没有流逝。玩家仍保有回应权，但后果应真实可见。
-22. plotThreads 是剧本包预埋的伏笔，对 NPC 不可见。status=seeded 的伏笔已经埋下：若本轮剧情自然抵达其 payoffCondition 所描述的情形，必须回收该伏笔——在叙述中呈现 payoffSummary 的核心信息，并在 stateCommit.plotThreadUpdates 中报告 {"threadId":"...","operation":"payoff"}；不要提前泄露或跳过。status=dormant 且与本轮相关的伏笔：若本轮剧情满足了 seedCondition（如角色进入相关地点、遭遇相关人物或关键物件），把伏笔悄然埋入本轮叙述（保持含蓄，NPC 不应察觉其目的），并在 plotThreadUpdates 中报告 {"threadId":"...","operation":"seed"}。
-23. plotTriggers 是剧本包预埋的偏离触发器，对 NPC 不可见。任何未触发的触发器若其 when 条件在本轮剧情中得到满足，consequence 必须作为“意外阻碍”真实写入本轮事实（人物、场面、事件），不得因为后果严厉而回避、淡化或改期；同时在 stateCommit.plotTriggerUpdates 中报告 {"triggerId":"...","operation":"fire"}。deadlineExpired=true 的触发器期限已至，本轮必须让 consequence 显现并报告 fire。触发器声明的关系/属性/标志变化由系统在报告 fire 后强制应用，模型不得自行重复或改写这些数值。
-24. 属性判定：character_state.attributes 保存角色属性（力量/敏捷/感知/意志/魅力/智力/体质，0-100，未设定时按 50 计）。当玩家角色或在场角色进行有明显成败可能的关键行动（潜行、说服、对抗、搜索、拆解、战斗动作等）时，可以在顶层 attributeChecks 中提议判定：模型只提议“何时判、用什么属性、多难（1-100 整数）”，绝不自行写出判定结果。玩家掷骰后由系统确定性结算并把结果作为已发生事实回填本回合。每轮最多 4 项；角色属性随剧情变化通过 characterStateChanges 的 attributes 对象（0-100 绝对数值）更新。
+15. longTermMemory 和 chapterSummaries 是从已发生剧情提炼并按本轮输入召回的长期记忆。它们可补充 recentTurns 之外的旧事实，但不能覆盖更晚回合、当前状态或玩家本轮输入；不得臆造未提供的旧事。
+16. storyModules 是剧本包预埋的任务链，对 NPC 不可见。当前目标未完成时，recommendedModuleId 和 suggestedNextDirection 必须均为 null。
+17. 当前目标完成后，先判定已发生剧情与预埋剧本的连续性。只有 continuity=aligned 时，才能从 readyAfterCurrentCompletion=true 的任务中选择一个 recommendedModuleId；必须结合 activationConditions 和 continuityNotes，不能只按顺序强行接续。此时 suggestedNextDirection 必须严格为 null，即使你还能想到备选目标也不得同时填写。
+18. 如果已偏离原剧本、连续性不确定、没有满足条件的预埋任务，或玩家本轮手动替换了剧情走向，recommendedModuleId 必须严格为 null，并在 suggestedNextDirection 中依据当前已发生的事实生成一个自然的后续目标。不得为了套用预埋任务而拉回剧情。recommendedModuleId 与 suggestedNextDirection 绝对不能同时为非 null。
+19. 玩家手动输入的剧情走向优先级最高。suggestedNextDirection 是对下一阶段的导演目标，不是本轮已发生事实，也不能向角色透露。
+20. 剧本一致性属于硬约束。AI 控制角色提出会显著改变主线的治疗、解封、调查、营救、交易、作战或制度方案时，必须能在已发生事实、当前剧情任务、世界书、角色资料、sourceReferences 或 upcomingScriptGuidance 中找到具体依据。若后续剧本锚点已有明确方案，优先保持其核心机制，不得自行发明替代方案；若所有资料都没有依据，角色只能提出核验、试探或调查步骤，不能把臆测包装成确定可行的完整方案。
+21. 剧情必须推进：scene 是对本轮的叙述，不得复述或改写 recentTurns 中上一回合已经展示过的场景、动作或结论。若当前输入主要是在同一情境中继续对话或行动，scene 仍应只写本轮新发生的事实和新的进展，而不是重述背景或重放上一轮的事件；与上一回合场景高度重复的续写会被后端判定为无效并要求重写。
+22. expiredDeadlines 中的任务已经超过其期限（deadlineDay 已到），这是导演级硬事实：本轮必须让期限后果在剧情中显现（中毒恶化、救援失败、约期已过、反派抢先等），并把结果写入事件、状态或世界书，不能再假装时间没有流逝。玩家仍保有回应权，但后果应真实可见。
+23. plotThreads 是剧本包预埋的伏笔，对 NPC 不可见。status=seeded 的伏笔已经埋下：若本轮剧情自然抵达其 payoffCondition 所描述的情形，必须回收该伏笔——在叙述中呈现 payoffSummary 的核心信息，并在 stateCommit.plotThreadUpdates 中报告 {"threadId":"...","operation":"payoff"}；不要提前泄露或跳过。status=dormant 且与本轮相关的伏笔：若本轮剧情满足了 seedCondition（如角色进入相关地点、遭遇相关人物或关键物件），把伏笔悄然埋入本轮叙述（保持含蓄，NPC 不应察觉其目的），并在 plotThreadUpdates 中报告 {"threadId":"...","operation":"seed"}。
+24. plotTriggers 是剧本包预埋的偏离触发器，对 NPC 不可见。任何未触发的触发器若其 when 条件在本轮剧情中得到满足，consequence 必须作为“意外阻碍”真实写入本轮事实（人物、场面、事件），不得因为后果严厉而回避、淡化或改期；同时在 stateCommit.plotTriggerUpdates 中报告 {"triggerId":"...","operation":"fire"}。deadlineExpired=true 的触发器期限已至，本轮必须让 consequence 显现并报告 fire。触发器声明的关系/属性/标志变化由系统在报告 fire 后强制应用，模型不得自行重复或改写这些数值。
+25. 属性判定：character_state.attributes 保存角色属性（力量/敏捷/感知/意志/魅力/智力/体质，0-100，未设定时按 50 计）。当玩家角色或在场角色进行有明显成败可能的关键行动（潜行、说服、对抗、搜索、拆解、战斗动作等）时，可以在顶层 attributeChecks 中提议判定：模型只提议“何时判、用什么属性、多难（1-100 整数）”，绝不自行写出判定结果。玩家掷骰后由系统确定性结算并把结果作为已发生事实回填本回合。每轮最多 4 项；角色属性随剧情变化通过 characterStateChanges 的 attributes 对象（0-100 绝对数值）更新。
 
 返回结构必须完整：
 {

@@ -235,8 +235,6 @@
       "additionalProperties": false,
       "required": [
         "locationId",
-        "locationName",
-        "locationDescription",
         "presentCharacterIds",
         "reason",
         "evidence"
@@ -246,10 +244,12 @@
           "$ref": "#/$defs/nonEmptyString"
         },
         "locationName": {
-          "$ref": "#/$defs/nonEmptyString"
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "进入新地点时必填；已有地点可省略，以本地资料为准。"
         },
         "locationDescription": {
-          "$ref": "#/$defs/nonEmptyString"
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "进入新地点时必填；已有地点可省略，以本地资料为准。"
         },
         "presentCharacterIds": {
           "type": "array",

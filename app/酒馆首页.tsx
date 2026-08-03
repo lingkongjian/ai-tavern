@@ -3313,7 +3313,7 @@ export function TavernHome() {
                         已载入 {bundleLocations.length} 处预注册地点
                       </strong>
                       <small>
-                        开局即进入地点清单，未进入前已被声明；进入游戏后可用“地图”查看地点与人物位置。
+                        开局即进入地点清单，未进入前已被声明；进入游戏后可在“地点”栏目查看地点与人物位置。
                       </small>
                       <ul className="bundle-module-list">
                         {bundleLocations.map((location) => (

@@ -138,7 +138,7 @@ macOS 桌面版由桌面入口强制设置绝对数据目录：`AI酒馆/用户�
 
 ## 剧情外人物管理
 
-人物、地点、剧情任务、世界书、原文、记忆和修改记录在页面上统一归入“剧本工作台”。其中前六类通过 `POST /api/adventures/{sessionId}/content` 的 `1.0.0` 协议共享命令信封、错误结构和最新内容快照；修改记录通过同一服务读取原文/记忆审计，通过专用状态接口执行跨领域状态回滚与字段锁。分支、存档、历史回看和回合重生成仍属于剧情时间线操作。完整协议见 [`CONTENT_SERVICE.md`](CONTENT_SERVICE.md)，玩家文件、内部记录和 API 上下文之间的转换规则见 [`FILE_LIFECYCLE.md`](FILE_LIFECYCLE.md)。
+人物、地点、剧情任务、伏笔、触发器、世界书、原文、记忆和修改记录在页面上统一归入“剧本工作台”。其中前八类通过 `POST /api/adventures/{sessionId}/content` 的 `1.0.0` 协议共享命令信封、错误结构和最新内容快照；修改记录通过同一服务读取原文/记忆审计，通过专用状态接口执行跨领域状态回滚与字段锁。分支、存档、历史回看和回合重生成仍属于剧情时间线操作。完整协议见 [`CONTENT_SERVICE.md`](CONTENT_SERVICE.md)，玩家文件、内部记录和 API 上下文之间的转换规则见 [`FILE_LIFECYCLE.md`](FILE_LIFECYCLE.md)。
 
 原文和记忆的统一管理由 `LocalStoryStore.manageContentAsset()` 执行。方法先按 `session_id + action_id` 检查幂等记录，再在一个 `BEGIN IMMEDIATE` 事务中修改 `source_*` 或 `memory_*` 数据、写入 `content_asset_management_changes` 并更新会话时间。相同动作安全复用；同一 `actionId` 搭配不同请求哈希会被拒绝。每个目标使用递增 `revision`；可恢复动作记录 `before_json` 与 `after_json`。回滚先核对活动分支头、最新修订、当前值与快照一致性，再恢复旧值、写入新的 `rollback` 动作并设置 `reverted_by_action_id`。原文删除只写 `is_deleted=1`，检索和目录查询会排除软删除记录。
 

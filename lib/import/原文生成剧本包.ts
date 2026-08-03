@@ -114,7 +114,7 @@ type BlueprintInitialRelationship = {
   sourceName: string;
   targetName: string;
   trust: number;
-  affinity: number;
+  affection: number;
   fear: number;
   hostility: number;
   respect: number;
@@ -778,7 +778,7 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
           sourceName,
           targetName,
           trust: dimension("trust"),
-          affinity: dimension("affinity"),
+          affection: dimension("affection"),
           fear: dimension("fear"),
           hostility: dimension("hostility"),
           respect: dimension("respect"),
@@ -1303,7 +1303,7 @@ function buildBundleDocument(
                 targetCharacterName: relationship.targetName,
                 dimensions: {
                   trust: relationship.trust,
-                  affinity: relationship.affinity,
+                  affection: relationship.affection,
                   fear: relationship.fear,
                   hostility: relationship.hostility,
                   respect: relationship.respect,
@@ -1418,7 +1418,7 @@ const blueprintShape = `{
   "additionalCharacters": [{ "name": "", "description": "", "personality": "", "firstMessage": "", "dialogueExamples": "", "presentAtOpening": false }],
   "worldBookEntries": [{ "title": "", "keys": [""], "content": "", "constant": false }],
   "storyModules": [{ "title": "", "objective": "", "completionCriteria": [""], "activationConditions": [""], "continuityNotes": "", "deadlineDay": 1 }],
-  "initialRelationships": [{ "sourceName": "", "targetName": "", "trust": 0, "affinity": 0, "fear": 0, "hostility": 0, "respect": 0, "summary": "" }],
+  "initialRelationships": [{ "sourceName": "", "targetName": "", "trust": 0, "affection": 0, "fear": 0, "hostility": 0, "respect": 0, "summary": "" }],
   "locations": [{ "name": "", "description": "", "characters": [""], "important": false }],
   "foreshadowing": [{ "keywords": [""], "seedCondition": "", "payoffCondition": "", "payoffSummary": "", "characters": [""] }],
   "triggers": [{ "when": "", "consequence": "", "stateEffects": { "relations": [{ "sourceCharacterName": "", "targetCharacterName": "", "dimension": "trust", "delta": -10 }], "flags": [""], "attributes": [{ "characterName": "", "attribute": "力量", "value": 30 }] }, "deadlineDay": null }],

@@ -69,6 +69,55 @@ test("validates setup input and rejects incomplete adventures", () => {
   );
 });
 
+test("accepts legacy affinity alias as affection for initial relationships", () => {
+  const withAffinity = parseStartAdventureInput({
+    ...validInput,
+    initialRelationships: [
+      {
+        sourceCharacterName: "沈砚",
+        targetCharacterName: "伊芙琳",
+        dimensions: { trust: 60, affinity: 70, respect: 80 },
+        summary: "旧识。",
+      },
+    ],
+  });
+  assert.deepEqual(
+    withAffinity.initialRelationships?.[0].dimensions,
+    { trust: 60, affection: 70, respect: 80 },
+  );
+
+  const bothKeys = parseStartAdventureInput({
+    ...validInput,
+    initialRelationships: [
+      {
+        sourceCharacterName: "沈砚",
+        targetCharacterName: "伊芙琳",
+        dimensions: { affection: 40, affinity: 90 },
+      },
+    ],
+  });
+  assert.deepEqual(bothKeys.initialRelationships?.[0].dimensions, {
+    affection: 40,
+  });
+
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialRelationships: [
+          {
+            sourceCharacterName: "沈砚",
+            targetCharacterName: "伊芙琳",
+            dimensions: { affinity: 300 },
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("affinity")),
+  );
+});
+
 test("creates and restores a complete opening adventure", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-opening-"));
   const databasePath = join(temporaryDirectory, "story.sqlite");

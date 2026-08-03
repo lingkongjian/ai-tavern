@@ -93,8 +93,8 @@ export interface GeneratedPlotTriggerUpdate {
 
 export interface GeneratedSceneTransition {
   locationId: string;
-  locationName: string;
-  locationDescription: string;
+  locationName?: string;
+  locationDescription?: string;
   presentCharacterIds: string[];
   reason: string;
   evidence: string[];
@@ -733,21 +733,23 @@ export function validateGeneratedTurn(
     if (playerCharacterId && !presentCharacterIds.includes(playerCharacterId)) {
       issues.push("回合结束时的在场阵容必须包含玩家角色。");
     }
-    const locationName = requiredText(
-      transition.locationName,
-      "stateCommit.sceneTransition.locationName",
-      issues,
-      120,
-    );
-    const locationDescription = requiredText(
-      transition.locationDescription,
-      "stateCommit.sceneTransition.locationDescription",
-      issues,
-      2_000,
-    );
-    if (!activeLocationIds.has(locationId) && !locationName) {
-      issues.push("进入新地点时必须提供地点名称。");
-    }
+    const isNewLocation = !activeLocationIds.has(locationId);
+    const locationName = isNewLocation
+      ? requiredText(
+          transition.locationName,
+          "stateCommit.sceneTransition.locationName",
+          issues,
+          120,
+        )
+      : trimText(transition.locationName, 120);
+    const locationDescription = isNewLocation
+      ? requiredText(
+          transition.locationDescription,
+          "stateCommit.sceneTransition.locationDescription",
+          issues,
+          2_000,
+        )
+      : trimText(transition.locationDescription, 2_000);
     const transitionEvidence = readEvidence(
       transition.evidence,
       "stateCommit.sceneTransition.evidence",
@@ -834,8 +836,8 @@ export function validateGeneratedTurn(
     }
     sceneTransition = {
       locationId,
-      locationName,
-      locationDescription,
+      ...(locationName ? { locationName } : {}),
+      ...(locationDescription ? { locationDescription } : {}),
       presentCharacterIds,
       reason: requiredText(
         transition.reason,

@@ -583,7 +583,7 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
           } else {
             for (const dimension of [
               "trust",
-              "affinity",
+              "affection",
               "fear",
               "hostility",
               "respect",
@@ -596,6 +596,23 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
                 issues.push(`初始关系 ${index + 1} 的 ${dimension} 必须在 -100 到 100 之间。`);
               } else {
                 dimensions[dimension] = raw;
+              }
+            }
+            const legacyAffinity = dimensionsSource["affinity"];
+            if (legacyAffinity !== undefined) {
+              if (
+                typeof legacyAffinity !== "number" ||
+                !Number.isFinite(legacyAffinity)
+              ) {
+                issues.push(
+                  `初始关系 ${index + 1} 的 affinity（旧别名）必须是数值。`,
+                );
+              } else if (legacyAffinity < -100 || legacyAffinity > 100) {
+                issues.push(
+                  `初始关系 ${index + 1} 的 affinity（旧别名）必须在 -100 到 100 之间。`,
+                );
+              } else if (dimensions.affection === undefined) {
+                dimensions.affection = legacyAffinity;
               }
             }
           }

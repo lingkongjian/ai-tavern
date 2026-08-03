@@ -250,7 +250,7 @@ test("start adventure materializes declared initial relationships", async () => 
         {
           sourceCharacterName: "旅人",
           targetCharacterName: "守钟人",
-          dimensions: { trust: 60, affinity: 70, respect: 80 },
+          dimensions: { trust: 60, affection: 70, respect: 80 },
           summary: "同门师兄妹，多年未联络。",
         },
         {
@@ -358,7 +358,7 @@ test("initial relationships in a bundle import resolve against character names",
         {
           sourceCharacterName: "旅人",
           targetCharacterName: "守钟人",
-          dimensions: { trust: 55, affinity: 40 },
+          dimensions: { trust: 55, affection: 40 },
           summary: "旧识，重逢时彼此试探。",
         },
       ],
@@ -373,7 +373,7 @@ test("initial relationships in a bundle import resolve against character names",
       {
         sourceCharacterName: "旅人",
         targetCharacterName: "守钟人",
-        dimensions: { trust: 55, affinity: 40 },
+        dimensions: { trust: 55, affection: 40 },
         summary: "旧识，重逢时彼此试探。",
       },
     ],

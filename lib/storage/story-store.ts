@@ -629,7 +629,7 @@ export interface AdventureRelationshipInput {
   targetCharacterName: string;
   dimensions?: {
     trust?: number;
-    affinity?: number;
+    affection?: number;
     fear?: number;
     hostility?: number;
     respect?: number;
@@ -2176,7 +2176,7 @@ export class LocalStoryStore {
       }
       const relationshipValue = {
         trust: clampDimension(dimensions.trust, 0),
-        affinity: clampDimension(dimensions.affinity, 0),
+        affinity: clampDimension(dimensions.affection, 0),
         fear: clampDimension(dimensions.fear, 0),
         hostility: clampDimension(dimensions.hostility, 0),
         respect: clampDimension(dimensions.respect, 0),

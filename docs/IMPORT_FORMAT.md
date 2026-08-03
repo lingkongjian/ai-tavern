@@ -53,7 +53,7 @@
 
 `1.1` 版剧本包还支持两个可选分区：
 
-- `initialRelationships`：开局角色之间的初始关系基线（最多 100 条）。每项使用 `sourceCharacterName` 与 `targetCharacterName`（必须与角色姓名一致），`dimensions` 提供 `trust`、`affinity`、`fear`、`hostility`、`respect`（-100 ~ 100，缺省为 0），`summary` 概括关系性质（如“青梅竹马”“名义上的未婚夫妻”）。开局物化时自动建立双向记录（A→B 与 B→A 独立演化）；声明中已显式给出反向的以声明为准。
+- `initialRelationships`：开局角色之间的初始关系基线（最多 100 条）。每项使用 `sourceCharacterName` 与 `targetCharacterName`（必须与角色姓名一致），`dimensions` 提供 `trust`、`affection`、`fear`、`hostility`、`respect`（-100 ~ 100，缺省为 0；`affinity` 作为好感维度的旧别名仍可导入，新内容一律写 `affection`），`summary` 概括关系性质（如“青梅竹马”“名义上的未婚夫妻”）。开局物化时自动建立双向记录（A→B 与 B→A 独立演化）；声明中已显式给出反向的以声明为准。
 - `locations`：剧本中可能出现的地点清单（最多 60 个）。每项包含 `name`、`description`，可选 `characters`（默认在该地点活动的角色姓名）与 `important`（重要地点，更高优先级进入上下文）。开局即预注册为地点实体，未进入前就被声明；与开场地点同名的声明会被跳过。
 - `foreshadowing`：跨章节伏笔清单（最多 30 条）。每项包含 `id`、`keywords`（稳定关键词，至少 1 个，相关时刻把伏笔带进上下文）、`seedCondition`（伏笔埋入剧情的出现条件）、`payoffCondition`（回收条件）与 `payoffSummary`（回收时应呈现的核心信息），可选 `characters`（密切相关的主要角色姓名）。开局物化为 `plot_thread` 实体；出现条件满足时模型报告 `seed` 埋入，回收条件满足时报告 `payoff` 并呈现概要。它与剧情任务互补，解决短上下文下跨章节伏笔真正目的丢失的问题。
 - `triggers`：偏离触发器清单（最多 30 条）。每项包含 `id`、`when`（触发条件描述）与 `consequence`（条件满足后必须显现的意外阻碍），可选 `stateEffects`（关系/属性/标志影响，由系统在触发后强制应用；`flags` 中的 `bad_end` 会置位结局警示横幅）与 `deadline`（期限，游戏内第几天前必须生效，超过后系统强制触发并应用后果）。示例场景：主角弱小时强闯反派地盘 → 强大反派提前登场；已婚状态下与异性接触 → 正主怀疑、敌我关系大幅转变。

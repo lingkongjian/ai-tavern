@@ -691,8 +691,8 @@ function createStateMutations(input: {
               lastVisitedTurnId: turnId,
             }
           : {
-              name: transition.locationName,
-              description: transition.locationDescription,
+              name: transition.locationName ?? "",
+              description: transition.locationDescription ?? "",
               defaultCharacterIds,
               source: "story",
               lastScene: generated.turn.scene,
@@ -709,7 +709,7 @@ function createStateMutations(input: {
         operation: "merge",
         value: {
           currentLocationId: transition.locationId,
-          currentLocationName: resolvedLocationName,
+          currentLocationName: resolvedLocationName ?? "",
         },
         reason: transition.reason,
         evidence: transition.evidence,

@@ -165,7 +165,7 @@ test("蓝图中的 deadlineDay 0 视为无期限且不报错", async () => {
                 sourceName: "沈川",
                 targetName: "林遥",
                 trust: 60,
-                affinity: 65,
+                affection: 65,
                 respect: 50,
                 fear: 0,
                 hostility: 0,
