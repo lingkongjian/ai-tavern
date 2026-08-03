@@ -914,6 +914,23 @@ export function GameInterface({
   const characterNameById = new Map(
     characterNames.map((character) => [character.id, character.name]),
   );
+  const relationshipStates = adventure.branchState.states
+    .filter((state) => state.entityType === "relationship")
+    .map((state) => {
+      const number = (key: string) =>
+        typeof state.state[key] === "number" ? state.state[key] : 0;
+      return {
+        id: state.entityId,
+        sourceId: text(state.state.sourceCharacterId),
+        targetId: text(state.state.targetCharacterId),
+        trust: number("trust"),
+        affinity: number("affinity"),
+        fear: number("fear"),
+        hostility: number("hostility"),
+        respect: number("respect"),
+        summary: text(state.state.summary),
+      };
+    });
   const activeCharacterNames = characterNames.filter(
     (character) => character.isActive,
   );
@@ -940,6 +957,32 @@ export function GameInterface({
   );
   const gameTimeDay =
     typeof sessionState?.gameTimeDay === "number" ? sessionState.gameTimeDay : 1;
+  const [mapOpen, setMapOpen] = useState(false);
+  const charactersByLocation = new Map<string, string[]>();
+  for (const character of characterNames) {
+    const locationId = text(
+      adventure.branchState.states.find(
+        (state) =>
+          state.entityType === "character_state" &&
+          state.entityId === character.id,
+      )?.state.locationId,
+    );
+    if (!locationId) continue;
+    const bucket = charactersByLocation.get(locationId) ?? [];
+    bucket.push(character.name);
+    charactersByLocation.set(locationId, bucket);
+  }
+  function turnGameTimeDay(turn: LoadedTurn | null | undefined) {
+    const change = turn?.stateChanges?.find(
+      (candidate) =>
+        candidate.entityType === "session_state" &&
+        candidate.entityId === "core" &&
+        typeof candidate.payload.gameTimeDay === "number",
+    );
+    return typeof change?.payload.gameTimeDay === "number"
+      ? change.payload.gameTimeDay
+      : undefined;
+  }
   function auditTargetLabel(
     change: Pick<StateAuditChange, "entityType" | "entityId">,
   ) {
@@ -2274,17 +2317,11 @@ export function GameInterface({
   return (
     <main className="game-page">
       <header className="game-header">
-        <Link className="back-link" href="/">
-          <span aria-hidden="true">←</span>
-          主菜单
-        </Link>
-        <div className="game-title">
-          <span>
-            {text(sessionState?.worldName, "本地世界")} · 游戏内第 {gameTimeDay} 日
-          </span>
-          <h1>{adventure.campaign.name}</h1>
-        </div>
-        <div className="header-branch-actions">
+        <div className="game-header-left">
+          <Link className="back-link" href="/">
+            <span aria-hidden="true">←</span>
+            主菜单
+          </Link>
           {apiProfiles.length > 1 ? (
             <label className="game-api-switcher">
               <span>生成模型</span>
@@ -2306,6 +2343,21 @@ export function GameInterface({
               {apiSwitchError ? <em role="alert">{apiSwitchError}</em> : null}
             </label>
           ) : null}
+        </div>
+        <div className="game-title">
+          <span>
+            {text(sessionState?.worldName, "本地世界")} · 游戏内第 {gameTimeDay} 日
+          </span>
+          <h1>{adventure.campaign.name}</h1>
+        </div>
+        <div className="header-branch-actions">
+          <button
+            type="button"
+            onClick={() => setMapOpen(true)}
+          >
+            地图
+            <span>地点与人物位置</span>
+          </button>
           <button
             className="story-workbench-launch"
             type="button"
@@ -2338,6 +2390,12 @@ export function GameInterface({
             <div className="scene-meta-copy">
               <span>{isViewingHistory ? "历史回看 · 只读" : "第一幕"}</span>
               <span>回合 {displayedTurn?.sequence ?? 1}</span>
+              {(() => {
+                const turnDay = turnGameTimeDay(displayedTurn);
+                return turnDay !== undefined ? (
+                  <span>游戏内第 {turnDay} 日</span>
+                ) : null;
+              })()}
             </div>
             {!isViewingHistory &&
             latestTurn?.generation &&
@@ -4710,6 +4768,65 @@ export function GameInterface({
         </div>
       ) : null}
 
+      {mapOpen ? (
+        <div
+          className="map-manager-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setMapOpen(false);
+            }
+          }}
+        >
+          <section
+            className="map-manager"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="map-manager-title"
+          >
+            <header>
+              <div>
+                <p className="eyebrow">世界地图 · 游戏内第 {gameTimeDay} 日</p>
+                <h2 id="map-manager-title">地点与人物位置</h2>
+                <p>尚未登场或位置未知的人物不会出现在地图上。</p>
+              </div>
+              <button type="button" onClick={() => setMapOpen(false)}>
+                关闭
+              </button>
+            </header>
+            {locations.length === 0 ? (
+              <p className="map-empty">还没有记录任何地点；剧情进入新地点后会自动建立。</p>
+            ) : (
+              <ul className="map-location-list">
+                {locations.map((location) => {
+                  const presentHere = charactersByLocation.get(location.id) ?? [];
+                  const isCurrent = location.id === currentLocationId;
+                  return (
+                    <li
+                      key={location.id}
+                      className={isCurrent ? "current" : ""}
+                    >
+                      <div className="map-location-heading">
+                        <strong>{location.name}</strong>
+                        {isCurrent ? <em>当前位置</em> : null}
+                      </div>
+                      <p>{location.description}</p>
+                      {presentHere.length > 0 ? (
+                        <small>
+                          人物：{presentHere.join("、")}
+                        </small>
+                      ) : (
+                        <small>人物：暂无人在此</small>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </div>
+      ) : null}
+
       {characterManagerOpen ? (
         <div
           className="character-manager-backdrop"
@@ -4720,8 +4837,7 @@ export function GameInterface({
               setEditingCharacterId(null);
             }
           }}
-        >
-          <section
+        >          <section
             className="character-manager story-workbench"
             role="dialog"
             aria-modal="true"
@@ -4767,6 +4883,42 @@ export function GameInterface({
                 ＋ 新增 AI 角色
               </button>
             </div>
+
+            <section className="character-relationships" aria-labelledby="character-relationships-title">
+              <header>
+                <div>
+                  <strong id="character-relationships-title">角色关系</strong>
+                  <small>当前各角色之间的信任、好感、恐惧、敌意与敬意（-100 ~ 100）</small>
+                </div>
+              </header>
+              {relationshipStates.length === 0 ? (
+                <p>还没有建立任何关系记录；关系会在剧情推进或剧本包初始化时建立。</p>
+              ) : (
+                <ul>
+                  {relationshipStates.map((relationship) => (
+                    <li key={relationship.id}>
+                      <div className="relationship-heading">
+                        <strong>
+                          {characterNameById.get(relationship.sourceId) ?? relationship.sourceId}
+                          <span aria-hidden="true">→</span>
+                          {characterNameById.get(relationship.targetId) ?? relationship.targetId}
+                        </strong>
+                        {relationship.summary && relationship.summary !== "关系尚未建立" ? (
+                          <small>{relationship.summary}</small>
+                        ) : null}
+                      </div>
+                      <div className="relationship-dims">
+                        <span>信任 {relationship.trust}</span>
+                        <span>好感 {relationship.affinity}</span>
+                        <span>恐惧 {relationship.fear}</span>
+                        <span>敌意 {relationship.hostility}</span>
+                        <span>敬意 {relationship.respect}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
 
             {characterManagerError ? (
               <div className="character-manager-error" role="alert">

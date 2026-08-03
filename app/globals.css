@@ -2920,6 +2920,23 @@ a {
   backdrop-filter: blur(18px);
 }
 
+.game-header-left {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 16px;
+}
+
+.game-header-left .game-api-switcher {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.game-header-left .game-api-switcher select {
+  max-width: 190px;
+}
+
 .back-link {
   display: inline-flex;
   width: fit-content;
@@ -4595,6 +4612,88 @@ a {
 .character-manager button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.character-relationships {
+  margin-top: 16px;
+  padding: 15px 16px;
+  border: 1px solid rgb(111 148 132 / 22%);
+  border-radius: 4px;
+  background: rgb(21 42 34 / 20%);
+}
+
+.character-relationships > header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.character-relationships > header strong {
+  color: #b8c9be;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.character-relationships > header small {
+  color: #766d66;
+  font-size: 0.62rem;
+}
+
+.character-relationships > p {
+  margin: 12px 0 0;
+  color: #766d66;
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+
+.character-relationships ul {
+  margin: 13px 0 0;
+  padding: 0;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+  list-style: none;
+}
+
+.character-relationships li {
+  padding: 11px 0;
+  border-bottom: 1px solid rgb(255 255 255 / 5%);
+}
+
+.relationship-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relationship-heading strong {
+  color: #cfc6bc;
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.relationship-heading strong span {
+  margin: 0 8px;
+  color: #5a6f66;
+}
+
+.relationship-heading small {
+  color: #766d66;
+  font-size: 0.62rem;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.relationship-dims {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 7px;
+}
+
+.relationship-dims span {
+  color: #8d8177;
+  font-family: ui-monospace, monospace;
+  font-size: 0.62rem;
 }
 
 .character-manager-error {
@@ -6998,7 +7097,129 @@ a {
     width: 100%;
   }
 
-  .character-manager-backdrop {
+.map-manager-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgb(4 3 4 / 78%);
+  place-items: center;
+  backdrop-filter: blur(12px);
+}
+
+.map-manager {
+  width: min(680px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  padding: clamp(22px, 4vw, 34px);
+  border: 1px solid var(--line-bright);
+  border-radius: 5px;
+  background:
+    radial-gradient(circle at 85% 0%, rgb(126 62 43 / 16%), transparent 20rem),
+    var(--panel-solid);
+  box-shadow: 0 24px 90px rgb(0 0 0 / 55%);
+  overflow-y: auto;
+}
+
+.map-manager > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.map-manager > header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.map-manager h2 {
+  margin: 8px 0 0;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 1.8rem;
+  font-weight: 500;
+}
+
+.map-manager > header p {
+  color: #766d66;
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.map-manager > header button {
+  padding: 7px 11px;
+  border: 1px solid var(--line-bright);
+  border-radius: 3px;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.65rem;
+}
+
+.map-empty {
+  margin: 26px 0 0;
+  padding: 18px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  color: #766d66;
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.map-location-list {
+  margin: 22px 0 0;
+  padding: 0;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+  list-style: none;
+}
+
+.map-location-list li {
+  padding: 14px 0;
+  border-bottom: 1px solid rgb(255 255 255 / 5%);
+}
+
+.map-location-list li.current {
+  padding-left: 10px;
+  border-left: 2px solid #86a493;
+}
+
+.map-location-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.map-location-heading strong {
+  color: #cfc6bc;
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.map-location-heading em {
+  padding: 4px 8px;
+  border: 1px solid rgb(111 148 132 / 28%);
+  border-radius: 999px;
+  color: #86a493;
+  font-size: 0.56rem;
+  font-style: normal;
+}
+
+.map-location-list li > p {
+  margin: 7px 0 0;
+  color: #8d8177;
+  font-size: 0.72rem;
+  line-height: 1.7;
+}
+
+.map-location-list li > small {
+  display: block;
+  margin-top: 7px;
+  color: #766d66;
+  font-size: 0.62rem;
+}
+
+.character-manager-backdrop {
     padding: 0;
   }
 

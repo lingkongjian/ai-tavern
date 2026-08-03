@@ -1,6 +1,8 @@
 "use client";
 
 import type {
+  AdventureDeclaredLocation,
+  AdventureRelationshipInput,
   AdventureStoryModuleInput,
   AdventureWorldBookEntryInput,
   AdventureSummary,
@@ -571,6 +573,12 @@ export function TavernHome() {
   const [selectedSourceOpeningId, setSelectedSourceOpeningId] = useState("");
   const [storyModules, setStoryModules] = useState<
     AdventureStoryModuleInput[]
+  >([]);
+  const [bundleRelationships, setBundleRelationships] = useState<
+    AdventureRelationshipInput[]
+  >([]);
+  const [bundleLocations, setBundleLocations] = useState<
+    AdventureDeclaredLocation[]
   >([]);
   const [initialStoryModuleId, setInitialStoryModuleId] = useState("");
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocumentInput[]>(
@@ -1186,6 +1194,8 @@ export function TavernHome() {
     ]);
     setSourceDocuments(adventure.sourceDocuments ?? []);
     setStoryModules(adventure.storyModules ?? []);
+    setBundleRelationships(adventure.initialRelationships ?? []);
+    setBundleLocations(adventure.locations ?? []);
     setInitialStoryModuleId(adventure.initialStoryModuleId ?? "");
     setBundleSourceFile(fileName);
     const presentCount = (adventure.additionalCharacters ?? []).filter(
@@ -1874,6 +1884,12 @@ export function TavernHome() {
           initialStoryDirection: form.initialStoryDirection,
           storyModules,
           initialStoryModuleId: initialStoryModuleId || undefined,
+          ...(bundleRelationships.length > 0
+            ? { initialRelationships: bundleRelationships }
+            : {}),
+          ...(bundleLocations.length > 0
+            ? { locations: bundleLocations }
+            : {}),
         }),
       });
       const body = (await response.json()) as CreateAdventureResponse;
@@ -3201,6 +3217,13 @@ export function TavernHome() {
                       (module) => module.id === initialStoryModuleId,
                     )?.title ?? "未指定"}
                     。满足条件且剧情未偏离时会自动接续。
+                    {bundleRelationships.length > 0
+                      ? ` 初始关系 ${bundleRelationships.length} 条`
+                      : ""}
+                    {bundleLocations.length > 0
+                      ? `、预注册地点 ${bundleLocations.length} 处`
+                      : ""}
+                    。
                   </small>
                 </div>
                 <button
