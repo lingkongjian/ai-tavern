@@ -7097,63 +7097,15 @@ a {
     width: 100%;
   }
 
-.map-manager-backdrop {
-  position: fixed;
-  z-index: 50;
-  inset: 0;
-  display: grid;
-  padding: 24px;
-  background: rgb(4 3 4 / 78%);
-  place-items: center;
-  backdrop-filter: blur(12px);
-}
-
-.map-manager {
+.character-manager.map-manager {
   width: min(680px, 100%);
   max-height: min(860px, calc(100vh - 48px));
-  padding: clamp(22px, 4vw, 34px);
-  border: 1px solid var(--line-bright);
-  border-radius: 5px;
-  background:
-    radial-gradient(circle at 85% 0%, rgb(126 62 43 / 16%), transparent 20rem),
-    var(--panel-solid);
-  box-shadow: 0 24px 90px rgb(0 0 0 / 55%);
-  overflow-y: auto;
-}
-
-.map-manager > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.map-manager > header > div {
-  display: grid;
-  gap: 4px;
-}
-
-.map-manager h2 {
-  margin: 8px 0 0;
-  font-family: Georgia, "Songti SC", "STSong", serif;
-  font-size: 1.8rem;
-  font-weight: 500;
 }
 
 .map-manager > header p {
   color: #766d66;
   font-size: 0.7rem;
   line-height: 1.6;
-}
-
-.map-manager > header button {
-  padding: 7px 11px;
-  border: 1px solid var(--line-bright);
-  border-radius: 3px;
-  color: var(--text-dim);
-  background: transparent;
-  cursor: pointer;
-  font-size: 0.65rem;
 }
 
 .map-empty {

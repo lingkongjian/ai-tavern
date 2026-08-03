@@ -682,6 +682,7 @@ export function GameInterface({
     initialRecoveryPoints,
   );
   const [branchManagerOpen, setBranchManagerOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
   const [branchManagerError, setBranchManagerError] = useState("");
   const [branchBusyAction, setBranchBusyAction] = useState("");
   const [branchName, setBranchName] = useState("");
@@ -957,7 +958,6 @@ export function GameInterface({
   );
   const gameTimeDay =
     typeof sessionState?.gameTimeDay === "number" ? sessionState.gameTimeDay : 1;
-  const [mapOpen, setMapOpen] = useState(false);
   const charactersByLocation = new Map<string, string[]>();
   for (const character of characterNames) {
     const locationId = text(
@@ -4770,7 +4770,7 @@ export function GameInterface({
 
       {mapOpen ? (
         <div
-          className="map-manager-backdrop"
+          className="character-manager-backdrop"
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
@@ -4779,7 +4779,7 @@ export function GameInterface({
           }}
         >
           <section
-            className="map-manager"
+            className="character-manager story-workbench map-manager"
             role="dialog"
             aria-modal="true"
             aria-labelledby="map-manager-title"
@@ -4790,8 +4790,13 @@ export function GameInterface({
                 <h2 id="map-manager-title">地点与人物位置</h2>
                 <p>尚未登场或位置未知的人物不会出现在地图上。</p>
               </div>
-              <button type="button" onClick={() => setMapOpen(false)}>
-                关闭
+              <button
+                className="character-manager-close"
+                type="button"
+                aria-label="关闭地图"
+                onClick={() => setMapOpen(false)}
+              >
+                ×
               </button>
             </header>
             {locations.length === 0 ? (
