@@ -1349,6 +1349,179 @@ test("keeps switching, forking and save points intact after transferring the mai
   }
 });
 
+test("模型输出重复 id 不触发 messages/events 主键冲突（跨回合/跨分支/重生成）", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-message-id-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+
+    // 所有回合复用完全相同的模型输出 id（模型常见固定值，如 "dialogue-1"/"event-1"）
+    const modelDialogueId = "dialogue-1";
+    const modelEventId = "event-1";
+    const makeMessages = (mainCharacterId) => [
+      { role: "player", content: "继续前进。" },
+      {
+        role: "narrator",
+        content: "场景继续。",
+        metadata: { model: "deepseek-test", totalTokens: 10 },
+      },
+      {
+        id: modelDialogueId,
+        role: "character",
+        speakerId: mainCharacterId,
+        content: "我跟着你。",
+        metadata: { addressedCharacterIds: [] },
+      },
+    ];
+    const makeEvents = () => [
+      { id: modelEventId, eventType: "scene_advance", summary: "剧情推进" },
+      { id: "event-2", eventType: "location_change", summary: "进入客栈" },
+    ];
+    const makeMutations = (mainCharacterId, mood) => [
+      {
+        entityType: "character_state",
+        entityId: mainCharacterId,
+        operation: "merge",
+        value: { mood },
+        reason: "引路人跟随旅人",
+        evidence: [modelEventId, "event-2"],
+      },
+    ];
+
+    // 同一分支连续两回合提交相同模型 id：不应出现 UNIQUE constraint failed
+    const turnA = store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: started.branchId,
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "dup-id-turn-a",
+      playerInput: { customChoice: "前进" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "第一回合。" },
+      summaryPatch: "第一回合。",
+      messages: makeMessages(started.mainCharacterId),
+      events: makeEvents(),
+      stateMutations: makeMutations(started.mainCharacterId, "跟随"),
+    });
+    const turnB = store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: started.branchId,
+      expectedHeadTurnId: turnA.id,
+      idempotencyKey: "dup-id-turn-b",
+      playerInput: { customChoice: "继续" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "第二回合。" },
+      summaryPatch: "第二回合。",
+      messages: makeMessages(started.mainCharacterId),
+      events: makeEvents(),
+      stateMutations: makeMutations(started.mainCharacterId, "坚定"),
+    });
+    assert.equal(turnB.sequence, 3);
+
+    // 切换分支后另一分支仍提交相同模型 id
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "重复 id 分支",
+      sourceTurnId: started.openingTurnId,
+    });
+    assert.equal(
+      store.loadAdventure(started.sessionId).branchState.branch.id,
+      fork.branchId,
+    );
+    const forkTurn = store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: fork.branchId,
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "dup-id-fork-turn",
+      playerInput: { customChoice: "折返" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "分支回合。" },
+      summaryPatch: "分支回合。",
+      messages: makeMessages(started.mainCharacterId),
+      events: makeEvents(),
+      stateMutations: makeMutations(started.mainCharacterId, "折返"),
+    });
+
+    // 所有 messages / events 行存在且主键各自唯一（服务端生成的 UUID）
+    const allMessageRows = database
+      .prepare("SELECT id, turn_id FROM messages ORDER BY turn_id, ordinal")
+      .all();
+    const allEventRows = database
+      .prepare("SELECT id, turn_id FROM events ORDER BY turn_id, id")
+      .all();
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    assert.ok(allMessageRows.length >= 9, "三个回合各 3 条消息");
+    assert.ok(allEventRows.length >= 6, "三个回合各 2 个事件");
+    assert.equal(
+      new Set(allMessageRows.map((row) => row.id)).size,
+      allMessageRows.length,
+      "messages 主键必须全局唯一",
+    );
+    assert.equal(
+      new Set(allEventRows.map((row) => row.id)).size,
+      allEventRows.length,
+      "events 主键必须全局唯一",
+    );
+    // 主键是服务端生成的 UUID，不再采用模型固定 id
+    assert.ok(allMessageRows.every((row) => row.id !== modelDialogueId));
+    assert.ok(allEventRows.every((row) => row.id !== modelEventId));
+    assert.ok(allMessageRows.every((row) => uuidPattern.test(row.id)));
+    assert.ok(allEventRows.every((row) => uuidPattern.test(row.id)));
+
+    // evidence 引用保持模型原始 id 字符串，不被改写为表主键
+    const readEvidence = (turnId) =>
+      database
+        .prepare(
+          "SELECT evidence_json FROM state_changes WHERE turn_id = ? ORDER BY ordinal",
+        )
+        .all(turnId)
+        .map((row) => JSON.parse(row.evidence_json));
+    assert.deepEqual(readEvidence(turnA.id), [[modelEventId, "event-2"]]);
+    assert.deepEqual(readEvidence(turnB.id), [[modelEventId, "event-2"]]);
+    assert.deepEqual(readEvidence(forkTurn.id), [[modelEventId, "event-2"]]);
+
+    // 重生成路径：同一回合改写仍复用相同模型 id，先删后插、主键重新生成
+    store.replaceHeadTurn({
+      actionId: "dup-id-rewrite",
+      feedback: "改写分支回合",
+      expectedRegenerationCount: 0,
+      turnId: forkTurn.id,
+      sessionId: started.sessionId,
+      branchId: fork.branchId,
+      expectedParentTurnId: started.openingTurnId,
+      generatedOutput: { schemaVersion: "1.0.0", scene: "改写后的分支回合。" },
+      summaryPatch: "改写后的分支回合。",
+      messages: makeMessages(started.mainCharacterId),
+      events: makeEvents(),
+      stateMutations: makeMutations(started.mainCharacterId, "改写"),
+    });
+    const replacedMessages = database
+      .prepare("SELECT id FROM messages WHERE turn_id = ? ORDER BY ordinal")
+      .all(forkTurn.id);
+    const replacedEvents = database
+      .prepare("SELECT id FROM events WHERE turn_id = ? ORDER BY id")
+      .all(forkTurn.id);
+    assert.equal(replacedMessages.length, 3);
+    assert.equal(replacedEvents.length, 2);
+    assert.ok(replacedMessages.every((row) => uuidPattern.test(row.id)));
+    assert.ok(replacedEvents.every((row) => uuidPattern.test(row.id)));
+    const allIdsAfterRewrite = database
+      .prepare("SELECT id FROM messages")
+      .all()
+      .map((row) => row.id);
+    assert.equal(
+      new Set(allIdsAfterRewrite).size,
+      allIdsAfterRewrite.length,
+      "重生成后 messages 主键仍全局唯一",
+    );
+    assert.deepEqual(readEvidence(forkTurn.id), [[modelEventId, "event-2"]]);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("deleting the active non-main branch falls back to its parent", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-set-main-active-"));
   const database = openLocalDatabase({

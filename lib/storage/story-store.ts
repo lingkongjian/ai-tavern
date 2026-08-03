@@ -7074,6 +7074,11 @@ export class LocalStoryStore {
           input.turnId,
         );
 
+      // 主键 id 一律由服务端生成 UUID，不采用调用方（模型输出）携带的 id：
+      // messages.id / events.id 是 SQLite 全局主键（无分支/会话隔离），模型输出的
+      // id 不稳定（常为 "dialogue-1"/"event-1" 等固定值），跨回合/跨分支复用会触发
+      // UNIQUE constraint failed。模型 id 的语义（evidence 引用、审计、UI 展示）全部
+      // 保留在 generated_output_json 与 evidence_json 中，与表主键无关。
       const insertMessage = this.database.prepare(`
         INSERT INTO messages (
           id, turn_id, ordinal, role, speaker_id, content,
@@ -7082,7 +7087,7 @@ export class LocalStoryStore {
       `);
       for (const [ordinal, message] of (input.messages ?? []).entries()) {
         insertMessage.run(
-          message.id ?? randomUUID(),
+          randomUUID(),
           input.turnId,
           ordinal,
           message.role,
@@ -7100,7 +7105,7 @@ export class LocalStoryStore {
       `);
       for (const event of input.events ?? []) {
         insertEvent.run(
-          event.id ?? randomUUID(),
+          randomUUID(),
           input.turnId,
           event.eventType,
           event.summary,
@@ -7273,6 +7278,8 @@ export class LocalStoryStore {
           now,
         );
 
+      // 同 commitTurn：主键 id 一律由服务端生成 UUID，不采用调用方（模型输出）
+      // 携带的 id，避免跨回合/跨分支模型 id 复用导致 UNIQUE constraint failed。
       const insertMessage = this.database.prepare(`
         INSERT INTO messages (
           id, turn_id, ordinal, role, speaker_id, content,
@@ -7281,7 +7288,7 @@ export class LocalStoryStore {
       `);
       for (const [ordinal, message] of (input.messages ?? []).entries()) {
         insertMessage.run(
-          message.id ?? randomUUID(),
+          randomUUID(),
           turnId,
           ordinal,
           message.role,
@@ -7300,7 +7307,7 @@ export class LocalStoryStore {
       `);
       for (const event of input.events ?? []) {
         insertEvent.run(
-          event.id ?? randomUUID(),
+          randomUUID(),
           turnId,
           event.eventType,
           event.summary,
