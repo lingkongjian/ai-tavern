@@ -280,6 +280,13 @@ test("start adventure materializes declared initial relationships", async () => 
     assert.equal(playerMain.respect, 80);
     assert.equal(playerMain.summary, "同门师兄妹，多年未联络。");
 
+    const reversePlayerMain = byPair.get(
+      `${started.mainCharacterId}:${started.playerCharacterId}`,
+    );
+    assert.equal(reversePlayerMain.trust, 60);
+    assert.equal(reversePlayerMain.affinity, 70);
+    assert.equal(reversePlayerMain.summary, "同门师兄妹，多年未联络。");
+
     const mainMainId = started.additionalCharacterIds[0];
     const mainExtra = byPair.get(
       `${started.mainCharacterId}:${mainMainId}`,
@@ -287,6 +294,12 @@ test("start adventure materializes declared initial relationships", async () => 
     assert.equal(mainExtra.fear, 25);
     assert.equal(mainExtra.hostility, 10);
     assert.equal(mainExtra.trust, 0);
+
+    const reverseMainExtra = byPair.get(
+      `${mainMainId}:${started.mainCharacterId}`,
+    );
+    assert.equal(reverseMainExtra.fear, 25);
+    assert.equal(reverseMainExtra.hostility, 10);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

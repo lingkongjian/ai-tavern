@@ -1865,23 +1865,52 @@ export class LocalStoryStore {
       );
       if (!sourceId || !targetId) continue;
       const dimensions = relationship.dimensions ?? {};
-      stateMutations.push({
-        entityType: "relationship",
-        entityId: `${sourceId}:${targetId}`,
-        operation: "replace",
-        value: {
-          sourceCharacterId: sourceId,
-          targetCharacterId: targetId,
-          trust: clampDimension(dimensions.trust, 0),
-          affinity: clampDimension(dimensions.affinity, 0),
-          fear: clampDimension(dimensions.fear, 0),
-          hostility: clampDimension(dimensions.hostility, 0),
-          respect: clampDimension(dimensions.respect, 0),
-          summary: relationship.summary?.trim() || "关系尚未建立",
-        },
-        reason: "按剧本初始关系声明建立角色关系",
-        evidence: [openingEventId],
-      });
+      const declaredPairs = new Set<string>();
+      for (const item of input.initialRelationships ?? []) {
+        const left = characterIdByName.get(item.sourceCharacterName.trim());
+        const right = characterIdByName.get(item.targetCharacterName.trim());
+        if (!left || !right) continue;
+        declaredPairs.add(`${left}:${right}`);
+      }
+      const relationshipValue = {
+        trust: clampDimension(dimensions.trust, 0),
+        affinity: clampDimension(dimensions.affinity, 0),
+        fear: clampDimension(dimensions.fear, 0),
+        hostility: clampDimension(dimensions.hostility, 0),
+        respect: clampDimension(dimensions.respect, 0),
+        summary: relationship.summary?.trim() || "关系尚未建立",
+      };
+      const pushRelationship = (
+        fromId: string,
+        toId: string,
+        reason: string,
+      ) => {
+        stateMutations.push({
+          entityType: "relationship",
+          entityId: `${fromId}:${toId}`,
+          operation: "replace",
+          value: {
+            sourceCharacterId: fromId,
+            targetCharacterId: toId,
+            ...relationshipValue,
+          },
+          reason,
+          evidence: [openingEventId],
+        });
+      };
+      pushRelationship(
+        sourceId,
+        targetId,
+        "按剧本初始关系声明建立角色关系",
+      );
+      const reverseId = `${targetId}:${sourceId}`;
+      if (!declaredPairs.has(reverseId)) {
+        pushRelationship(
+          targetId,
+          sourceId,
+          "按剧本初始关系声明建立反向角色关系",
+        );
+      }
     }
 
     for (const entry of input.worldBookEntries ?? []) {

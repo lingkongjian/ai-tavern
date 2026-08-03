@@ -7126,49 +7126,93 @@ a {
 }
 
 .map-location-list li {
-  padding: 14px 0;
-  border-bottom: 1px solid rgb(255 255 255 / 5%);
+  position: relative;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 2.5%);
 }
 
 .map-location-list li.current {
-  padding-left: 10px;
-  border-left: 2px solid #86a493;
+  border-color: rgb(111 148 132 / 38%);
+  background: rgb(21 42 34 / 26%);
 }
 
-.map-location-heading {
+.map-location-list li.current::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  border-radius: 2px 0 0 2px;
+  background: #86a493;
+  content: "";
+}
+
+.map-location-name {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 9px;
 }
 
-.map-location-heading strong {
+.map-location-index {
+  color: #5a6f66;
+  font-family: ui-monospace, monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+}
+
+.map-location-name strong {
   color: #cfc6bc;
-  font-size: 0.86rem;
+  font-size: 0.88rem;
   font-weight: 500;
 }
 
-.map-location-heading em {
-  padding: 4px 8px;
-  border: 1px solid rgb(111 148 132 / 28%);
+.map-location-name em {
+  padding: 3px 8px;
   border-radius: 999px;
-  color: #86a493;
-  font-size: 0.56rem;
+  font-size: 0.54rem;
   font-style: normal;
 }
 
-.map-location-list li > p {
-  margin: 7px 0 0;
+.map-location-name .map-important {
+  border: 1px solid rgb(177 130 78 / 40%);
+  color: #c9a878;
+}
+
+.map-location-name .map-current {
+  border: 1px solid rgb(111 148 132 / 40%);
+  color: #86a493;
+}
+
+.map-location-description {
+  margin: 8px 0 0;
   color: #8d8177;
   font-size: 0.72rem;
   line-height: 1.7;
 }
 
-.map-location-list li > small {
-  display: block;
-  margin-top: 7px;
-  color: #766d66;
-  font-size: 0.62rem;
+.map-present-characters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.map-present-characters span {
+  padding: 4px 10px;
+  border: 1px solid rgb(111 148 132 / 26%);
+  border-radius: 999px;
+  color: #a8bba9;
+  background: rgb(21 42 34 / 34%);
+  font-size: 0.6rem;
+}
+
+.map-present-characters.empty span {
+  border-color: var(--line);
+  color: #6f655e;
+  background: transparent;
 }
 
 .character-manager-backdrop {

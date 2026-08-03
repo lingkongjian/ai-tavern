@@ -932,6 +932,38 @@ export function GameInterface({
         summary: text(state.state.summary),
       };
     });
+  const mergedRelationships = (() => {
+    const byPair = new Map<string, typeof relationshipStates>();
+    for (const relationship of relationshipStates) {
+      const pairKey =
+        relationship.sourceId < relationship.targetId
+          ? `${relationship.sourceId}\u0000${relationship.targetId}`
+          : `${relationship.targetId}\u0000${relationship.sourceId}`;
+      const bucket = byPair.get(pairKey) ?? [];
+      bucket.push(relationship);
+      byPair.set(pairKey, bucket);
+    }
+    return [...byPair.values()].map((pair) => {
+      const left = pair[0];
+      const right = pair[1];
+      const value = (key: "trust" | "affinity" | "fear" | "hostility" | "respect") =>
+        right
+          ? { source: left[key], target: right[key] }
+          : { source: left[key], target: null };
+      return {
+        key: `${left.sourceId}\u0000${left.targetId}`,
+        sourceId: left.sourceId,
+        targetId: left.targetId,
+        symmetric: pair.length === 2,
+        summary: right ? (left.summary || right.summary) : left.summary,
+        trust: value("trust"),
+        affinity: value("affinity"),
+        fear: value("fear"),
+        hostility: value("hostility"),
+        respect: value("respect"),
+      };
+    });
+  })();
   const activeCharacterNames = characterNames.filter(
     (character) => character.isActive,
   );
@@ -949,6 +981,7 @@ export function GameInterface({
             (value): value is string => typeof value === "string",
           )
         : [],
+      important: location.state.important === true,
       source: text(location.state.source),
       isActive: location.isActive,
     }));
@@ -4803,25 +4836,41 @@ export function GameInterface({
               <p className="map-empty">还没有记录任何地点；剧情进入新地点后会自动建立。</p>
             ) : (
               <ul className="map-location-list">
-                {locations.map((location) => {
+                {locations.map((location, index) => {
                   const presentHere = charactersByLocation.get(location.id) ?? [];
                   const isCurrent = location.id === currentLocationId;
+                  const description =
+                    location.description.length > 110
+                      ? `${location.description.slice(0, 110)}…`
+                      : location.description;
                   return (
                     <li
                       key={location.id}
                       className={isCurrent ? "current" : ""}
                     >
                       <div className="map-location-heading">
-                        <strong>{location.name}</strong>
-                        {isCurrent ? <em>当前位置</em> : null}
+                        <div className="map-location-name">
+                          <span className="map-location-index">
+                            {String(index + 1).padStart(2, "0")}
+                          </span>
+                          <strong>{location.name}</strong>
+                          {location.important ? (
+                            <em className="map-important">重要</em>
+                          ) : null}
+                          {isCurrent ? <em className="map-current">当前位置</em> : null}
+                        </div>
                       </div>
-                      <p>{location.description}</p>
+                      <p className="map-location-description">{description}</p>
                       {presentHere.length > 0 ? (
-                        <small>
-                          人物：{presentHere.join("、")}
-                        </small>
+                        <div className="map-present-characters">
+                          {presentHere.map((name) => (
+                            <span key={name}>{name}</span>
+                          ))}
+                        </div>
                       ) : (
-                        <small>人物：暂无人在此</small>
+                        <div className="map-present-characters empty">
+                          <span>暂无人物在此</span>
+                        </div>
                       )}
                     </li>
                   );
@@ -4896,28 +4945,53 @@ export function GameInterface({
                   <small>当前各角色之间的信任、好感、恐惧、敌意与敬意（-100 ~ 100）</small>
                 </div>
               </header>
-              {relationshipStates.length === 0 ? (
+              {mergedRelationships.length === 0 ? (
                 <p>还没有建立任何关系记录；关系会在剧情推进或剧本包初始化时建立。</p>
               ) : (
                 <ul>
-                  {relationshipStates.map((relationship) => (
-                    <li key={relationship.id}>
+                  {mergedRelationships.map((relationship) => (
+                    <li key={relationship.key}>
                       <div className="relationship-heading">
                         <strong>
                           {characterNameById.get(relationship.sourceId) ?? relationship.sourceId}
-                          <span aria-hidden="true">→</span>
+                          <span aria-hidden="true">↔</span>
                           {characterNameById.get(relationship.targetId) ?? relationship.targetId}
                         </strong>
-                        {relationship.summary && relationship.summary !== "关系尚未建立" ? (
+                        {relationship.summary ? (
                           <small>{relationship.summary}</small>
                         ) : null}
                       </div>
                       <div className="relationship-dims">
-                        <span>信任 {relationship.trust}</span>
-                        <span>好感 {relationship.affinity}</span>
-                        <span>恐惧 {relationship.fear}</span>
-                        <span>敌意 {relationship.hostility}</span>
-                        <span>敬意 {relationship.respect}</span>
+                        <span>
+                          信任 {relationship.trust.source}
+                          {relationship.symmetric
+                            ? ` / ${relationship.trust.target}`
+                            : ""}
+                        </span>
+                        <span>
+                          好感 {relationship.affinity.source}
+                          {relationship.symmetric
+                            ? ` / ${relationship.affinity.target}`
+                            : ""}
+                        </span>
+                        <span>
+                          恐惧 {relationship.fear.source}
+                          {relationship.symmetric
+                            ? ` / ${relationship.fear.target}`
+                            : ""}
+                        </span>
+                        <span>
+                          敌意 {relationship.hostility.source}
+                          {relationship.symmetric
+                            ? ` / ${relationship.hostility.target}`
+                            : ""}
+                        </span>
+                        <span>
+                          敬意 {relationship.respect.source}
+                          {relationship.symmetric
+                            ? ` / ${relationship.respect.target}`
+                            : ""}
+                        </span>
                       </div>
                     </li>
                   ))}
