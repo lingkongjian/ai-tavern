@@ -240,6 +240,7 @@ interface AiSettingsResponse {
   baseUrl: string;
   model: string;
   jsonMode: AiJsonMode;
+  version?: string;
   presets: AiProviderPreset[];
   activeId: string | null;
   profiles: AiProfileSummary[];
@@ -1964,6 +1965,7 @@ export function TavernHome() {
         <footer className="main-menu-footer">
           <span>
             {modelStatus?.providerLabel ?? "AI 模型"} · {modelStatus?.configured ? modelStatus.model : "尚未配置"}
+            {modelStatus?.version ? ` · v${modelStatus.version}` : ""}
           </span>
           <a href="/manual">操作手册</a>
         </footer>

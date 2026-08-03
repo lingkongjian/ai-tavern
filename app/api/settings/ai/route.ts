@@ -17,6 +17,7 @@ import {
   auditAiProvider,
   discoverAiModels,
 } from "@/lib/ai/模型可用性";
+import packageJson from "../../../../package.json";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -107,6 +108,7 @@ async function settingsResponse() {
   const profiles = await listAiProfiles();
   return {
     ...getAiProviderStatus(),
+    version: packageJson.version ?? "0.0.0",
     presets: AI_PROVIDER_PRESETS,
     activeId: profiles.activeId,
     profiles: profiles.profiles,
