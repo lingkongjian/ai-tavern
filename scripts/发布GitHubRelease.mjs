@@ -186,7 +186,7 @@ async function main() {
       }),
     });
     console.log(`  已更新现有 Release：${release.html_url}`);
-  } catch (error) {
+  } catch {
     release = await api(`${base}/releases`, token, {
       method: "POST",
       body: JSON.stringify({

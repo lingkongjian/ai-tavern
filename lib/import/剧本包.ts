@@ -240,6 +240,10 @@ export function parseAdventureBundleDocument(
       initialStoryDirection: opening.initialStoryDirection,
       initialStoryModuleId: opening.initialStoryModuleId,
       storyModules: source.storyModules,
+      ...(Array.isArray(source.initialRelationships) &&
+      source.initialRelationships.length > 0
+        ? { initialRelationships: source.initialRelationships }
+        : {}),
     });
   } catch (error) {
     if (error instanceof AdventureInputError) {

@@ -28,10 +28,16 @@
           "system_prompt": "不得替玩家决定记录员的言行。",
           "post_history_instructions": "等待玩家输入后再描述结果。",
           "alternate_greetings": [],
-          "tags": ["玩家角色"],
+          "tags": [
+            "玩家角色"
+          ],
           "creator": "AI 酒馆示例",
           "character_version": "1.0",
-          "extensions": { "ai_tavern": { "role": "player" } }
+          "extensions": {
+            "ai_tavern": {
+              "role": "player"
+            }
+          }
         }
       }
     },
@@ -50,10 +56,17 @@
           "system_prompt": "保持林雾的信息边界，不替玩家作决定。",
           "post_history_instructions": "根据证据逐步透露秘密。",
           "alternate_greetings": [],
-          "tags": ["主要角色", "守夜人"],
+          "tags": [
+            "主要角色",
+            "守夜人"
+          ],
           "creator": "AI 酒馆示例",
           "character_version": "1.0",
-          "extensions": { "ai_tavern": { "role": "main" } }
+          "extensions": {
+            "ai_tavern": {
+              "role": "main"
+            }
+          }
         }
       }
     },
@@ -75,10 +88,17 @@
             "system_prompt": "只有地点与职责合理时才出场。",
             "post_history_instructions": "根据巡逻地点更新是否在场。",
             "alternate_greetings": [],
-            "tags": ["其他角色", "巡夜"],
+            "tags": [
+              "其他角色",
+              "巡夜"
+            ],
             "creator": "AI 酒馆示例",
             "character_version": "1.0",
-            "extensions": { "ai_tavern": { "role": "additional" } }
+            "extensions": {
+              "ai_tavern": {
+                "role": "additional"
+              }
+            }
           }
         }
       }
@@ -125,7 +145,9 @@
           "查明自行改写的档案来源",
           "取得一份独立于档案馆的存在证据"
         ],
-        "activationConditions": ["开场即启用"],
+        "activationConditions": [
+          "开场即启用"
+        ],
         "prerequisiteModuleIds": [],
         "continuityNotes": "玩家仍在调查失踪者或纸城档案改写现象。",
         "autoContinue": true
@@ -134,9 +156,17 @@
         "id": "question-outside-witness",
         "title": "追查外街证人",
         "objective": "离开档案馆后找到能证明失踪者生活轨迹的证人，并判断证言是否也受公共档案影响。",
-        "completionCriteria": ["取得至少一名外街证人的具体证言", "判断证言与档案记录的关系"],
-        "activationConditions": ["玩家愿意继续调查失踪者", "外街仍是合理的调查方向"],
-        "prerequisiteModuleIds": ["verify-missing-record"],
+        "completionCriteria": [
+          "取得至少一名外街证人的具体证言",
+          "判断证言与档案记录的关系"
+        ],
+        "activationConditions": [
+          "玩家愿意继续调查失踪者",
+          "外街仍是合理的调查方向"
+        ],
+        "prerequisiteModuleIds": [
+          "verify-missing-record"
+        ],
         "continuityNotes": "适用于玩家没有放弃失踪案，也没有与档案馆彻底决裂的路线。",
         "autoContinue": true
       },
@@ -144,9 +174,17 @@
         "id": "decide-record-fate",
         "title": "决定档案的去留",
         "objective": "在真相逐渐清晰后，决定是修正、封存还是利用这份能改变现实的失踪档案。",
-        "completionCriteria": ["玩家对档案做出明确处置", "处置的直接后果已经在剧情中发生"],
-        "activationConditions": ["档案的造成者或改写机制已有足够证据", "玩家仍在处理该失踪案"],
-        "prerequisiteModuleIds": ["question-outside-witness"],
+        "completionCriteria": [
+          "玩家对档案做出明确处置",
+          "处置的直接后果已经在剧情中发生"
+        ],
+        "activationConditions": [
+          "档案的造成者或改写机制已有足够证据",
+          "玩家仍在处理该失踪案"
+        ],
+        "prerequisiteModuleIds": [
+          "question-outside-witness"
+        ],
         "continuityNotes": "这是调查线的阶段性收束；如果玩家已转向其他核心冲突，不应强行启用。",
         "autoContinue": true
       }
@@ -156,6 +194,32 @@
       "scene": "暴雨夜，记录员来到即将闭馆的边境档案馆，守夜人林雾正压住一页自行改写的失踪者记录。巡夜人仍在外街巡逻，尚未进入当前场景。",
       "initialStoryDirection": "确认失踪者是否真实存在；当档案来源和第一份外部证据都被查明时完成当前剧情走向。",
       "initialStoryModuleId": "verify-missing-record"
-    }
+    },
+    "initialRelationships": [
+      {
+        "sourceCharacterName": "记录员",
+        "targetCharacterName": "林雾",
+        "dimensions": {
+          "trust": 55,
+          "affinity": 60,
+          "respect": 70,
+          "fear": 0,
+          "hostility": 0
+        },
+        "summary": "纸城的同窗旧识，多年未见后重逢，彼此试探却仍愿意相助。"
+      },
+      {
+        "sourceCharacterName": "林雾",
+        "targetCharacterName": "巡夜人",
+        "dimensions": {
+          "trust": 20,
+          "affinity": 10,
+          "respect": 40,
+          "fear": 15,
+          "hostility": 0
+        },
+        "summary": "公务往来，林雾觉得巡夜人知道得太多。"
+      }
+    ]
   }
 }

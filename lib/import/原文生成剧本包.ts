@@ -108,6 +108,17 @@ interface BlueprintStoryModule {
   continuityNotes: string;
 }
 
+interface BlueprintInitialRelationship {
+  sourceName: string;
+  targetName: string;
+  trust: number;
+  affinity: number;
+  fear: number;
+  hostility: number;
+  respect: number;
+  summary: string;
+}
+
 interface SourceBundleBlueprint {
   campaignName: string;
   campaignDescription: string;
@@ -122,6 +133,7 @@ interface SourceBundleBlueprint {
   openingScene: string;
   initialStoryDirection: string;
   storyModules: BlueprintStoryModule[];
+  initialRelationships: BlueprintInitialRelationship[];
 }
 
 export interface RepresentativeSource {
@@ -646,6 +658,7 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
       issues,
     ),
     storyModules,
+    initialRelationships: [],
   };
   const names = [
     result.player.name,
@@ -654,6 +667,64 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
   ].map((name) => name.toLocaleLowerCase("zh-CN"));
   if (new Set(names).size !== names.length) {
     issues.push("模型生成了重复的角色姓名。");
+  }
+
+  const knownNames = new Set(names);
+  const rawRelationships = value.initialRelationships;
+  if (rawRelationships !== undefined) {
+    if (!Array.isArray(rawRelationships)) {
+      issues.push("initialRelationships 必须是数组。");
+    } else {
+      rawRelationships.slice(0, 30).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`initialRelationships[${index}] 必须是 JSON 对象。`);
+          return;
+        }
+        const sourceName = requiredText(
+          item,
+          "sourceName",
+          `initialRelationships[${index}].sourceName`,
+          80,
+          issues,
+        );
+        const targetName = requiredText(
+          item,
+          "targetName",
+          `initialRelationships[${index}].targetName`,
+          80,
+          issues,
+        );
+        for (const name of [sourceName, targetName]) {
+          if (name && !knownNames.has(name.toLocaleLowerCase("zh-CN"))) {
+            issues.push(
+              `initialRelationships[${index}] 引用了不存在的角色“${name}”。`,
+            );
+          }
+        }
+        if (sourceName.toLocaleLowerCase("zh-CN") === targetName.toLocaleLowerCase("zh-CN")) {
+          issues.push(`initialRelationships[${index}] 不能是角色自身的关系。`);
+        }
+        const dimension = (key: string, fallback = 0) => {
+          const raw = item[key];
+          if (raw === undefined) return fallback;
+          if (typeof raw !== "number" || !Number.isFinite(raw)) {
+            issues.push(`initialRelationships[${index}].${key} 必须是数值。`);
+            return fallback;
+          }
+          return Math.max(-100, Math.min(100, raw));
+        };
+        result.initialRelationships.push({
+          sourceName,
+          targetName,
+          trust: dimension("trust"),
+          affinity: dimension("affinity"),
+          fear: dimension("fear"),
+          hostility: dimension("hostility"),
+          respect: dimension("respect"),
+          summary: optionalText(item, "summary", 2_000),
+        });
+      });
+    }
   }
   if (issues.length > 0) throw new SourceBundleGenerationOutputError(issues);
   return result;
@@ -849,6 +920,24 @@ function buildBundleDocument(
         initialStoryDirection: blueprint.initialStoryDirection,
         initialStoryModuleId: storyModules[0]?.id ?? "",
       },
+      ...(blueprint.initialRelationships.length > 0
+        ? {
+            initialRelationships: blueprint.initialRelationships.map(
+              (relationship) => ({
+                sourceCharacterName: relationship.sourceName,
+                targetCharacterName: relationship.targetName,
+                dimensions: {
+                  trust: relationship.trust,
+                  affinity: relationship.affinity,
+                  fear: relationship.fear,
+                  hostility: relationship.hostility,
+                  respect: relationship.respect,
+                },
+                ...(relationship.summary ? { summary: relationship.summary } : {}),
+              }),
+            ),
+          }
+        : {}),
     },
   };
   try {
@@ -889,6 +978,7 @@ const blueprintShape = `{
   "additionalCharacters": [{ "name": "", "description": "", "personality": "", "firstMessage": "", "dialogueExamples": "", "presentAtOpening": false }],
   "worldBookEntries": [{ "title": "", "keys": [""], "content": "", "constant": false }],
   "storyModules": [{ "title": "", "objective": "", "completionCriteria": [""], "activationConditions": [""], "continuityNotes": "" }],
+  "initialRelationships": [{ "sourceName": "", "targetName": "", "trust": 0, "affinity": 0, "fear": 0, "hostility": 0, "respect": 0, "summary": "" }],
   "opening": { "sourceChapterIndex": 1, "locationName": "", "scene": "", "initialStoryDirection": "" }
 }`;
 
@@ -928,6 +1018,7 @@ player.name 和 mainCharacter.name 必须分别与以上姓名完全一致。ope
 additionalCharacters 只保留影响开篇及主要任务链的重要人物，最多 12 名；只有确实出现在开场现场的人才设置 presentAtOpening=true。
 worldBookEntries 提取 8 至 30 条稳定世界事实。只有每轮都必须知道的核心法则使用 constant=true；其他条目提供精确 keys。不要把尚未发生的剧情结局写成世界事实。
 storyModules 按原作自然阶段排序，生成 3 至 10 个可接续但不会强迫玩家照原作行动的任务。每项完成条件必须是剧情中可观察的事实；不要输出 ID 或前置 ID，程序会建立稳定线性任务链。
+initialRelationships 描述开局时已确立的角色关系基线（最多 30 条）：sourceName 与 targetName 必须来自 characters 中的真实姓名，数值范围 -100 到 100（信任、好感、恐惧、敌意、敬意），0 表示中性未建立；summary 用一两句话概括关系性质（如“青梅竹马”“多年仇敌”“名义上的未婚夫妻”）。原作中确有的关系就按原作设定，不要把所有关系都填 0。
 opening.sourceChapterIndex 必须填写实际作为开场依据的原文章节或场景序号。opening.scene 必须是可以直接给玩家阅读的开场正文：基于选定的有效场景，明确时间、地点、在场人物和眼前冲突，在等待玩家回应的位置结束。不得写“请扮演”“根据设定”“故事开始”等提示词。
 原作中明确成年的角色之间自愿的亲密关系可以作为人物与关系依据，不因内容亲密而自动删去；不得把身份不明、拒绝或非自愿内容改写成玩家已经同意。
 ${confirmedSelection}

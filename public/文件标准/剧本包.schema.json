@@ -76,12 +76,39 @@
             }
           },
           "additionalProperties": false
+        },
+        "initialRelationships": {
+          "type": "array",
+          "maxItems": 100,
+          "description": "开局角色之间的初始关系基线（按角色姓名引用）",
+          "items": { "$ref": "#/$defs/initialRelationship" }
         }
       },
       "additionalProperties": false
     }
   },
   "$defs": {
+    "initialRelationship": {
+      "type": "object",
+      "required": ["sourceCharacterName", "targetCharacterName"],
+      "properties": {
+        "sourceCharacterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "targetCharacterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "dimensions": {
+          "type": "object",
+          "properties": {
+            "trust": { "type": "number", "minimum": -100, "maximum": 100 },
+            "affinity": { "type": "number", "minimum": -100, "maximum": 100 },
+            "fear": { "type": "number", "minimum": -100, "maximum": 100 },
+            "hostility": { "type": "number", "minimum": -100, "maximum": 100 },
+            "respect": { "type": "number", "minimum": -100, "maximum": 100 }
+          },
+          "additionalProperties": false
+        },
+        "summary": { "type": "string", "maxLength": 2000 }
+      },
+      "additionalProperties": false
+    },
     "storyModule": {
       "type": "object",
       "required": ["id", "title", "objective", "completionCriteria"],

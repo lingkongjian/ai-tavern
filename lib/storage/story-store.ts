@@ -485,6 +485,19 @@ export interface ManagedStoryModuleResult {
   reused: boolean;
 }
 
+export interface AdventureRelationshipInput {
+  sourceCharacterName: string;
+  targetCharacterName: string;
+  dimensions?: {
+    trust?: number;
+    affinity?: number;
+    fear?: number;
+    hostility?: number;
+    respect?: number;
+  };
+  summary?: string;
+}
+
 export interface StartAdventureInput {
   campaignName: string;
   campaignDescription?: string;
@@ -506,6 +519,7 @@ export interface StartAdventureInput {
   initialStoryDirection?: string;
   storyModules?: AdventureStoryModuleInput[];
   initialStoryModuleId?: string;
+  initialRelationships?: AdventureRelationshipInput[];
 }
 
 export interface SourceDocumentUpdateInput {
@@ -1810,12 +1824,52 @@ export class LocalStoryStore {
           affinity: 0,
           fear: 0,
           hostility: 0,
+          respect: 0,
           summary: "关系尚未建立",
         },
         reason: "建立角色之间的初始关系",
         evidence: [openingEventId],
       },
     ];
+
+    const characterIdByName = new Map<string, string>([
+      [playerName.trim(), playerCharacterId],
+      [mainCharacterName.trim(), mainCharacterId],
+      ...additionalCharacters.map(
+        (character) => [character.name.trim(), character.id] as const,
+      ),
+    ]);
+    const clampDimension = (value: number | undefined, fallback: number) =>
+      typeof value === "number" && Number.isFinite(value)
+        ? Math.max(-100, Math.min(100, value))
+        : fallback;
+    for (const relationship of input.initialRelationships ?? []) {
+      const sourceId = characterIdByName.get(
+        relationship.sourceCharacterName.trim(),
+      );
+      const targetId = characterIdByName.get(
+        relationship.targetCharacterName.trim(),
+      );
+      if (!sourceId || !targetId) continue;
+      const dimensions = relationship.dimensions ?? {};
+      stateMutations.push({
+        entityType: "relationship",
+        entityId: `${sourceId}:${targetId}`,
+        operation: "replace",
+        value: {
+          sourceCharacterId: sourceId,
+          targetCharacterId: targetId,
+          trust: clampDimension(dimensions.trust, 0),
+          affinity: clampDimension(dimensions.affinity, 0),
+          fear: clampDimension(dimensions.fear, 0),
+          hostility: clampDimension(dimensions.hostility, 0),
+          respect: clampDimension(dimensions.respect, 0),
+          summary: relationship.summary?.trim() || "关系尚未建立",
+        },
+        reason: "按剧本初始关系声明建立角色关系",
+        evidence: [openingEventId],
+      });
+    }
 
     for (const entry of input.worldBookEntries ?? []) {
       stateMutations.push({

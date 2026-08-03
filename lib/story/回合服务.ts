@@ -14,6 +14,10 @@ import {
 } from "../ai/活动配置.ts";
 import { listProfileRecords } from "../ai/模型配置文件.ts";
 import {
+  detectSceneRepetition,
+  repetitionFixInstruction,
+} from "./重复检测.ts";
+import {
   applyStateMergePatch,
   BranchHeadConflictError,
   type JsonObject,
@@ -308,6 +312,7 @@ async function generateValidatedTurn(input: {
   adventure: ReturnType<LocalStoryStore["loadAdventure"]>;
   turnId: string;
   generate: StoryJsonGenerator;
+  previousScene?: string;
 }) {
   let generation = await input.generate(input.messages);
   generation = {
@@ -322,15 +327,32 @@ async function generateValidatedTurn(input: {
     (total, message) => total + estimateStoryMemoryTokens(message.content),
     0,
   );
-  let validated;
+
+  let repetitionSimilarity: number | undefined;
+  function checkRepetition(scene: string) {
+    if (!input.previousScene) return;
+    const repetition = detectSceneRepetition(scene, input.previousScene);
+    if (repetition.repeated) {
+      repetitionSimilarity = repetition.similarity;
+      throw new GeneratedTurnValidationError([
+        `本轮场景与上一回合高度重复（相似度 ${Math.round(
+          repetition.similarity * 100,
+        )}%），剧情无法推进。`,
+      ]);
+    }
+  }
+
+  let validated: ReturnType<typeof validateGeneratedTurn>;
   try {
     validated = validateGeneratedTurn(
       generation.content,
       input.adventure,
       input.turnId,
     );
+    checkRepetition(validated.turn.scene);
   } catch (error) {
     if (!(error instanceof GeneratedTurnValidationError)) throw error;
+    if (repairApplied) throw error;
     repairApplied = true;
     requestCount += 1;
     requestMessages = [
@@ -338,9 +360,12 @@ async function generateValidatedTurn(input: {
       { role: "assistant", content: JSON.stringify(generation.content) },
       {
         role: "user",
-        content: `上一个 JSON 未通过校验。只修复结构、ID、引用和必填字段，保持同一轮剧情意图，并重新返回完整 JSON。校验问题：${error.issues
-          .slice(0, 12)
-          .join("；")}`,
+        content:
+          repetitionSimilarity !== undefined
+            ? repetitionFixInstruction(repetitionSimilarity)
+            : `上一个 JSON 未通过校验。只修复结构、ID、引用和必填字段，保持同一轮剧情意图，并重新返回完整 JSON。校验问题：${error.issues
+                .slice(0, 12)
+                .join("；")}`,
       },
     ];
     estimatedRequestTokens += requestMessages.reduce(
@@ -358,6 +383,7 @@ async function generateValidatedTurn(input: {
       input.adventure,
       input.turnId,
     );
+    checkRepetition(validated.turn.scene);
   }
   return {
     generation,
@@ -858,6 +884,17 @@ export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
   const generate =
     options.generate ??
     defaultStoryGenerator(options.onStreamDelta, options.onFailover);
+  const previousTurn = adventure.branchState.recentTurns.at(-1);
+  const previousOutput = isJsonObject(previousTurn?.generatedOutput)
+    ? previousTurn.generatedOutput
+    : undefined;
+  const previousTurnObject = isJsonObject(previousOutput?.turn)
+    ? previousOutput.turn
+    : undefined;
+  const previousScene =
+    typeof previousTurnObject?.scene === "string"
+      ? previousTurnObject.scene
+      : undefined;
   const {
     generation,
     billedUsage,
@@ -871,6 +908,7 @@ export async function advanceAdventureTurn(options: AdvanceTurnOptions) {
     adventure,
     turnId,
     generate,
+    ...(previousScene !== undefined ? { previousScene } : {}),
   });
   const stateMutations = createStateMutations({
     adventure,
@@ -1025,6 +1063,22 @@ export async function regenerateLatestAdventureTurn(
   const generate =
     options.generate ??
     defaultStoryGenerator(options.onStreamDelta, options.onFailover);
+  const previousRegenerateTurn =
+    prepared.adventureBeforeTurn.branchState.recentTurns.at(-1);
+  const previousRegenerateOutput = isJsonObject(
+    previousRegenerateTurn?.generatedOutput,
+  )
+    ? previousRegenerateTurn.generatedOutput
+    : undefined;
+  const previousRegenerateTurnObject = isJsonObject(
+    previousRegenerateOutput?.turn,
+  )
+    ? previousRegenerateOutput.turn
+    : undefined;
+  const previousRegenerateScene =
+    typeof previousRegenerateTurnObject?.scene === "string"
+      ? previousRegenerateTurnObject.scene
+      : undefined;
   const {
     generation,
     billedUsage,
@@ -1038,6 +1092,9 @@ export async function regenerateLatestAdventureTurn(
     adventure: prepared.adventureBeforeTurn,
     turnId: prepared.currentTurn.id,
     generate,
+    ...(previousRegenerateScene !== undefined
+      ? { previousScene: previousRegenerateScene }
+      : {}),
   });
   const stateMutations = createStateMutations({
     adventure: prepared.adventureBeforeTurn,

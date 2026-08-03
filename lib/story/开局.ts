@@ -1,5 +1,6 @@
 import type {
   AdventureCharacterInput,
+  AdventureRelationshipInput,
   AdventureStoryModuleInput,
   StartAdventureInput,
 } from "@/lib/storage/story-store";
@@ -509,8 +510,97 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
     issues.push("同一剧本中的角色姓名不能重复。");
   }
 
+  const knownCharacterNames = new Set(characterNames);
+  const initialRelationships: StartAdventureInput["initialRelationships"] = [];
+  if (value.initialRelationships !== undefined) {
+    if (!Array.isArray(value.initialRelationships)) {
+      issues.push("初始关系必须是数组。");
+    } else {
+      if (value.initialRelationships.length > 100) {
+        issues.push("初始关系最多 100 条。");
+      }
+      value.initialRelationships.slice(0, 100).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`初始关系 ${index + 1} 格式无效。`);
+          return;
+        }
+        const sourceCharacterName = readOptionalText(
+          item,
+          "sourceCharacterName",
+          `初始关系 ${index + 1} 源角色名`,
+          limits.short,
+          issues,
+        );
+        const targetCharacterName = readOptionalText(
+          item,
+          "targetCharacterName",
+          `初始关系 ${index + 1} 目标角色名`,
+          limits.short,
+          issues,
+        );
+        if (
+          sourceCharacterName &&
+          !knownCharacterNames.has(sourceCharacterName.toLocaleLowerCase("zh-CN"))
+        ) {
+          issues.push(`初始关系 ${index + 1} 的源角色“${sourceCharacterName}”不在剧本角色中。`);
+        }
+        if (
+          targetCharacterName &&
+          !knownCharacterNames.has(targetCharacterName.toLocaleLowerCase("zh-CN"))
+        ) {
+          issues.push(`初始关系 ${index + 1} 的目标角色“${targetCharacterName}”不在剧本角色中。`);
+        }
+        const dimensionsSource = item.dimensions;
+        const dimensions: NonNullable<
+          NonNullable<AdventureRelationshipInput["dimensions"]>
+        > = {};
+        if (dimensionsSource !== undefined) {
+          if (!isRecord(dimensionsSource)) {
+            issues.push(`初始关系 ${index + 1} 的 dimensions 必须是对象。`);
+          } else {
+            for (const dimension of [
+              "trust",
+              "affinity",
+              "fear",
+              "hostility",
+              "respect",
+            ] as const) {
+              const raw = dimensionsSource[dimension];
+              if (raw === undefined) continue;
+              if (typeof raw !== "number" || !Number.isFinite(raw)) {
+                issues.push(`初始关系 ${index + 1} 的 ${dimension} 必须是数值。`);
+              } else if (raw < -100 || raw > 100) {
+                issues.push(`初始关系 ${index + 1} 的 ${dimension} 必须在 -100 到 100 之间。`);
+              } else {
+                dimensions[dimension] = raw;
+              }
+            }
+          }
+        }
+        const summary = readOptionalText(
+          item,
+          "summary",
+          `初始关系 ${index + 1} 关系描述`,
+          limits.description,
+          issues,
+        );
+        if (sourceCharacterName && targetCharacterName) {
+          initialRelationships.push({
+            sourceCharacterName,
+            targetCharacterName,
+            ...(Object.keys(dimensions).length > 0 ? { dimensions } : {}),
+            ...(summary ? { summary } : {}),
+          });
+        }
+      });
+    }
+  }
+
   if (issues.length > 0) {
     throw new AdventureInputError(issues);
   }
-  return result;
+  return {
+    ...result,
+    ...(initialRelationships.length > 0 ? { initialRelationships } : {}),
+  };
 }
