@@ -17,6 +17,10 @@ import {
   LocalStoryStore,
 } from "../lib/storage/story-store.ts";
 import {
+  exportCompleteAdventure,
+  importCompleteAdventure,
+} from "../lib/import/完整存档.ts";
+import {
   BranchAndSaveInputError,
   parseBranchUpdateRequest,
   parseCreateBranchRequest,
@@ -1221,14 +1225,39 @@ test("transfers the main-line identity and follows the delete protection", () =>
       () => store.deleteBranch(started.sessionId, fork.branchId),
       BranchManagementError,
     );
-    // 原主线仍有子分支，同样不能删除
-    assert.throws(
-      () => store.deleteBranch(started.sessionId, started.branchId),
-      BranchManagementError,
+    // 树重组：原主线成为新主线的空子分支（其回合已被吸收）
+    branches = store.listBranches(started.sessionId);
+    assert.equal(
+      branches.find((branch) => branch.id === started.branchId).parentBranchId,
+      fork.branchId,
     );
+    assert.equal(
+      branches.find((branch) => branch.id === fork.branchId).parentBranchId,
+      null,
+    );
+    const rootState = store.loadBranchState(started.branchId);
+    assert.equal(rootState.branch.headTurnId, started.openingTurnId);
+    assert.equal(rootState.branch.nextSequence, 1);
+    assert.equal(rootState.turnHistory.length, 1);
+    assert.equal(rootState.turnHistory[0].id, started.openingTurnId);
 
-    // 主线转移回原主线后，原支线成为普通支线且没有子分支，可以删除
+    // 主线转移回原主线：树再次重组（原主线吸收回合重新成为根，原支线变为空子分支）
     store.setMainBranch(started.sessionId, started.branchId);
+    branches = store.listBranches(started.sessionId);
+    assert.equal(branches.find((branch) => branch.id === started.branchId).isMain, true);
+    assert.equal(
+      branches.find((branch) => branch.id === started.branchId).parentBranchId,
+      null,
+    );
+    assert.equal(
+      branches.find((branch) => branch.id === fork.branchId).parentBranchId,
+      started.branchId,
+    );
+    assert.equal(
+      store.loadBranchState(fork.branchId).branch.nextSequence,
+      1,
+    );
+    // 原支线成为空子分支（没有子分支），可以删除
     const deleted = store.deleteBranch(started.sessionId, fork.branchId);
     assert.equal(deleted.branchId, fork.branchId);
     branches = store.listBranches(started.sessionId);
@@ -1548,6 +1577,711 @@ test("deleting the active non-main branch falls back to its parent", () => {
     assert.equal(adventure.branchState.branch.id, started.branchId);
     assert.equal(adventure.branchState.branch.isMain, true);
     assert.equal(store.listBranches(started.sessionId).length, 1);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("设为主线时重组分支树：新主线吸收父链历史成为根主线", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-reparent-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    // A（主线）推进到 5 回合
+    let head = started.openingTurnId;
+    for (let sequence = 2; sequence <= 5; sequence += 1) {
+      const next = await advanceForkTurn(
+        store,
+        started,
+        head,
+        `reparent-root-${sequence}`,
+        `北路 ${sequence}`,
+      );
+      head = next.committedTurn.id;
+    }
+    assert.equal(store.loadAdventure(started.sessionId).branchState.turnHistory.length, 5);
+    // 记录 A 的回合顺序（turnHistory 倒序：0=回合5 … 4=回合1）
+    const rootHistory = store.loadAdventure(started.sessionId).branchState.turnHistory;
+    // 从回合 3 分叉 B，B 推进 2 回合
+    const forkSource = rootHistory.find(
+      (turn) => turn.sequence === 3,
+    );
+    assert.ok(forkSource);
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: forkSource.id,
+    });
+    const forkTurn1 = await advanceForkTurn(
+      store,
+      started,
+      forkSource.id,
+      "reparent-fork-4",
+      "南路 4",
+    );
+    assert.equal(forkTurn1.committedTurn.sequence, 4);
+    const forkTurn2 = await advanceForkTurn(
+      store,
+      started,
+      forkTurn1.committedTurn.id,
+      "reparent-fork-5",
+      "南路 5",
+    );
+    assert.equal(forkTurn2.committedTurn.sequence, 5);
+    // 物化状态在重组前后保持一致
+    const bStatesBefore = JSON.stringify(store.loadBranchState(fork.branchId).states);
+    const aStatesBefore = JSON.stringify(store.loadBranchState(started.branchId).states);
+
+    // B 设为主线 → 分支树重组
+    const transferred = store.setMainBranch(started.sessionId, fork.branchId);
+    assert.equal(transferred.isMain, true);
+
+    // B：根 + 主线，历史完整（A 的 1..3 吸收 + B 的 4..5 重排为连续 1..5）
+    const bState = store.loadBranchState(fork.branchId);
+    assert.equal(bState.branch.parentBranchId, null);
+    assert.equal(bState.branch.isMain, true);
+    assert.equal(bState.branch.headTurnId, forkTurn2.committedTurn.id);
+    assert.equal(bState.branch.nextSequence, 6);
+    assert.deepEqual(
+      bState.turnHistory.map((turn) => turn.sequence),
+      [5, 4, 3, 2, 1],
+    );
+    assert.equal(
+      bState.turnHistory.every((turn) => turn.branchId === fork.branchId),
+      true,
+    );
+    assert.deepEqual(
+      bState.turnHistory.map((turn) => turn.id),
+      [
+        forkTurn2.committedTurn.id,
+        forkTurn1.committedTurn.id,
+        forkSource.id,
+        rootHistory[3].id,
+        rootHistory[4].id,
+      ],
+    );
+
+    // A：B 的子分支，分叉点之后的自有回合（4..5）保留并重排为 1..2；
+    // 可见历史 = B 的 1..3 + A 自己的 1..2
+    const aState = store.loadBranchState(started.branchId);
+    assert.equal(aState.branch.parentBranchId, fork.branchId);
+    assert.equal(aState.branch.forkedFromTurnId, forkSource.id);
+    assert.equal(aState.branch.isMain, false);
+    assert.equal(aState.branch.headTurnId, head);
+    assert.equal(aState.branch.nextSequence, 3);
+    assert.deepEqual(
+      aState.turnHistory.map((turn) => turn.sequence),
+      [2, 1, 3, 2, 1],
+    );
+    assert.equal(aState.turnHistory[0].branchId, started.branchId);
+    assert.equal(aState.turnHistory[1].branchId, started.branchId);
+    assert.equal(aState.turnHistory[2].branchId, fork.branchId);
+
+    // 物化状态保持不变（B 保持分叉点之后的状态，A 保持分叉点后的自有状态）
+    assert.equal(JSON.stringify(store.loadBranchState(fork.branchId).states), bStatesBefore);
+    assert.equal(
+      JSON.stringify(store.loadBranchState(started.branchId).states),
+      aStatesBefore,
+    );
+
+    // 回合归属：B 名下 5 回合（1..5），A 名下 2 回合（1..2）
+    const turns = database
+      .prepare(
+        "SELECT branch_id, sequence FROM turns WHERE session_id = ? ORDER BY branch_id, sequence",
+      )
+      .all(started.sessionId);
+    const bTurns = turns.filter((row) => row.branch_id === fork.branchId);
+    const aTurns = turns.filter((row) => row.branch_id === started.branchId);
+    assert.deepEqual(
+      bTurns.map((row) => row.sequence),
+      [1, 2, 3, 4, 5],
+    );
+    assert.deepEqual(
+      aTurns.map((row) => row.sequence),
+      [1, 2],
+    );
+
+    // B 与 A 均可继续推进，切换分支正常
+    store.switchBranch(started.sessionId, fork.branchId);
+    const bNext = await advanceForkTurn(
+      store,
+      started,
+      forkTurn2.committedTurn.id,
+      "reparent-b-6",
+      "主线继续",
+    );
+    assert.equal(bNext.committedTurn.sequence, 6);
+    assert.equal(bNext.committedTurn.branchId, fork.branchId);
+    store.switchBranch(started.sessionId, started.branchId);
+    const aNext = await advanceForkTurn(
+      store,
+      started,
+      head,
+      "reparent-a-3",
+      "原主线继续",
+    );
+    assert.equal(aNext.committedTurn.sequence, 3);
+    assert.equal(aNext.committedTurn.branchId, started.branchId);
+    // 从 B 的历史回合（被吸收的回合）创建新分支仍然可用
+    store.switchBranch(started.sessionId, fork.branchId);
+    const fromAbsorbed = store.createBranch({
+      sessionId: started.sessionId,
+      name: "从吸收历史分支",
+      sourceTurnId: forkSource.id,
+    });
+    assert.equal(
+      store.loadAdventure(started.sessionId).branchState.branch.id,
+      fromAbsorbed.branchId,
+    );
+    assert.equal(fromAbsorbed.sourceSequence, 3);
+
+    // 旁路子分支（不在新主线路径上的分支）不受树重组影响，仍可正常推进
+    const sideFork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "旁路分支",
+      sourceTurnId: rootHistory[3].id,
+    });
+    const sideTurn = await advanceForkTurn(
+      store,
+      started,
+      rootHistory[3].id,
+      "reparent-side-3",
+      "旁路 3",
+    );
+    assert.equal(sideTurn.committedTurn.sequence, 3);
+    const sideState = store.loadAdventure(started.sessionId);
+    assert.equal(sideState.branchState.branch.parentBranchId, fork.branchId);
+    assert.deepEqual(
+      sideState.branchState.turnHistory.map((turn) => turn.sequence),
+      [3, 2, 1],
+    );
+    assert.equal(sideState.branchState.turnHistory[0].branchId, sideFork.branchId);
+    assert.equal(sideState.branchState.turnHistory[1].branchId, fork.branchId);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("设为主线时原主线没有分叉点后的回合则变空分支，可继续推进或删除", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-reparent-empty-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    // A 推进 3 回合后停在回合 3，从回合 3 分叉 B
+    let head = started.openingTurnId;
+    for (let sequence = 2; sequence <= 3; sequence += 1) {
+      const next = await advanceForkTurn(
+        store,
+        started,
+        head,
+        `empty-root-${sequence}`,
+        `北路 ${sequence}`,
+      );
+      head = next.committedTurn.id;
+    }
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: head,
+    });
+    const forkTurn1 = await advanceForkTurn(
+      store,
+      started,
+      head,
+      "empty-fork-2",
+      "南路",
+    );
+    assert.equal(forkTurn1.committedTurn.sequence, 4);
+
+    // B 设为主线：A 变空分支，B 吸收 A 的回合 1..3
+    store.setMainBranch(started.sessionId, fork.branchId);
+    const aState = store.loadBranchState(started.branchId);
+    assert.equal(aState.branch.parentBranchId, fork.branchId);
+    assert.equal(aState.branch.headTurnId, head);
+    assert.equal(aState.branch.nextSequence, 1);
+    // A 名下没有自有回合，其可见历史全部来自 B（吸收后的回合）
+    assert.equal(
+      database
+        .prepare("SELECT COUNT(*) AS total FROM turns WHERE branch_id = ?")
+        .get(started.branchId).total,
+      0,
+    );
+    assert.equal(
+      aState.turnHistory.every((turn) => turn.branchId === fork.branchId),
+      true,
+    );
+    const bState = store.loadBranchState(fork.branchId);
+    assert.equal(bState.branch.parentBranchId, null);
+    assert.equal(bState.branch.nextSequence, 5);
+    assert.deepEqual(
+      bState.turnHistory.map((turn) => turn.sequence),
+      [4, 3, 2, 1],
+    );
+
+    // 空分支可从分叉点继续发展新路线
+    store.switchBranch(started.sessionId, started.branchId);
+    const aNext = await advanceForkTurn(
+      store,
+      started,
+      head,
+      "empty-a-new-1",
+      "原主线新路线",
+    );
+    assert.equal(aNext.committedTurn.sequence, 1);
+    assert.equal(aNext.committedTurn.branchId, started.branchId);
+    // B 的可见历史不受 A 新路线影响
+    store.switchBranch(started.sessionId, fork.branchId);
+    assert.equal(store.loadAdventure(started.sessionId).branchState.turnHistory.length, 4);
+
+    // 空分支（没有子分支）可以删除
+    const deleted = store.deleteBranch(started.sessionId, started.branchId);
+    assert.equal(deleted.branchId, started.branchId);
+    assert.equal(store.listBranches(started.sessionId).length, 1);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("多层父链：P→A→B，B 设为主线后 P、A 均为 B 的子分支", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-reparent-multi-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    // P（根主线）推进 4 回合
+    let pHead = started.openingTurnId;
+    for (let sequence = 2; sequence <= 4; sequence += 1) {
+      const next = await advanceForkTurn(
+        store,
+        started,
+        pHead,
+        `multi-p-${sequence}`,
+        `北路 ${sequence}`,
+      );
+      pHead = next.committedTurn.id;
+    }
+    const pHistory = store.loadAdventure(started.sessionId).branchState.turnHistory;
+    const pTurn2 = pHistory.find(
+      (turn) => turn.sequence === 2,
+    );
+    assert.ok(pTurn2);
+    // A 从 P 的回合 2 分叉，推进 2 回合
+    const aFork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "中层分支",
+      sourceTurnId: pTurn2.id,
+    });
+    const aTurn1 = await advanceForkTurn(
+      store,
+      started,
+      pTurn2.id,
+      "multi-a-3",
+      "中层 3",
+    );
+    assert.equal(aTurn1.committedTurn.sequence, 3);
+    const aTurn2 = await advanceForkTurn(
+      store,
+      started,
+      aTurn1.committedTurn.id,
+      "multi-a-4",
+      "中层 4",
+    );
+    assert.equal(aTurn2.committedTurn.sequence, 4);
+    // B 从 A 的回合 3 分叉，推进 1 回合
+    const bFork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "末端分支",
+      sourceTurnId: aTurn1.committedTurn.id,
+    });
+    const bTurn1 = await advanceForkTurn(
+      store,
+      started,
+      aTurn1.committedTurn.id,
+      "multi-b-4",
+      "末端 4",
+    );
+    assert.equal(bTurn1.committedTurn.sequence, 4);
+
+    // B 设为主线：P、A 全部变为 B 的子分支
+    store.setMainBranch(started.sessionId, bFork.branchId);
+    const bState = store.loadBranchState(bFork.branchId);
+    assert.equal(bState.branch.parentBranchId, null);
+    assert.equal(bState.branch.isMain, true);
+    assert.equal(bState.branch.nextSequence, 5);
+    assert.deepEqual(
+      bState.turnHistory.map((turn) => turn.sequence),
+      [4, 3, 2, 1],
+    );
+    assert.equal(
+      bState.turnHistory.every((turn) => turn.branchId === bFork.branchId),
+      true,
+    );
+    // 时间顺序：P 的 1..2、A 的 3、B 的 4（B 的倒序历史：B4、A3、P2、P1）
+    assert.equal(bState.turnHistory[0].id, bTurn1.committedTurn.id);
+    assert.equal(bState.turnHistory[1].id, aTurn1.committedTurn.id);
+    assert.equal(bState.turnHistory[2].id, pTurn2.id);
+    assert.equal(bState.turnHistory[3].id, pHistory[3].id);
+
+    // P：保留分叉点后的回合 3..4 重排为 1..2；可见历史 = B 的 1..2 + P 的 1..2
+    const pState = store.loadBranchState(started.branchId);
+    assert.equal(pState.branch.parentBranchId, bFork.branchId);
+    assert.equal(pState.branch.forkedFromTurnId, pTurn2.id);
+    assert.equal(pState.branch.headTurnId, pHead);
+    assert.equal(pState.branch.nextSequence, 3);
+    assert.deepEqual(
+      pState.turnHistory.map((turn) => turn.sequence),
+      [2, 1, 2, 1],
+    );
+    assert.equal(pState.turnHistory[0].branchId, started.branchId);
+    assert.equal(pState.turnHistory[1].branchId, started.branchId);
+    assert.equal(pState.turnHistory[2].branchId, bFork.branchId);
+    assert.equal(pState.turnHistory[3].branchId, bFork.branchId);
+    // A：保留分叉点后的回合 4 重排为 1；可见历史 = B 的 1..3 + A 的 1
+    const aState = store.loadBranchState(aFork.branchId);
+    assert.equal(aState.branch.parentBranchId, bFork.branchId);
+    assert.equal(aState.branch.forkedFromTurnId, aTurn1.committedTurn.id);
+    assert.equal(aState.branch.headTurnId, aTurn2.committedTurn.id);
+    assert.equal(aState.branch.nextSequence, 2);
+    assert.deepEqual(
+      aState.turnHistory.map((turn) => turn.sequence),
+      [1, 3, 2, 1],
+    );
+    assert.equal(aState.turnHistory[0].branchId, aFork.branchId);
+    assert.equal(aState.turnHistory[1].branchId, bFork.branchId);
+
+    // 三个分支均可继续推进
+    store.switchBranch(started.sessionId, started.branchId);
+    const pNext = await advanceForkTurn(store, started, pHead, "multi-p-next-3", "P 继续");
+    assert.equal(pNext.committedTurn.sequence, 3);
+    store.switchBranch(started.sessionId, aFork.branchId);
+    const aNext = await advanceForkTurn(
+      store,
+      started,
+      aTurn2.committedTurn.id,
+      "multi-a-next-2",
+      "A 继续",
+    );
+    assert.equal(aNext.committedTurn.sequence, 2);
+    store.switchBranch(started.sessionId, bFork.branchId);
+    const bNext = await advanceForkTurn(
+      store,
+      started,
+      bTurn1.committedTurn.id,
+      "multi-b-next-5",
+      "B 继续",
+    );
+    assert.equal(bNext.committedTurn.sequence, 5);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("设主线幂等：已是根主线再设不变；无父链分支设主线只转移身份", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-reparent-idem-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: started.openingTurnId,
+    });
+    // 模拟旧版本遗留：主线身份已转移但树未重组（根分支非主线、无父链；支线仍为主线的子分支）
+    database
+      .prepare("UPDATE branches SET is_main = 0 WHERE id = ?")
+      .run(started.branchId);
+    database
+      .prepare("UPDATE branches SET is_main = 1 WHERE id = ?")
+      .run(fork.branchId);
+    const snapshotTree = () =>
+      database
+        .prepare("SELECT id, parent_branch_id, forked_from_turn_id, head_turn_id, next_sequence FROM branches ORDER BY id")
+        .all();
+    const snapshotTurns = () =>
+      database
+        .prepare("SELECT id, branch_id, sequence FROM turns ORDER BY id")
+        .all();
+    const treeBeforeLegacy = snapshotTree();
+    const turnsBeforeLegacy = snapshotTurns();
+    // 无父链分支设为主线：只转移主线身份，不改变分支树与回合归属
+    store.setMainBranch(started.sessionId, started.branchId);
+    assert.deepEqual(snapshotTree(), treeBeforeLegacy);
+    assert.deepEqual(snapshotTurns(), turnsBeforeLegacy);
+    assert.equal(
+      store.listBranches(started.sessionId).find((branch) => branch.id === started.branchId).isMain,
+      true,
+    );
+    assert.equal(
+      store.listBranches(started.sessionId).find((branch) => branch.id === fork.branchId).isMain,
+      false,
+    );
+
+    // 旧存档中主线带父链时再设一次：补做树重组（主线变为根，父链变子分支）
+    const repaired = store.setMainBranch(started.sessionId, fork.branchId);
+    assert.equal(repaired.isMain, true);
+    assert.equal(store.loadBranchState(fork.branchId).branch.parentBranchId, null);
+    assert.equal(
+      store.loadBranchState(started.branchId).branch.parentBranchId,
+      fork.branchId,
+    );
+    assert.equal(store.loadBranchState(started.branchId).branch.nextSequence, 1);
+    // 已是根主线再设：幂等，完全不变
+    const treeAfterRepair = snapshotTree();
+    const turnsAfterRepair = snapshotTurns();
+    const again = store.setMainBranch(started.sessionId, fork.branchId);
+    assert.equal(again.isMain, true);
+    assert.deepEqual(snapshotTree(), treeAfterRepair);
+    assert.deepEqual(snapshotTurns(), turnsAfterRepair);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("树重组后恢复点随迁、快照序号一致、完整存档往返正常", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-reparent-save-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    // A 推进 2 回合，手动存档在回合 2（分支 A 名下）
+    let head = started.openingTurnId;
+    for (let sequence = 2; sequence <= 2; sequence += 1) {
+      const next = await advanceForkTurn(
+        store,
+        started,
+        head,
+        `save-root-${sequence}`,
+        `北路 ${sequence}`,
+      );
+      head = next.committedTurn.id;
+    }
+    const manual = store.createSavePoint(started.sessionId, "回合二营地");
+    assert.equal(manual.sequence, 2);
+    const turn2 = store.loadAdventure(started.sessionId).branchState.turnHistory.find(
+      (turn) => turn.sequence === 2,
+    );
+    assert.ok(turn2);
+    // A 继续推进到 4 回合，从回合 3 分叉 B，B 推进 2 回合
+    for (let sequence = 3; sequence <= 4; sequence += 1) {
+      const next = await advanceForkTurn(
+        store,
+        started,
+        head,
+        `save-root-${sequence}`,
+        `北路 ${sequence}`,
+      );
+      head = next.committedTurn.id;
+    }
+    const turn3 = store.loadAdventure(started.sessionId).branchState.turnHistory.find(
+      (turn) => turn.sequence === 3,
+    );
+    assert.ok(turn3);
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: turn3.id,
+    });
+    const forkTurn1 = await advanceForkTurn(
+      store,
+      started,
+      turn3.id,
+      "save-fork-4",
+      "南路 4",
+    );
+    const forkTurn2 = await advanceForkTurn(
+      store,
+      started,
+      forkTurn1.committedTurn.id,
+      "save-fork-5",
+      "南路 5",
+    );
+    // 自动快照冲突场景：A 推进 5 回合后分叉（分叉点回合 5 上有自动快照）
+    // —— 为覆盖"自动快照与分叉快照同序号去重"，先单独构造 5 回合 + 分叉的会话
+    const second = startForkScenario(store);
+    let secondHead = second.openingTurnId;
+    for (let sequence = 2; sequence <= 5; sequence += 1) {
+      const next = await advanceForkTurn(
+        store,
+        second,
+        secondHead,
+        `save2-root-${sequence}`,
+        `北路 ${sequence}`,
+      );
+      secondHead = next.committedTurn.id;
+    }
+    const secondFork = store.createBranch({
+      sessionId: second.sessionId,
+      name: "五回合分叉",
+      sourceTurnId: secondHead,
+    });
+
+    // B 设为主线（第一个会话）
+    store.setMainBranch(started.sessionId, fork.branchId);
+    // 手动存档随迁到 B：回合 2 被吸收，序号改为 B 中的新本地序号
+    const recoveryPoints = store.listRecoveryPoints(started.sessionId);
+    const migrated = recoveryPoints.find((point) => point.id === manual.id);
+    assert.ok(migrated);
+    assert.equal(migrated.branchId, fork.branchId);
+    assert.equal(migrated.sequence, 2);
+    assert.equal(migrated.turnId, turn2.id);
+    // 恢复点仍然可用：从存档创建新分支
+    const fromSave = store.createBranch({
+      sessionId: started.sessionId,
+      name: "从吸收存档恢复",
+      recoveryPointId: manual.id,
+    });
+    assert.equal(fromSave.sourceSequence, 2);
+    const fromSaveState = store.loadAdventure(started.sessionId);
+    assert.equal(fromSaveState.branchState.branch.headTurnId, turn2.id);
+    // 恢复原手动存档：子分支（原主线在分叉点 3 之后分叉）阻挡就地恢复
+    store.switchBranch(started.sessionId, fork.branchId);
+    assert.throws(
+      () => store.restoreSavePoint(started.sessionId, manual.id),
+      /存档“回合二营地”之后仍有分支/,
+    );
+    store.switchBranch(started.sessionId, fromSave.branchId);
+    store.deleteBranch(started.sessionId, fromSave.branchId);
+    // 删除"从存档恢复"分支后，原主线仍从分叉点之后阻挡恢复到更早回合
+    assert.throws(
+      () => store.restoreSavePoint(started.sessionId, manual.id),
+      /存档“回合二营地”之后仍有分支/,
+    );
+    // 在重组后的 B 上继续推进、保存并就地恢复：照常工作
+    store.switchBranch(started.sessionId, fork.branchId);
+    const bAdvance = await advanceForkTurn(
+      store,
+      started,
+      forkTurn2.committedTurn.id,
+      "save-b-6",
+      "主线继续",
+    );
+    assert.equal(bAdvance.committedTurn.sequence, 6);
+    const bSave = store.createSavePoint(started.sessionId, "主线第六回合");
+    assert.equal(bSave.sequence, 6);
+    const bAdvance2 = await advanceForkTurn(
+      store,
+      started,
+      bAdvance.committedTurn.id,
+      "save-b-7",
+      "主线再继续",
+    );
+    assert.equal(bAdvance2.committedTurn.sequence, 7);
+    const restoredAfter = store.restoreSavePoint(started.sessionId, bSave.id);
+    assert.equal(restoredAfter.branchId, fork.branchId);
+    assert.equal(restoredAfter.turnId, bAdvance.committedTurn.id);
+    assert.equal(restoredAfter.removedTurnCount, 1);
+    assert.equal(
+      store.loadAdventure(started.sessionId).branchState.branch.headTurnId,
+      bAdvance.committedTurn.id,
+    );
+
+    // 第二个会话：分叉点回合有自动快照 → 重组后自动快照与分叉快照同序号时保留分叉快照
+    store.switchBranch(second.sessionId, second.branchId);
+    const autoBefore = database
+      .prepare(
+        "SELECT sequence, kind FROM snapshots WHERE branch_id = ? ORDER BY sequence",
+      )
+      .all(second.branchId);
+    assert.equal(
+      autoBefore.some((row) => row.kind === "automatic" && row.sequence === 5),
+      true,
+    );
+    store.setMainBranch(second.sessionId, secondFork.branchId);
+    // 新主线吸收全部 5 个回合：开局自动快照随迁（序号 1），
+    // 分叉点回合 5 的自动快照与分叉快照同序号时保留分叉快照（去重）
+    const forkSnapshots = database
+      .prepare(
+        "SELECT sequence, kind, turn_id FROM snapshots WHERE branch_id = ? ORDER BY sequence",
+      )
+      .all(secondFork.branchId);
+    assert.deepEqual(
+      forkSnapshots.map((row) => ({ sequence: row.sequence, kind: row.kind })),
+      [
+        { sequence: 1, kind: "automatic" },
+        { sequence: 5, kind: "fork" },
+      ],
+    );
+    // 原主线成为空子分支：为其补建分叉起点快照（序号 0），原有自动快照随回合转移
+    const secondRootSnapshots = database
+      .prepare(
+        "SELECT sequence, kind FROM snapshots WHERE branch_id = ? ORDER BY sequence",
+      )
+      .all(second.branchId)
+      .map((row) => ({ sequence: row.sequence, kind: row.kind }));
+    assert.deepEqual(secondRootSnapshots, [{ sequence: 0, kind: "fork" }]);
+
+    // 完整存档往返：树重组后的分支结构、回合归属、存档完整导出并导入
+    const archive = exportCompleteAdventure(database, started.sessionId);
+    assert.equal(archive.summary.branchCount, 2);
+    assert.equal(archive.summary.turnCount, 7);
+    assert.equal(archive.summary.manualSaveCount, 2);
+    assert.equal(archive.data.branches.filter((row) => row.is_main === 1).length, 1);
+    const imported = importCompleteAdventure(database, archive);
+    const importedStore = new LocalStoryStore(database);
+    const importedBranches = importedStore.listBranches(imported.sessionId);
+    assert.equal(importedBranches.length, 2);
+    const importedMain = importedBranches.find((branch) => branch.isMain);
+    assert.equal(importedMain.name, "南路分支");
+    assert.equal(importedMain.parentBranchId, null);
+    const importedChild = importedBranches.find(
+      (branch) => branch.name === "主线",
+    );
+    assert.equal(importedChild.parentBranchId, importedMain.id);
+    const importedTurns = database
+      .prepare(
+        "SELECT branch_id, sequence FROM turns WHERE session_id = ? ORDER BY branch_id, sequence",
+      )
+      .all(imported.sessionId);
+    assert.equal(
+      importedTurns.filter((row) => row.branch_id === importedMain.id).length,
+      6,
+    );
+    assert.equal(
+      importedTurns.filter((row) => row.branch_id === importedChild.id).length,
+      1,
+    );
+    assert.equal(
+      importedStore.listRecoveryPoints(imported.sessionId).find(
+        (point) => point.type === "manual",
+      ).branchId,
+      importedMain.id,
+    );
+    // 导入后仍可继续推进新主线
+    const importedAdventure = importedStore.loadAdventure(imported.sessionId);
+    const importedNext = importedStore.commitTurn({
+      sessionId: imported.sessionId,
+      branchId: importedMain.id,
+      expectedHeadTurnId: importedAdventure.branchState.branch.headTurnId,
+      idempotencyKey: "imported-next-8",
+      playerInput: { customChoice: "导入后继续" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "导入后继续推进。" },
+      summaryPatch: "导入后继续推进。",
+      stateMutations: [],
+    });
+    assert.equal(importedNext.sequence, 7);
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

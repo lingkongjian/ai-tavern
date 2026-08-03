@@ -3955,7 +3955,7 @@ export class LocalStoryStore {
       states = this.reconstructStatesThroughSequence({
         sessionId: input.sessionId,
         branchId: parentBranchId,
-        sequence: sourceSequence,
+        turnId: sourceTurnId,
       });
     }
 
@@ -4081,24 +4081,33 @@ export class LocalStoryStore {
     if (branch.session_id !== sessionId) {
       throw new StoryNotFoundError("没有找到指定的剧情分支。");
     }
-    if (branch.is_main === 1) {
+    const chain = this.getBranchChain(branchId);
+    // 已是主线且已是树根：无需任何变化（幂等）。
+    if (branch.is_main === 1 && chain.length === 1) {
       return { branchId, isMain: true, changedAt: branch.updated_at };
     }
     const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.database
-        .prepare(
-          "UPDATE branches SET is_main = 0, updated_at = ? WHERE session_id = ?",
-        )
-        .run(now, sessionId);
-      const result = this.database
-        .prepare(
-          "UPDATE branches SET is_main = 1, updated_at = ? WHERE id = ? AND session_id = ?",
-        )
-        .run(now, branchId, sessionId);
-      if (result.changes !== 1) {
-        throw new StoryNotFoundError("没有找到指定的剧情分支。");
+      // 树重组：新主线吸收父链在分叉点之前的历史，父链分支变为新主线的子分支。
+      // 旧存档中主线可能尚未重组（chain 大于 1），此时只补做树重组、不改主线身份。
+      if (chain.length > 1) {
+        this.reparentBranchTree(sessionId, branch, chain, now);
+      }
+      if (branch.is_main !== 1) {
+        this.database
+          .prepare(
+            "UPDATE branches SET is_main = 0, updated_at = ? WHERE session_id = ?",
+          )
+          .run(now, sessionId);
+        const result = this.database
+          .prepare(
+            "UPDATE branches SET is_main = 1, updated_at = ? WHERE id = ? AND session_id = ?",
+          )
+          .run(now, branchId, sessionId);
+        if (result.changes !== 1) {
+          throw new StoryNotFoundError("没有找到指定的剧情分支。");
+        }
       }
       this.database.exec("COMMIT");
     } catch (error) {
@@ -4106,6 +4115,293 @@ export class LocalStoryStore {
       throw error;
     }
     return { branchId, isMain: true, changedAt: now };
+  }
+
+  /**
+   * 分支树重组（必须在 BEGIN IMMEDIATE 事务内调用）：
+   * 把目标分支 B 的完整父链 [R0…Rm] 中"截至各自分叉点"的回合转移给 B，
+   * 使 B 成为根分支并拥有完整历史；每个父链分支变为 B 的子分支，
+   * 保留各自分叉点之后自有的回合（重新从 1 排号），无自有回合则成为空分支。
+   * 被转移回合涉及的所有关联表行（管理审计/快照/恢复点/记忆检索/再生记录等）
+   * 随迁到 B；turn 引用类字段只改归属、id 不变，引用保持有效。
+   */
+  private reparentBranchTree(
+    sessionId: string,
+    target: BranchRow,
+    chain: BranchRow[],
+    now: string,
+  ) {
+    const ancestors = chain.slice(0, -1);
+    // 每个 ancestor 的转移前缀（按链顺序）与保留后缀
+    const prefixByBranch = new Map<string, string[]>();
+    const suffixByBranch = new Map<string, string[]>();
+    const forkTurnIdByBranch = new Map<string, string>();
+    const transferredTurnIds = new Set<string>();
+    for (let index = 0; index < ancestors.length; index += 1) {
+      const ancestor = ancestors[index];
+      const childOnPath = chain[index + 1];
+      if (!childOnPath.forked_from_turn_id) {
+        throw new BranchManagementError(
+          "父链分支缺少起点回合，无法重组分支树。",
+        );
+      }
+      const forkTurn = this.database
+        .prepare("SELECT sequence FROM turns WHERE id = ? AND branch_id = ?")
+        .get(childOnPath.forked_from_turn_id, ancestor.id) as
+        | { sequence: number }
+        | undefined;
+      if (!forkTurn) {
+        throw new BranchManagementError(
+          "父链分支起点回合不存在，无法重组分支树。",
+        );
+      }
+      const localRows = this.database
+        .prepare("SELECT id, sequence FROM turns WHERE branch_id = ? ORDER BY sequence")
+        .all(ancestor.id) as unknown as Array<{ id: string; sequence: number }>;
+      const prefix = localRows
+        .filter((turn) => turn.sequence <= forkTurn.sequence)
+        .map((turn) => turn.id);
+      const suffix = localRows
+        .filter((turn) => turn.sequence > forkTurn.sequence)
+        .map((turn) => turn.id);
+      if (prefix.length === 0) {
+        throw new BranchManagementError(
+          "父链分支分叉点回合缺失，无法重组分支树。",
+        );
+      }
+      prefixByBranch.set(ancestor.id, prefix);
+      suffixByBranch.set(ancestor.id, suffix);
+      forkTurnIdByBranch.set(ancestor.id, childOnPath.forked_from_turn_id);
+      for (const turnId of prefix) transferredTurnIds.add(turnId);
+    }
+
+    const targetOwnRows = this.database
+      .prepare("SELECT id FROM turns WHERE branch_id = ? ORDER BY sequence")
+      .all(target.id) as unknown as Array<{ id: string }>;
+    const targetOwnIds = targetOwnRows.map((row) => row.id);
+    const affectedBranchIds = [...ancestors.map((ancestor) => ancestor.id), target.id];
+    const placeholders = (values: string[]) => values.map(() => "?").join(", ");
+    const transferred = [...transferredTurnIds];
+    const transferredPlaceholders = placeholders(transferred);
+    const affectedPlaceholders = placeholders(affectedBranchIds);
+
+    // 阶段一：释放 (branch_id, sequence) 序号空间（同分支取负仍唯一）
+    const negateTurn = this.database.prepare(
+      "UPDATE turns SET sequence = -sequence - 1 WHERE branch_id = ?",
+    );
+    for (const branchId of affectedBranchIds) negateTurn.run(branchId);
+
+    // 阶段二：写入新编号——父链前缀回合在前、目标自有回合续后；父链后缀回合各自从 1 起
+    const updateTurn = this.database.prepare(
+      "UPDATE turns SET branch_id = ?, sequence = ? WHERE id = ?",
+    );
+    let nextSequence = 1;
+    for (const ancestor of ancestors) {
+      for (const turnId of prefixByBranch.get(ancestor.id) ?? []) {
+        updateTurn.run(target.id, nextSequence, turnId);
+        nextSequence += 1;
+      }
+    }
+    for (const turnId of targetOwnIds) {
+      updateTurn.run(target.id, nextSequence, turnId);
+      nextSequence += 1;
+    }
+    for (const ancestor of ancestors) {
+      let suffixSequence = 1;
+      for (const turnId of suffixByBranch.get(ancestor.id) ?? []) {
+        updateTurn.run(ancestor.id, suffixSequence, turnId);
+        suffixSequence += 1;
+      }
+    }
+
+    // 关联表随迁：被转移回合涉及的所有含 branch_id 的行改归 B
+    const migrateByTurnId = (table: string, column: string) => {
+      this.database
+        .prepare(
+          `UPDATE ${table} SET branch_id = ? WHERE ${column} IN (${transferredPlaceholders})`,
+        )
+        .run(target.id, ...transferred);
+    };
+    migrateByTurnId("state_changes", "turn_id");
+    for (const table of [
+      "character_management_changes",
+      "location_management_changes",
+      "story_module_management_changes",
+      "plot_thread_management_changes",
+      "plot_trigger_management_changes",
+      "world_book_management_changes",
+      "content_asset_management_changes",
+      "state_control_changes",
+    ]) {
+      migrateByTurnId(table, "reference_turn_id");
+    }
+    migrateByTurnId("state_lock_blocks", "turn_id");
+    migrateByTurnId("turn_regenerations", "turn_id");
+    migrateByTurnId("turn_context_snapshots", "turn_id");
+    migrateByTurnId("memory_retrievals", "turn_id");
+
+    // 快照与恢复点：序号统一为"所引用回合在新归属分支中的本地序号"。
+    // 分叉快照特殊处理：目标分支的分叉快照跟随回合新序号；
+    // 被重组的父链分支的分叉快照（引用的是其父分支回合，不在自己名下）置 0，
+    // 保证"恢复到分叉点"会删除该分支全部自有回合。
+    const snapshotRows = this.database
+      .prepare(
+        `SELECT id, branch_id, turn_id, kind FROM snapshots WHERE branch_id IN (${affectedPlaceholders})`,
+      )
+      .all(...affectedBranchIds) as unknown as Array<{
+      id: string;
+      branch_id: string;
+      turn_id: string;
+      kind: string;
+    }>;
+    this.database
+      .prepare(
+        `UPDATE snapshots SET sequence = -sequence - 1000000 WHERE branch_id IN (${affectedPlaceholders})`,
+      )
+      .run(...affectedBranchIds);
+    const updateSnapshot = this.database.prepare(
+      "UPDATE snapshots SET branch_id = ?, sequence = ? WHERE id = ?",
+    );
+    const deleteSnapshot = this.database.prepare("DELETE FROM snapshots WHERE id = ?");
+    const forkSlots = new Set<string>();
+    // 先处理分叉快照：同一 (branch, sequence) 冲突时保留分叉快照
+    for (const row of snapshotRows) {
+      if (row.kind !== "fork") continue;
+      const turn = this.database
+        .prepare("SELECT branch_id, sequence FROM turns WHERE id = ?")
+        .get(row.turn_id) as { branch_id: string; sequence: number } | undefined;
+      if (!turn) continue;
+      if (row.branch_id === target.id) {
+        updateSnapshot.run(target.id, turn.sequence, row.id);
+        forkSlots.add(`${target.id}:${turn.sequence}`);
+      } else {
+        updateSnapshot.run(row.branch_id, 0, row.id);
+        forkSlots.add(`${row.branch_id}:0`);
+      }
+    }
+    // 再处理自动快照：与分叉快照同 (branch, sequence) 时删除自动快照（分叉快照优先）
+    for (const row of snapshotRows) {
+      if (row.kind === "fork") continue;
+      const turn = this.database
+        .prepare("SELECT branch_id, sequence FROM turns WHERE id = ?")
+        .get(row.turn_id) as { branch_id: string; sequence: number } | undefined;
+      if (!turn) continue;
+      if (forkSlots.has(`${turn.branch_id}:${turn.sequence}`)) {
+        deleteSnapshot.run(row.id);
+      } else {
+        updateSnapshot.run(turn.branch_id, turn.sequence, row.id);
+      }
+    }
+    // 去重：同一 (branch, sequence) 上自动快照与分叉快照冲突时保留分叉快照
+    this.database.exec(`
+      DELETE FROM snapshots
+      WHERE kind = 'automatic' AND id IN (
+        SELECT automatic.id
+        FROM snapshots AS automatic
+        JOIN snapshots AS fork
+          ON fork.branch_id = automatic.branch_id
+         AND fork.sequence = automatic.sequence
+        WHERE automatic.kind = 'automatic' AND fork.kind = 'fork'
+      )
+    `);
+
+    const savePointRows = this.database
+      .prepare(
+        `SELECT id, branch_id, turn_id FROM save_points WHERE branch_id IN (${affectedPlaceholders})`,
+      )
+      .all(...affectedBranchIds) as unknown as Array<{
+      id: string;
+      branch_id: string;
+      turn_id: string;
+    }>;
+    const updateSavePoint = this.database.prepare(
+      "UPDATE save_points SET branch_id = ?, sequence = ? WHERE id = ?",
+    );
+    for (const row of savePointRows) {
+      const turn = this.database
+        .prepare("SELECT branch_id, sequence FROM turns WHERE id = ?")
+        .get(row.turn_id) as { branch_id: string; sequence: number } | undefined;
+      if (!turn) continue;
+      updateSavePoint.run(turn.branch_id, turn.sequence, row.id);
+    }
+
+    // 分支树：父链分支变为 B 的子分支；B 成为根并拥有完整历史
+    if (transferred.length === 0) {
+      throw new BranchManagementError("没有找到可吸收的父链回合，无法重组分支树。");
+    }
+    const targetHead = targetOwnIds.at(-1) ?? transferred.at(-1)!;
+    this.database
+      .prepare(
+        "UPDATE branches SET parent_branch_id = NULL, forked_from_turn_id = NULL, head_turn_id = ?, next_sequence = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(targetHead, nextSequence, now, target.id);
+    const updateAncestor = this.database.prepare(`
+      UPDATE branches
+      SET parent_branch_id = ?, forked_from_turn_id = ?,
+          head_turn_id = ?, next_sequence = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    for (const ancestor of ancestors) {
+      const suffix = suffixByBranch.get(ancestor.id) ?? [];
+      const forkTurnId = forkTurnIdByBranch.get(ancestor.id)!;
+      updateAncestor.run(
+        target.id,
+        forkTurnId,
+        suffix.at(-1) ?? forkTurnId,
+        suffix.length + 1,
+        now,
+        ancestor.id,
+      );
+    }
+
+    // 为缺少分叉快照的父链分支补建起点快照（原根分支没有分叉快照）：
+    // 起点状态 = B 在该分叉点的状态（此时 B 已是根，状态变更已随迁）。
+    for (const ancestor of ancestors) {
+      const hasForkSnapshot = this.database
+        .prepare(
+          "SELECT 1 AS found FROM snapshots WHERE branch_id = ? AND kind = 'fork' LIMIT 1",
+        )
+        .get(ancestor.id);
+      if (hasForkSnapshot) continue;
+      const forkTurnId = forkTurnIdByBranch.get(ancestor.id)!;
+      const forkStates = this.reconstructStatesThroughSequence({
+        sessionId,
+        branchId: target.id,
+        turnId: forkTurnId,
+      });
+      this.database
+        .prepare(`
+          INSERT INTO snapshots (
+            id, session_id, branch_id, turn_id, sequence, state_json,
+            name, kind, created_at
+          ) VALUES (?, ?, ?, ?, 0, ?, ?, 'fork', ?)
+        `)
+        .run(
+          randomUUID(),
+          sessionId,
+          ancestor.id,
+          forkTurnId,
+          stringifyJson({
+            schemaVersion: "1.0.0",
+            states: forkStates.map((state) => ({
+              entityType: state.entityType,
+              entityId: state.entityId,
+              state: state.state,
+              isActive: state.isActive,
+              version: state.version,
+              updatedTurnId: state.updatedTurnId,
+              updatedAt: state.updatedAt ?? now,
+            })),
+          }),
+          `分支起点 · ${ancestor.name}`,
+          now,
+        );
+    }
+
+    // 记忆索引重建：B 吸收历史后按完整可见链重建，父链分支可见链不变、按需重建
+    for (const branchId of [target.id, ...ancestors.map((ancestor) => ancestor.id)]) {
+      this.synchronizeStoryMemory(sessionId, branchId);
+    }
   }
 
   deleteBranch(sessionId: string, branchId: string) {
@@ -6906,7 +7202,7 @@ export class LocalStoryStore {
     const states = this.reconstructStatesThroughSequence({
       sessionId,
       branchId: adventure.branchState.branch.id,
-      sequence: parent.sequence,
+      turnId: currentTurn.parentTurnId,
     }).map((state) => ({
       entityType: state.entityType,
       entityId: state.entityId,
@@ -7030,7 +7326,7 @@ export class LocalStoryStore {
       const reconstructedStates = this.reconstructStatesThroughSequence({
         sessionId: input.sessionId,
         branchId: input.branchId,
-        sequence: parent.sequence,
+        turnId: input.expectedParentTurnId,
       });
 
       this.database
@@ -7765,9 +8061,18 @@ export class LocalStoryStore {
   private reconstructStatesThroughSequence(input: {
     sessionId: string;
     branchId: string;
-    sequence: number;
+    turnId: string;
   }): ReplayedMaterializedState[] {
     const branch = this.getBranch(input.branchId);
+    // 分叉点回合在本分支名下则按其本地序号重放本分支自有变化；
+    // 分叉点回合不在本分支名下（属于父分支）时，本分支没有更早的自有变化，
+    // 从冻结起点状态开始重放即可（管理变更引用分叉点回合时另行包含）。
+    const source = this.database
+      .prepare("SELECT branch_id, sequence FROM turns WHERE id = ?")
+      .get(input.turnId) as { branch_id: string; sequence: number } | undefined;
+    const ownLimit = source && source.branch_id === input.branchId
+      ? source.sequence
+      : 0;
     const states = new Map<string, ReplayedMaterializedState>();
     if (branch.parent_branch_id) {
       const base = this.database
@@ -7786,9 +8091,13 @@ export class LocalStoryStore {
         states.set(`${state.entityType}:${state.entityId}`, state);
       }
     }
+    // 重放过滤按"可见链位置"进行：引用父分支回合（分叉点）的变更总是先于
+    // 本分支自有回合的变更；本分支自有变更按本地序号重放（兼容旧存档中
+    // 本地序号从分叉点可见位置续写、以及树重组后从 1 重排两种编号）。
     const rows = this.database
       .prepare(`
-        SELECT turns.sequence AS sequence, 0 AS source_order,
+        SELECT CASE WHEN turns.branch_id = ? THEN 1 ELSE 0 END AS own_order,
+               turns.sequence AS sequence, 0 AS source_order,
                '' AS action_id, state_changes.ordinal AS ordinal,
                state_changes.entity_type AS entity_type,
                state_changes.entity_id AS entity_id,
@@ -7800,9 +8109,10 @@ export class LocalStoryStore {
         FROM state_changes
         JOIN turns ON turns.id = state_changes.turn_id
         WHERE state_changes.session_id = ? AND state_changes.branch_id = ?
-          AND turns.sequence <= ?
+          AND (turns.branch_id <> ? OR (turns.branch_id = ? AND turns.sequence <= ?))
         UNION ALL
-        SELECT turns.sequence AS sequence, 1 AS source_order,
+        SELECT CASE WHEN turns.branch_id = ? THEN 1 ELSE 0 END AS own_order,
+               turns.sequence AS sequence, 1 AS source_order,
                character_management_changes.action_id AS action_id,
                character_management_changes.ordinal AS ordinal,
                character_management_changes.entity_type AS entity_type,
@@ -7816,9 +8126,10 @@ export class LocalStoryStore {
         JOIN turns ON turns.id = character_management_changes.reference_turn_id
         WHERE character_management_changes.session_id = ?
           AND character_management_changes.branch_id = ?
-          AND turns.sequence <= ?
+          AND (turns.branch_id <> ? OR (turns.branch_id = ? AND turns.sequence <= ?))
         UNION ALL
-        SELECT turns.sequence AS sequence, 1 AS source_order,
+        SELECT CASE WHEN turns.branch_id = ? THEN 1 ELSE 0 END AS own_order,
+               turns.sequence AS sequence, 1 AS source_order,
                location_management_changes.action_id AS action_id,
                location_management_changes.ordinal AS ordinal,
                location_management_changes.entity_type AS entity_type,
@@ -7832,9 +8143,10 @@ export class LocalStoryStore {
         JOIN turns ON turns.id = location_management_changes.reference_turn_id
         WHERE location_management_changes.session_id = ?
           AND location_management_changes.branch_id = ?
-          AND turns.sequence <= ?
+          AND (turns.branch_id <> ? OR (turns.branch_id = ? AND turns.sequence <= ?))
         UNION ALL
-        SELECT turns.sequence AS sequence, 1 AS source_order,
+        SELECT CASE WHEN turns.branch_id = ? THEN 1 ELSE 0 END AS own_order,
+               turns.sequence AS sequence, 1 AS source_order,
                story_module_management_changes.action_id AS action_id,
                story_module_management_changes.ordinal AS ordinal,
                story_module_management_changes.entity_type AS entity_type,
@@ -7848,9 +8160,10 @@ export class LocalStoryStore {
         JOIN turns ON turns.id = story_module_management_changes.reference_turn_id
         WHERE story_module_management_changes.session_id = ?
           AND story_module_management_changes.branch_id = ?
-          AND turns.sequence <= ?
+          AND (turns.branch_id <> ? OR (turns.branch_id = ? AND turns.sequence <= ?))
         UNION ALL
-        SELECT turns.sequence AS sequence, 1 AS source_order,
+        SELECT CASE WHEN turns.branch_id = ? THEN 1 ELSE 0 END AS own_order,
+               turns.sequence AS sequence, 1 AS source_order,
                world_book_management_changes.action_id AS action_id,
                world_book_management_changes.ordinal AS ordinal,
                world_book_management_changes.entity_type AS entity_type,
@@ -7864,9 +8177,10 @@ export class LocalStoryStore {
         JOIN turns ON turns.id = world_book_management_changes.reference_turn_id
         WHERE world_book_management_changes.session_id = ?
           AND world_book_management_changes.branch_id = ?
-          AND turns.sequence <= ?
+          AND (turns.branch_id <> ? OR (turns.branch_id = ? AND turns.sequence <= ?))
         UNION ALL
-        SELECT turns.sequence AS sequence, 2 AS source_order,
+        SELECT CASE WHEN turns.branch_id = ? THEN 1 ELSE 0 END AS own_order,
+               turns.sequence AS sequence, 2 AS source_order,
                state_control_changes.action_id AS action_id,
                state_control_changes.ordinal AS ordinal,
                state_control_changes.entity_type AS entity_type,
@@ -7880,28 +8194,46 @@ export class LocalStoryStore {
         JOIN turns ON turns.id = state_control_changes.reference_turn_id
         WHERE state_control_changes.session_id = ?
           AND state_control_changes.branch_id = ?
-          AND turns.sequence <= ?
-        ORDER BY sequence, source_order, created_at, action_id, ordinal
+          AND (turns.branch_id <> ? OR (turns.branch_id = ? AND turns.sequence <= ?))
+        ORDER BY own_order, sequence, source_order, created_at, action_id, ordinal
       `)
       .all(
+        input.branchId,
         input.sessionId,
         input.branchId,
-        input.sequence,
+        input.branchId,
+        input.branchId,
+        ownLimit,
+        input.branchId,
         input.sessionId,
         input.branchId,
-        input.sequence,
+        input.branchId,
+        input.branchId,
+        ownLimit,
+        input.branchId,
         input.sessionId,
         input.branchId,
-        input.sequence,
+        input.branchId,
+        input.branchId,
+        ownLimit,
+        input.branchId,
         input.sessionId,
         input.branchId,
-        input.sequence,
+        input.branchId,
+        input.branchId,
+        ownLimit,
+        input.branchId,
         input.sessionId,
         input.branchId,
-        input.sequence,
+        input.branchId,
+        input.branchId,
+        ownLimit,
+        input.branchId,
         input.sessionId,
         input.branchId,
-        input.sequence,
+        input.branchId,
+        input.branchId,
+        ownLimit,
       ) as unknown as ReplayMutationRow[];
     for (const row of rows) {
       const key = `${row.entity_type}:${row.entity_id}`;
