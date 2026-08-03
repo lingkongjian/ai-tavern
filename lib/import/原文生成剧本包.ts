@@ -106,6 +106,7 @@ interface BlueprintStoryModule {
   completionCriteria: string[];
   activationConditions: string[];
   continuityNotes: string;
+  deadlineDay: number | null;
 }
 
 interface BlueprintInitialRelationship {
@@ -117,6 +118,13 @@ interface BlueprintInitialRelationship {
   hostility: number;
   respect: number;
   summary: string;
+}
+
+interface BlueprintLocation {
+  name: string;
+  description: string;
+  characters: string[];
+  important: boolean;
 }
 
 interface SourceBundleBlueprint {
@@ -134,6 +142,7 @@ interface SourceBundleBlueprint {
   initialStoryDirection: string;
   storyModules: BlueprintStoryModule[];
   initialRelationships: BlueprintInitialRelationship[];
+  locations: BlueprintLocation[];
 }
 
 export interface RepresentativeSource {
@@ -586,6 +595,20 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
             issues,
           ),
           continuityNotes: optionalText(item, "continuityNotes", 2_000),
+          deadlineDay: (() => {
+            const raw = item.deadlineDay;
+            if (raw === undefined || raw === null) return null;
+            if (
+              typeof raw !== "number" ||
+              !Number.isInteger(raw) ||
+              raw < 1 ||
+              raw > 10_000
+            ) {
+              issues.push(`storyModules[${index}].deadlineDay 必须是 1 到 10000 之间的整数。`);
+              return null;
+            }
+            return raw;
+          })(),
         },
       ];
     });
@@ -659,6 +682,7 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
     ),
     storyModules,
     initialRelationships: [],
+    locations: [],
   };
   const names = [
     result.player.name,
@@ -723,6 +747,66 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
           respect: dimension("respect"),
           summary: optionalText(item, "summary", 2_000),
         });
+      });
+    }
+  }
+
+  const rawLocations = value.locations;
+  if (rawLocations !== undefined) {
+    if (!Array.isArray(rawLocations)) {
+      issues.push("locations 必须是数组。");
+    } else {
+      const locationNames = new Set<string>();
+      rawLocations.slice(0, 40).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`locations[${index}] 必须是 JSON 对象。`);
+          return;
+        }
+        const name = requiredText(
+          item,
+          "name",
+          `locations[${index}].name`,
+          80,
+          issues,
+        );
+        const description = requiredText(
+          item,
+          "description",
+          `locations[${index}].description`,
+          4_000,
+          issues,
+        );
+        const normalizedName = name.toLocaleLowerCase("zh-CN");
+        if (name && locationNames.has(normalizedName)) {
+          issues.push(`locations[${index}] 的地点“${name}”重复。`);
+        }
+        if (name) locationNames.add(normalizedName);
+        const characters = textList(
+          item.characters ?? [],
+          `locations[${index}].characters`,
+          30,
+          80,
+          issues,
+        );
+        for (const characterName of characters) {
+          if (!knownNames.has(characterName.toLocaleLowerCase("zh-CN"))) {
+            issues.push(
+              `locations[${index}] 引用了不存在的角色“${characterName}”。`,
+            );
+          }
+        }
+        const important = item.important;
+        if (important !== undefined && typeof important !== "boolean") {
+          issues.push(`locations[${index}].important 必须是布尔值。`);
+        }
+        if (name && description) {
+          result.locations.push({
+            name,
+            description,
+            characters,
+            important: important === true,
+          });
+        }
       });
     }
   }
@@ -849,6 +933,9 @@ function buildBundleDocument(
       prerequisiteModuleIds: previousModuleId ? [previousModuleId] : [],
       continuityNotes: storyModule.continuityNotes,
       autoContinue: true,
+      ...(storyModule.deadlineDay !== null
+        ? { deadlineDay: storyModule.deadlineDay }
+        : {}),
     };
   });
   const document: JsonObject = {
@@ -938,6 +1025,18 @@ function buildBundleDocument(
             ),
           }
         : {}),
+      ...(blueprint.locations.length > 0
+        ? {
+            locations: blueprint.locations.map((location) => ({
+              name: location.name,
+              description: location.description,
+              ...(location.characters.length > 0
+                ? { characters: location.characters }
+                : {}),
+              ...(location.important ? { important: true } : {}),
+            })),
+          }
+        : {}),
     },
   };
   try {
@@ -977,8 +1076,9 @@ const blueprintShape = `{
   "mainCharacter": { "name": "", "description": "", "personality": "", "firstMessage": "", "dialogueExamples": "" },
   "additionalCharacters": [{ "name": "", "description": "", "personality": "", "firstMessage": "", "dialogueExamples": "", "presentAtOpening": false }],
   "worldBookEntries": [{ "title": "", "keys": [""], "content": "", "constant": false }],
-  "storyModules": [{ "title": "", "objective": "", "completionCriteria": [""], "activationConditions": [""], "continuityNotes": "" }],
+  "storyModules": [{ "title": "", "objective": "", "completionCriteria": [""], "activationConditions": [""], "continuityNotes": "", "deadlineDay": 1 }],
   "initialRelationships": [{ "sourceName": "", "targetName": "", "trust": 0, "affinity": 0, "fear": 0, "hostility": 0, "respect": 0, "summary": "" }],
+  "locations": [{ "name": "", "description": "", "characters": [""], "important": false }],
   "opening": { "sourceChapterIndex": 1, "locationName": "", "scene": "", "initialStoryDirection": "" }
 }`;
 
@@ -1017,8 +1117,9 @@ player.name 和 mainCharacter.name 必须分别与以上姓名完全一致。ope
 角色 description 写身份、经历、能力、关系与知识边界；personality 写价值观、欲望、矛盾、行为习惯、说话风格和禁忌。对话示例必须贴近原文，不要写泛化的“温柔、聪明”。
 additionalCharacters 只保留影响开篇及主要任务链的重要人物，最多 12 名；只有确实出现在开场现场的人才设置 presentAtOpening=true。
 worldBookEntries 提取 8 至 30 条稳定世界事实。只有每轮都必须知道的核心法则使用 constant=true；其他条目提供精确 keys。不要把尚未发生的剧情结局写成世界事实。
-storyModules 按原作自然阶段排序，生成 3 至 10 个可接续但不会强迫玩家照原作行动的任务。每项完成条件必须是剧情中可观察的事实；不要输出 ID 或前置 ID，程序会建立稳定线性任务链。
+storyModules 按原作自然阶段排序，生成 3 至 10 个可接续但不会强迫玩家照原作行动的任务。每项完成条件必须是剧情中可观察的事实；不要输出 ID 或前置 ID，程序会建立稳定线性任务链。deadlineDay 表示该任务在游戏内第几天前必须完成（如中毒三日内解毒、宴会前送回聘礼），超过后剧情会强制显现期限后果；没有明确时限的任务填 0。
 initialRelationships 描述开局时已确立的角色关系基线（最多 30 条）：sourceName 与 targetName 必须来自 characters 中的真实姓名，数值范围 -100 到 100（信任、好感、恐惧、敌意、敬意），0 表示中性未建立；summary 用一两句话概括关系性质（如“青梅竹马”“多年仇敌”“名义上的未婚夫妻”）。原作中确有的关系就按原作设定，不要把所有关系都填 0。
+locations 提取故事中可能出现或将被提及的全部地点（最多 40 个），name 用故事中的稳定称呼；description 概括该地点在故事中的地位与功能；characters 列出常驻或与该地点密切相关的主要角色姓名（可选）；important=true 表示对主线至关重要、需要稳定进入上下文的地点。不要遗漏后续任务可能涉及的地点。
 opening.sourceChapterIndex 必须填写实际作为开场依据的原文章节或场景序号。opening.scene 必须是可以直接给玩家阅读的开场正文：基于选定的有效场景，明确时间、地点、在场人物和眼前冲突，在等待玩家回应的位置结束。不得写“请扮演”“根据设定”“故事开始”等提示词。
 原作中明确成年的角色之间自愿的亲密关系可以作为人物与关系依据，不因内容亲密而自动删去；不得把身份不明、拒绝或非自愿内容改写成玩家已经同意。
 ${confirmedSelection}

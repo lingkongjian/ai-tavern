@@ -510,6 +510,27 @@ function createStateMutations(input: {
       },
     );
 
+    const timeAdvance = transition.timeAdvance ?? "one_day";
+    const dayDelta =
+      timeAdvance === "several_days" ? 3 : timeAdvance === "one_day" ? 1 : 0;
+    const currentDay =
+      typeof sessionState?.state.gameTimeDay === "number"
+        ? sessionState.state.gameTimeDay
+        : 1;
+    if (dayDelta > 0) {
+      mutations.push({
+        entityType: "session_state",
+        entityId: "core",
+        operation: "merge",
+        value: {
+          gameTimeDay: currentDay + dayDelta,
+          lastTimeAdvance: timeAdvance,
+        },
+        reason: timeAdvance === "several_days" ? "剧情推进了数日" : "剧情推进了一天",
+        evidence: transition.evidence,
+      });
+    }
+
     for (const card of activeCharacterCards) {
       const currentState = currentCharacterStates.get(card.entityId);
       const wasPresent = currentState?.state.present !== false;
@@ -537,6 +558,38 @@ function createStateMutations(input: {
         reason: isPresent
           ? `${resolvedLocationName}的剧情使角色进入当前场景`
           : `${resolvedLocationName}的剧情使角色离开当前场景`,
+        evidence: transition.evidence,
+      });
+    }
+
+    for (const update of transition.offstageUpdates ?? []) {
+      const knownOffstageLocation = adventure.branchState.states.find(
+        (state) =>
+          state.entityType === "location" &&
+          state.entityId === update.locationId,
+      );
+      if (!knownOffstageLocation) {
+        mutations.push({
+          entityType: "location",
+          entityId: update.locationId,
+          operation: "replace",
+          value: {
+            name: update.locationName ?? update.locationId,
+            description:
+              update.locationDescription ?? "尚未进入的离场地点。",
+            defaultCharacterIds: [],
+            source: "story",
+          },
+          reason: update.reason || "离场移动创建了新地点",
+          evidence: transition.evidence,
+        });
+      }
+      mutations.push({
+        entityType: "character_state",
+        entityId: update.characterId,
+        operation: "merge",
+        value: { locationId: update.locationId },
+        reason: update.reason || "角色离场移动",
         evidence: transition.evidence,
       });
     }

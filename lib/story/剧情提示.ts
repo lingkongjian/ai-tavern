@@ -216,6 +216,10 @@ export function createStoryGenerationPrompt(input: {
         continuityNotes: readText(state.state.continuityNotes),
         autoContinue: state.state.autoContinue !== false,
         status: readText(state.state.status),
+        deadlineDay:
+          typeof state.state.deadlineDay === "number"
+            ? state.state.deadlineDay
+            : null,
         order:
           typeof state.state.order === "number" ? state.state.order : 0,
         readyAfterCurrentCompletion:
@@ -228,6 +232,23 @@ export function createStoryGenerationPrompt(input: {
       };
     })
     .sort((left, right) => left.order - right.order);
+  const gameTimeDay =
+    typeof sessionState?.state.gameTimeDay === "number"
+      ? sessionState.state.gameTimeDay
+      : 1;
+  const expiredDeadlines = storyModules
+    .filter(
+      (module) =>
+        module.status === "active" &&
+        module.deadlineDay !== null &&
+        module.deadlineDay <= gameTimeDay,
+    )
+    .map((module) => ({
+      moduleId: module.id,
+      title: module.title,
+      deadlineDay: module.deadlineDay,
+      objective: module.objective.slice(0, 300),
+    }));
   const storyModulesForGeneration = storyModules
     .filter(
       (module) =>
@@ -357,7 +378,8 @@ ${
 10. 只有剧情已实际完成导演意图且有证据时，storyDirectionEvaluation 才能为 completed；没有有效剧情走向时必须为 null。
 11. 角色卡演化 path 只能使用：identity.titles、identity.affiliations、goals.longTerm、beliefs、fears、vows、permanentConditions、abilities、revealedSecrets、relationshipMilestones。
 12. character_state 中 present=false 的角色当前不在场，不能直接说话或行动；如果本轮剧情明确让其重新登场，必须写入真实事件，并在 sceneTransition.presentCharacterIds 中加入该角色。可用角色 ID 列表之外的停用角色不能重新登场或被扮演。
-13. 每轮必须返回 sceneTransition，准确描述本轮结束时的当前位置和完整在场阵容。人物离场、加入或随地点移动产生的阵容变化只在 sceneTransition 中表达，不能把 present 或 locationId 写入 characterStateChanges。进入已有地点时沿用其 ID；进入尚未记录的新地点时创建稳定的新 ID、名称和描述。
+13. 每轮必须返回 sceneTransition，准确描述本轮结束时的当前位置和完整在场阵容。人物离场、加入或随地点移动产生的阵容变化只在 sceneTransition 中表达，不能把 present 或 locationId 写入 characterStateChanges。进入已有地点时沿用其 ID；进入尚未记录的新地点时创建稳定的新 ID、名称和描述。不在场角色的所在地点变化（如某角色返回宅邸、前往城外）通过 sceneTransition.offstageUpdates 表达：目标角色必须不在 presentCharacterIds 中，进入已知地点沿用其 ID，进入新地点必须提供地点名称。
+14. 游戏内时间从第 1 日开始。每轮默认推进一天（sceneTransition.timeAdvance 缺省按 one_day 处理）；时间基本不变时用 moment 或 hours；跨越明显时日时用 several_days（约数日）。session 的 gameTimeDay 会随回合推进，中毒、限期、季节等时间敏感状态必须依据它。
 14. longTermMemory 和 chapterSummaries 是从已发生剧情提炼并按本轮输入召回的长期记忆。它们可补充 recentTurns 之外的旧事实，但不能覆盖更晚回合、当前状态或玩家本轮输入；不得臆造未提供的旧事。
 15. storyModules 是剧本包预埋的任务链，对 NPC 不可见。当前目标未完成时，recommendedModuleId 和 suggestedNextDirection 必须均为 null。
 16. 当前目标完成后，先判定已发生剧情与预埋剧本的连续性。只有 continuity=aligned 时，才能从 readyAfterCurrentCompletion=true 的任务中选择一个 recommendedModuleId；必须结合 activationConditions 和 continuityNotes，不能只按顺序强行接续。此时 suggestedNextDirection 必须严格为 null，即使你还能想到备选目标也不得同时填写。
@@ -365,6 +387,7 @@ ${
 18. 玩家手动输入的剧情走向优先级最高。suggestedNextDirection 是对下一阶段的导演目标，不是本轮已发生事实，也不能向角色透露。
 19. 剧本一致性属于硬约束。AI 控制角色提出会显著改变主线的治疗、解封、调查、营救、交易、作战或制度方案时，必须能在已发生事实、当前剧情任务、世界书、角色资料、sourceReferences 或 upcomingScriptGuidance 中找到具体依据。若后续剧本锚点已有明确方案，优先保持其核心机制，不得自行发明替代方案；若所有资料都没有依据，角色只能提出核验、试探或调查步骤，不能把臆测包装成确定可行的完整方案。
 20. 剧情必须推进：scene 是对本轮的叙述，不得复述或改写 recentTurns 中上一回合已经展示过的场景、动作或结论。若当前输入主要是在同一情境中继续对话或行动，scene 仍应只写本轮新发生的事实和新的进展，而不是重述背景或重放上一轮的事件；与上一回合场景高度重复的续写会被后端判定为无效并要求重写。
+21. expiredDeadlines 中的任务已经超过其期限（deadlineDay 已到），这是导演级硬事实：本轮必须让期限后果在剧情中显现（中毒恶化、救援失败、约期已过、反派抢先等），并把结果写入事件、状态或世界书，不能再假装时间没有流逝。玩家仍保有回应权，但后果应真实可见。
 
 返回结构必须完整：
 {
@@ -380,7 +403,7 @@ ${
     "choices": [{"id":"choice-id","label":"简短标题","description":"具体选择","stance":"允许的立场"}]
   },
   "stateCommit": {
-    "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
+    "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"one_day（或 moment/hours/several_days）","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
     "characterStateChanges": [{"characterId":"角色ID","patch":{},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
     "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"]}],
     "characterCardChanges": [{"characterId":"角色ID","operation":"add","path":"允许路径","value":{},"reason":"原因","evidence":["事件或对话ID"],"sourceTurnId":"${turnId}"}],
@@ -414,7 +437,13 @@ worldBookChanges 按需使用以下结构之一：
       id: module.id,
       title: module.title,
       status: module.status,
+      ...(module.deadlineDay !== null
+        ? { deadlineDay: module.deadlineDay }
+        : {}),
     })),
+    ...(expiredDeadlines.length > 0
+      ? { expiredDeadlines, currentGameTimeDay: gameTimeDay }
+      : {}),
     activeStates,
     recentTurns: compactRecentTurns(
       adventure,

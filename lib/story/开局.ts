@@ -21,6 +21,7 @@ const limits = {
   scene: 8_000,
   direction: 1_000,
   moduleNote: 2_000,
+  locationDescription: 4_000,
 } as const;
 
 export class AdventureInputError extends Error {
@@ -260,6 +261,24 @@ function readStoryModules(value: unknown, issues: string[]) {
         issues,
       ),
       autoContinue,
+      ...(item.deadlineDay !== undefined
+        ? {
+            deadlineDay: (() => {
+              if (
+                typeof item.deadlineDay !== "number" ||
+                !Number.isInteger(item.deadlineDay) ||
+                item.deadlineDay < 1 ||
+                item.deadlineDay > 10_000
+              ) {
+                issues.push(
+                  `剧情任务 ${index + 1} 的 deadlineDay 必须是 1 到 10000 之间的整数。`,
+                );
+                return undefined;
+              }
+              return item.deadlineDay;
+            })(),
+          }
+        : {}),
     };
     return [storyModule];
   });
@@ -596,11 +615,78 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
     }
   }
 
+  const locations: StartAdventureInput["locations"] = [];
+  if (value.locations !== undefined) {
+    if (!Array.isArray(value.locations)) {
+      issues.push("地点清单必须是数组。");
+    } else {
+      if (value.locations.length > 60) {
+        issues.push("地点清单最多 60 个。");
+      }
+      const locationNames = new Set<string>();
+      value.locations.slice(0, 60).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`地点 ${index + 1} 格式无效。`);
+          return;
+        }
+        const name = readRequiredText(
+          item,
+          "name",
+          `地点 ${index + 1} 名称`,
+          limits.short,
+          issues,
+        );
+        const description = readRequiredText(
+          item,
+          "description",
+          `地点 ${index + 1} 描述`,
+          limits.locationDescription,
+          issues,
+        );
+        const normalizedName = name.toLocaleLowerCase("zh-CN");
+        if (name && locationNames.has(normalizedName)) {
+          issues.push(`地点“${name}”重复。`);
+        }
+        if (name) locationNames.add(normalizedName);
+        const characters = Array.isArray(item.characters)
+          ? item.characters
+              .slice(0, 30)
+              .map((character) =>
+                typeof character === "string"
+                  ? character.trim().slice(0, limits.short)
+                  : (issues.push(`地点 ${index + 1} 的 characters 项必须是文本。`), ""),
+              )
+              .filter(Boolean)
+          : item.characters !== undefined
+            ? (issues.push(`地点 ${index + 1} 的 characters 必须是数组。`), [])
+            : [];
+        for (const characterName of characters) {
+          if (!knownCharacterNames.has(characterName.toLocaleLowerCase("zh-CN"))) {
+            issues.push(`地点“${name}”引用了不存在的角色“${characterName}”。`);
+          }
+        }
+        const important = item.important;
+        if (important !== undefined && typeof important !== "boolean") {
+          issues.push(`地点 ${index + 1} 的 important 必须是布尔值。`);
+        }
+        if (name && description) {
+          locations.push({
+            name,
+            description,
+            ...(characters.length > 0 ? { characters } : {}),
+            ...(typeof important === "boolean" ? { important } : {}),
+          });
+        }
+      });
+    }
+  }
+
   if (issues.length > 0) {
     throw new AdventureInputError(issues);
   }
   return {
     ...result,
     ...(initialRelationships.length > 0 ? { initialRelationships } : {}),
+    ...(locations.length > 0 ? { locations } : {}),
   };
 }

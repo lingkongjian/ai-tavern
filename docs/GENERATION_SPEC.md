@@ -249,9 +249,14 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 - `locationId`：已有地点必须沿用原 ID；剧情发现的新地点使用稳定的新 ID。
 - `locationName` 与 `locationDescription`：新地点必须提供，已有地点的信息以本地资料为准。
 - `presentCharacterIds`：回合结束时仍在当前场景内的全部启用角色，必须包含玩家角色。
+- `offstageUpdates`（可选）：不在场角色的所在地点变化（返回宅邸、前往城外等）。目标角色不得同时出现在 `presentCharacterIds`；进入已有地点沿用其 ID，进入新地点必须提供 `locationName`（可带 `locationDescription`）。
 - `reason` 与 `evidence`：必须能指向本轮真实发生的事件或对话。
 
 后端根据上一轮状态和 `presentCharacterIds` 的差集自动生成人物加入、离场与位置变化。普通 `characterStateChanges.patch` 禁止包含 `present` 或 `locationId`，避免同一轮出现冲突的出场结论。玩家手工移动地点时使用地点的默认登场阵容；剧情生成可以根据实际事件覆盖本轮最终阵容，但不会改写地点的玩家设定。
+
+## 9.1 游戏内时间
+
+`session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。每回合默认推进一天；`sceneTransition.timeAdvance` 可以覆盖：`moment` 与 `hours` 不推进天数，`one_day` 推进一天（默认），`several_days` 推进约数日。任务 `deadlineDay` 到期后，`expiredDeadlines` 作为导演级硬事实注入上下文，模型必须让期限后果在本轮显现。
 
 ## 10. 角色当前状态变更
 
@@ -355,6 +360,8 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 | 对后续故事的玩家导演目标 | 剧情走向状态 | 希望剧情转向调查失踪案 |
 
 剧本包可以通过 `adventure.initialRelationships` 声明开局关系基线（按角色姓名引用，各维度 -100 到 100），开局时建立对应关系状态；未声明的角色关系保持中性（0）并标记“关系尚未建立”。
+
+剧本包可以通过 `adventure.locations` 预注册剧本中可能出现的地点（名称、描述、常驻角色与重要性标记），开局即建立地点实体；未预注册的地点仍可在剧情中动态建立。`adventure.storyModules` 中的任务可以声明 `deadlineDay`（游戏内期限），到期后每回合注入期限已至的硬事实，模型必须让后果在剧情中显现。
 
 一次事件可以产生多种变化。例如“角色在政变中成为新国王”应同时更新角色当前状态、角色演化层和世界书。
 

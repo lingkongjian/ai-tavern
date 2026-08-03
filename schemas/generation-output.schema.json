@@ -243,6 +243,38 @@
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
+        },
+        "offstageUpdates": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/offstageUpdate"
+          }
+        },
+        "timeAdvance": {
+          "enum": ["moment", "hours", "one_day", "several_days"]
+        }
+      }
+    },
+    "offstageUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["characterId", "locationId"],
+      "properties": {
+        "characterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "locationId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "locationName": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "locationDescription": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
         }
       }
     },

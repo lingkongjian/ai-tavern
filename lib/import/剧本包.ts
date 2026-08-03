@@ -244,6 +244,9 @@ export function parseAdventureBundleDocument(
       source.initialRelationships.length > 0
         ? { initialRelationships: source.initialRelationships }
         : {}),
+      ...(Array.isArray(source.locations) && source.locations.length > 0
+        ? { locations: source.locations }
+        : {}),
     });
   } catch (error) {
     if (error instanceof AdventureInputError) {

@@ -377,6 +377,7 @@ export interface AdventureStoryModuleInput {
   prerequisiteModuleIds?: string[];
   continuityNotes?: string;
   autoContinue?: boolean;
+  deadlineDay?: number;
 }
 
 export type CharacterManagementInput =
@@ -498,6 +499,13 @@ export interface AdventureRelationshipInput {
   summary?: string;
 }
 
+export interface AdventureDeclaredLocation {
+  name: string;
+  description: string;
+  characters?: string[];
+  important?: boolean;
+}
+
 export interface StartAdventureInput {
   campaignName: string;
   campaignDescription?: string;
@@ -520,6 +528,7 @@ export interface StartAdventureInput {
   storyModules?: AdventureStoryModuleInput[];
   initialStoryModuleId?: string;
   initialRelationships?: AdventureRelationshipInput[];
+  locations?: AdventureDeclaredLocation[];
 }
 
 export interface SourceDocumentUpdateInput {
@@ -1605,6 +1614,9 @@ export class LocalStoryStore {
       ),
       continuityNotes: storyModule.continuityNotes?.trim() ?? "",
       autoContinue: storyModule.autoContinue !== false,
+      ...(storyModule.deadlineDay !== undefined
+        ? { deadlineDay: storyModule.deadlineDay }
+        : {}),
       order,
     }));
     const openingLocationName =
@@ -1708,6 +1720,7 @@ export class LocalStoryStore {
           currentScene: input.openingScene.trim(),
           currentLocationId: openingLocationId,
           currentLocationName: openingLocationName,
+          gameTimeDay: 1,
           phase: "opening",
           storyMode: storyModules.length > 0 ? "script" : "free",
           storyModuleCount: storyModules.length,
@@ -1901,6 +1914,34 @@ export class LocalStoryStore {
       });
     }
 
+    const openingLocationNormalizedName = openingLocationName.toLocaleLowerCase("zh-CN");
+    for (const location of input.locations ?? []) {
+      if (
+        location.name.toLocaleLowerCase("zh-CN") === openingLocationNormalizedName
+      ) {
+        continue;
+      }
+      stateMutations.push({
+        entityType: "location",
+        entityId: randomUUID(),
+        operation: "replace",
+        value: {
+          name: location.name.trim(),
+          description: location.description.trim(),
+          defaultCharacterIds: (location.characters ?? [])
+            .map((characterName) =>
+              characterIdByName.get(characterName.trim()),
+            )
+            .filter((id): id is string => typeof id === "string"),
+          important: location.important === true,
+          source: "setup",
+          lastVisitedTurnId: openingTurnId,
+        },
+        reason: "按剧本地点清单预注册地点",
+        evidence: [openingEventId],
+      });
+    }
+
     for (const character of additionalCharacters) {
       stateMutations.push(
         {
@@ -1985,6 +2026,9 @@ export class LocalStoryStore {
           autoContinue: storyModule.autoContinue,
           order: storyModule.order,
           status: startsActive ? "active" : "queued",
+          ...(storyModule.deadlineDay !== undefined
+            ? { deadlineDay: storyModule.deadlineDay }
+            : {}),
           ...(startsActive ? { activatedAtTurnId: openingTurnId } : {}),
         },
         reason: startsActive

@@ -255,7 +255,7 @@ test("generates, validates and atomically commits a DeepSeek story turn", async 
     );
     assert.equal(
       result.adventure.branchState.recentTurns.at(-1).stateChanges.length,
-      9,
+      10,
     );
     assert.equal(
       result.adventure.branchState.recentTurns.at(-1).generatedOutput.turn.scene,

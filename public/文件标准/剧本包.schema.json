@@ -82,12 +82,37 @@
           "maxItems": 100,
           "description": "开局角色之间的初始关系基线（按角色姓名引用）",
           "items": { "$ref": "#/$defs/initialRelationship" }
+        },
+        "locations": {
+          "type": "array",
+          "maxItems": 60,
+          "description": "剧本中可能出现的地点清单（按姓名预注册，未进入前即被声明）",
+          "items": { "$ref": "#/$defs/storyLocation" }
         }
       },
       "additionalProperties": false
     }
   },
   "$defs": {
+    "storyLocation": {
+      "type": "object",
+      "required": ["name", "description"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "characters": {
+          "type": "array",
+          "maxItems": 30,
+          "description": "默认在该地点活动的角色姓名",
+          "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+        },
+        "important": {
+          "type": "boolean",
+          "description": "重要地点：更高优先级进入上下文"
+        }
+      },
+      "additionalProperties": false
+    },
     "initialRelationship": {
       "type": "object",
       "required": ["sourceCharacterName", "targetCharacterName"],
@@ -139,7 +164,13 @@
           "items": { "type": "string", "minLength": 1, "maxLength": 120 }
         },
         "continuityNotes": { "type": "string", "maxLength": 2000 },
-        "autoContinue": { "type": "boolean", "default": true }
+        "autoContinue": { "type": "boolean", "default": true },
+        "deadlineDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "任务期限（游戏内第几天）；超过后每回合注入期限已至的硬事实"
+        }
       },
       "additionalProperties": false
     },

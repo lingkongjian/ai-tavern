@@ -938,6 +938,8 @@ export function GameInterface({
   const currentLocation = locations.find(
     (location) => location.id === currentLocationId,
   );
+  const gameTimeDay =
+    typeof sessionState?.gameTimeDay === "number" ? sessionState.gameTimeDay : 1;
   function auditTargetLabel(
     change: Pick<StateAuditChange, "entityType" | "entityId">,
   ) {
@@ -2277,7 +2279,9 @@ export function GameInterface({
           主菜单
         </Link>
         <div className="game-title">
-          <span>{text(sessionState?.worldName, "本地世界")}</span>
+          <span>
+            {text(sessionState?.worldName, "本地世界")} · 游戏内第 {gameTimeDay} 日
+          </span>
           <h1>{adventure.campaign.name}</h1>
         </div>
         <div className="header-branch-actions">

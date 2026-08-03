@@ -150,7 +150,8 @@
         ],
         "prerequisiteModuleIds": [],
         "continuityNotes": "玩家仍在调查失踪者或纸城档案改写现象。",
-        "autoContinue": true
+        "autoContinue": true,
+        "deadlineDay": 5
       },
       {
         "id": "question-outside-witness",
@@ -219,6 +220,24 @@
           "hostility": 0
         },
         "summary": "公务往来，林雾觉得巡夜人知道得太多。"
+      }
+    ],
+    "locations": [
+      {
+        "name": "纸城城门",
+        "description": "纸城唯一的正门，巡夜人负责盘查夜间出入。",
+        "characters": [
+          "巡夜人"
+        ],
+        "important": false
+      },
+      {
+        "name": "林雾的灯楼",
+        "description": "守灯人林雾常年驻守的灯塔，藏有旧档案。",
+        "characters": [
+          "林雾"
+        ],
+        "important": true
       }
     ]
   }

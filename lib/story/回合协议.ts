@@ -60,6 +60,8 @@ export interface GeneratedCharacterStateChange {
   evidence: string[];
 }
 
+export type SceneTimeAdvance = "moment" | "hours" | "one_day" | "several_days";
+
 export interface GeneratedSceneTransition {
   locationId: string;
   locationName: string;
@@ -67,6 +69,16 @@ export interface GeneratedSceneTransition {
   presentCharacterIds: string[];
   reason: string;
   evidence: string[];
+  offstageUpdates?: GeneratedOffstageUpdate[];
+  timeAdvance?: SceneTimeAdvance;
+}
+
+export interface GeneratedOffstageUpdate {
+  characterId: string;
+  locationId: string;
+  locationName?: string;
+  locationDescription?: string;
+  reason: string;
 }
 
 export interface GeneratedRelationshipChange {
@@ -646,6 +658,77 @@ export function validateGeneratedTurn(
     ) {
       issues.push("场景变化必须引用本轮真实发生的事件或对话。");
     }
+    const offstageUpdates: GeneratedOffstageUpdate[] = [];
+    let timeAdvance: SceneTimeAdvance | undefined;
+    if (transition.timeAdvance !== undefined) {
+      if (
+        transition.timeAdvance === "moment" ||
+        transition.timeAdvance === "hours" ||
+        transition.timeAdvance === "one_day" ||
+        transition.timeAdvance === "several_days"
+      ) {
+        timeAdvance = transition.timeAdvance;
+      } else {
+        issues.push(
+          "sceneTransition.timeAdvance 必须是 moment、hours、one_day 或 several_days。",
+        );
+      }
+    }    if (transition.offstageUpdates !== undefined) {
+      if (!Array.isArray(transition.offstageUpdates)) {
+        issues.push("sceneTransition.offstageUpdates 必须是数组。");
+      } else {
+        transition.offstageUpdates.slice(0, 20).forEach((item, index) => {
+          const update = requiredObject(
+            item,
+            `sceneTransition.offstageUpdates[${index}]`,
+            issues,
+          );
+          const characterId = requiredText(
+            update.characterId,
+            `sceneTransition.offstageUpdates[${index}].characterId`,
+            issues,
+            160,
+          );
+          if (characterId && !characterIds.has(characterId)) {
+            issues.push(
+              `离场移动引用了不存在或停用的角色 ${characterId}。`,
+            );
+          }
+          if (characterId && presentCharacterIds.includes(characterId)) {
+            issues.push(
+              `离场移动的目标角色 ${characterId} 不能同时出现在本回合在场阵容中。`,
+            );
+          }
+          const locationId = requiredText(
+            update.locationId,
+            `sceneTransition.offstageUpdates[${index}].locationId`,
+            issues,
+            160,
+          );
+          if (locationId && inactiveLocationIds.has(locationId)) {
+            issues.push(`离场移动不能进入已经停用的地点 ${locationId}。`);
+          }
+          const locationName = trimText(update.locationName, 120);
+          const locationDescription = trimText(
+            update.locationDescription,
+            2_000,
+          );
+          if (locationId && !activeLocationIds.has(locationId) && !locationName) {
+            issues.push("离场移动进入新地点时必须提供地点名称。");
+          }
+          const reason = trimText(update.reason, 1_000);
+          if (characterId && locationId) {
+            offstageUpdates.push({
+              characterId,
+              locationId,
+              ...(locationName ? { locationName } : {}),
+              ...(locationDescription ? { locationDescription } : {}),
+              reason,
+            });
+          }
+        });
+      }
+    }
     sceneTransition = {
       locationId,
       locationName,
@@ -658,6 +741,8 @@ export function validateGeneratedTurn(
         1_000,
       ),
       evidence: transitionEvidence,
+      ...(offstageUpdates.length > 0 ? { offstageUpdates } : {}),
+      ...(timeAdvance !== undefined ? { timeAdvance } : {}),
     };
   }
   const characterStateChanges = requiredArray(
