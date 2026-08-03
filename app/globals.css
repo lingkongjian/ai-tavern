@@ -7142,28 +7142,6 @@ a {
     width: 100%;
   }
 
-.location-present-characters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  margin-top: 8px;
-}
-
-.location-present-characters > span:not(.location-present-label) {
-  padding: 3px 9px;
-  border: 1px solid rgb(111 148 132 / 30%);
-  border-radius: 999px;
-  color: #b7cdbb;
-  background: rgb(21 42 34 / 44%);
-  font-size: 0.58rem;
-}
-
-.location-present-label {
-  color: #6f8f80;
-  font-size: 0.56rem;
-}
-
 .character-manager-backdrop {
     padding: 0;
   }

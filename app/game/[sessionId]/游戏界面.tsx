@@ -5618,14 +5618,9 @@ export function GameInterface({
                             charactersByLocation.get(location.id) ?? [];
                           if (presentHere.length === 0) return null;
                           return (
-                            <div className="location-present-characters">
-                              <span className="location-present-label">
-                                当前在此
-                              </span>
-                              {presentHere.map((name) => (
-                                <span key={name}>{name}</span>
-                              ))}
-                            </div>
+                            <small className="location-roster-summary">
+                              当前在此：{presentHere.join("、")}
+                            </small>
                           );
                         })()}
                       </div>
