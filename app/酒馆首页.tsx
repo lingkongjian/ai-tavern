@@ -1152,6 +1152,28 @@ export function TavernHome() {
     setSelectedSourceOpeningId("");
   }
 
+  function removeBundleSection(
+    kind: "modules" | "relationships" | "locations",
+  ) {
+    const nextModules = kind === "modules" ? [] : storyModules;
+    const nextRelationships =
+      kind === "relationships" ? [] : bundleRelationships;
+    const nextLocations = kind === "locations" ? [] : bundleLocations;
+    setStoryModules(nextModules);
+    setInitialStoryModuleId(
+      kind === "modules" ? "" : initialStoryModuleId,
+    );
+    setBundleRelationships(nextRelationships);
+    setBundleLocations(nextLocations);
+    if (
+      nextModules.length === 0 &&
+      nextRelationships.length === 0 &&
+      nextLocations.length === 0
+    ) {
+      setBundleSourceFile("");
+    }
+  }
+
   function applyAdventureBundlePreview(
     preview: ImportedAdventureBundle,
     fileName: string,
@@ -3210,35 +3232,112 @@ export function TavernHome() {
                 placeholder="例如：让玩家逐步发现灯塔与失踪航船的联系。"
               />
             </label>
-            {storyModules.length > 0 ? (
-              <div className="imported-story-modules">
-                <div>
-                  <strong>已载入 {storyModules.length} 个剧情任务</strong>
-                  <small>
-                    开场任务：
-                    {storyModules.find(
-                      (module) => module.id === initialStoryModuleId,
-                    )?.title ?? "未指定"}
-                    。满足条件且剧情未偏离时会自动接续。
-                    {bundleRelationships.length > 0
-                      ? ` 初始关系 ${bundleRelationships.length} 条`
-                      : ""}
-                    {bundleLocations.length > 0
-                      ? `、预注册地点 ${bundleLocations.length} 处`
-                      : ""}
-                    。
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStoryModules([]);
-                    setInitialStoryModuleId("");
-                    setBundleSourceFile("");
-                  }}
-                >
-                  移除任务链
-                </button>
+            {(storyModules.length > 0 ||
+            bundleRelationships.length > 0 ||
+            bundleLocations.length > 0) ? (
+              <div className="imported-bundle-sections">
+                {storyModules.length > 0 ? (
+                  <div className="imported-story-modules">
+                    <div>
+                      <strong>已载入 {storyModules.length} 个剧情任务</strong>
+                      <small>
+                        开场任务：
+                        {storyModules.find(
+                          (module) => module.id === initialStoryModuleId,
+                        )?.title ?? "未指定"}
+                        。满足条件且剧情未偏离时会自动接续。
+                      </small>
+                      <ul className="bundle-module-list">
+                        {storyModules.map((module) => (
+                          <li key={module.id}>
+                            {module.title}
+                            {module.deadlineDay !== undefined &&
+                            module.deadlineDay > 0 ? (
+                              <em>第 {module.deadlineDay} 日前完成</em>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeBundleSection("modules")}
+                    >
+                      移除任务链
+                    </button>
+                  </div>
+                ) : null}
+
+                {bundleRelationships.length > 0 ? (
+                  <div className="imported-story-modules">
+                    <div>
+                      <strong>
+                        已载入 {bundleRelationships.length} 条初始关系
+                      </strong>
+                      <small>
+                        开局即建立双向关系记录（信任、好感、恐惧、敌意、敬意）；进入游戏后可在“人物管理 → 角色关系”查看。
+                      </small>
+                      <ul className="bundle-module-list">
+                        {bundleRelationships.slice(0, 10).map(
+                          (relationship, index) => (
+                            <li key={`${relationship.sourceCharacterName}-${relationship.targetCharacterName}`}>
+                              {relationship.sourceCharacterName} ↔{" "}
+                              {relationship.targetCharacterName}
+                              {relationship.summary ? (
+                                <small> · {relationship.summary}</small>
+                              ) : null}
+                              {index === 9 &&
+                              bundleRelationships.length > 10 ? (
+                                <em>
+                                  等 {bundleRelationships.length} 条
+                                </em>
+                              ) : null}
+                            </li>
+                          ),
+                        )}
+                      </ul>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeBundleSection("relationships")}
+                    >
+                      移除初始关系
+                    </button>
+                  </div>
+                ) : null}
+
+                {bundleLocations.length > 0 ? (
+                  <div className="imported-story-modules">
+                    <div>
+                      <strong>
+                        已载入 {bundleLocations.length} 处预注册地点
+                      </strong>
+                      <small>
+                        开局即进入地点清单，未进入前已被声明；进入游戏后可用“地图”查看地点与人物位置。
+                      </small>
+                      <ul className="bundle-module-list">
+                        {bundleLocations.map((location) => (
+                          <li key={location.name}>
+                            {location.name}
+                            {location.important ? <em>重要</em> : null}
+                            {location.characters?.length ? (
+                              <small>
+                                {" "}
+                                · {location.characters.length} 名常驻角色
+                              </small>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeBundleSection("locations")}
+                    >
+                      移除地点清单
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </fieldset>

@@ -4367,6 +4367,51 @@ a {
   font-size: 0.63rem;
 }
 
+.imported-bundle-sections {
+  display: grid;
+  gap: 10px;
+}
+
+.imported-bundle-sections .imported-story-modules {
+  align-items: flex-start;
+}
+
+.imported-bundle-sections .imported-story-modules > div {
+  min-width: 0;
+}
+
+.bundle-module-list {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bundle-module-list li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 4px 0;
+  border-top: 1px solid rgb(129 91 127 / 12%);
+  color: #7a6473;
+  font-size: 0.64rem;
+  line-height: 1.5;
+}
+
+.bundle-module-list li small {
+  margin-top: 0;
+  color: #95848e;
+}
+
+.bundle-module-list li em {
+  padding: 2px 7px;
+  border: 1px solid rgb(129 91 127 / 26%);
+  border-radius: 999px;
+  color: #845c76;
+  font-size: 0.56rem;
+  font-style: normal;
+}
+
 .direction-panel > p {
   margin-top: 18px;
   color: #a38d9f;
