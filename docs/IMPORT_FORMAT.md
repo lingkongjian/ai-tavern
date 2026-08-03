@@ -46,9 +46,15 @@
 - `activationConditions`：剧情事实需满足的启用条件；
 - `prerequisiteModuleIds`：必须先完成的任务 ID；
 - `continuityNotes`：哪些剧情分支仍可视为没有脱离原剧本；
-- `autoContinue`：是否允许在当前目标完成后自动接续，默认 `true`。
+- `autoContinue`：是否允许在当前目标完成后自动接续，默认 `true`；
+- `deadlineDay`：任务期限（游戏内第几天前完成）。到期后后续回合会注入期限已至的硬事实，剧情必须让后果显现。
 
 任务顺序不等于强制线性剧情。只有完成证据、前置任务、启用条件和剧情连续性同时支持时，系统才会接续预埋任务。如果玩家已把故事带向其他路线，系统会保留任务历史，并沿当前已发生剧情生成新目标，不会强行拉回原作。
+
+`1.1` 版剧本包还支持两个可选分区：
+
+- `initialRelationships`：开局角色之间的初始关系基线（最多 100 条）。每项使用 `sourceCharacterName` 与 `targetCharacterName`（必须与角色姓名一致），`dimensions` 提供 `trust`、`affinity`、`fear`、`hostility`、`respect`（-100 ~ 100，缺省为 0），`summary` 概括关系性质（如“青梅竹马”“名义上的未婚夫妻”）。开局物化时自动建立双向记录（A→B 与 B→A 独立演化）；声明中已显式给出反向的以声明为准。
+- `locations`：剧本中可能出现的地点清单（最多 60 个）。每项包含 `name`、`description`，可选 `characters`（默认在该地点活动的角色姓名）与 `important`（重要地点，更高优先级进入上下文）。开局即预注册为地点实体，未进入前就被声明；与开场地点同名的声明会被跳过。
 
 `referenceDocuments` 中每项包含 `name`、`fileName` 与 `content`，并可设置：
 

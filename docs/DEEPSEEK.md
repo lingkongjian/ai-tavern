@@ -46,7 +46,7 @@ OpenCode Go 的官方目录为 `https://opencode.ai/zen/go/v1/models`，官方�
 - `AI_JSON_MODE=response_format` 时发送 `response_format: { "type": "json_object" }`；若供应商不支持该字段，可改为 `prompt_only`，仅依靠系统提示要求 JSON。
 - 只有 DeepSeek 与 OpenCode Go 预设发送 `thinking: { "type": "disabled" }`（OpenCode Go 的 DeepSeek/Kimi 推理模型会先输出思维链，占满输出预算导致空回复或截断）；其他通用兼容服务不会收到供应商专属字段。
 - 默认最长等待 90 秒。
-- 不使用流式输出；完整结果校验通过后一次显示。
+- 回合生成使用流式输出：服务端以 SSE 逐帧接收模型内容，页面以进度条与已生成字数反馈；完整内容仍须通过结构校验后才会整体保存。
 - 远程接口必须使用 HTTPS；只允许本机兼容服务使用 HTTP。
 - Base URL 可以停在版本路径，也可以直接包含 `/chat/completions`，适配器不会重复追加。
 
@@ -124,7 +124,7 @@ OpenCode Go 的官方目录为 `https://opencode.ai/zen/go/v1/models`，官方�
 
 ## 当前限制
 
-- 还没有流式逐字显示。
+- 流式传输只用于进度反馈（进度条与已生成字数），不会在页面逐字呈现完整剧情；完整内容校验通过后一次显示。
 - 当前生成协议只覆盖 OpenAI Chat Completions；Messages 与 Responses 模型会在目录中标为暂不支持。
 - 可用性审核只实际调用当前所选模型，不会自动逐个调用整个目录，避免批量扣费和触发速率限制。
 - 目前只显示供应商返回的 token 数量，还没有按实时单价估算金额。
