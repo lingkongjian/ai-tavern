@@ -3,15 +3,16 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { StoryNotFoundError } from "../storage/story-store.ts";
 
 export const COMPLETE_ARCHIVE_SPEC = "ai_tavern_runtime_archive_v1";
-export const COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.8.0";
-export const PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.7.0";
-export const OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.6.0";
-export const EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.5.0";
-export const ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.4.0";
-export const HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.3.0";
-export const FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.2.0";
-export const LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.1.0";
-export const FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.0.0";
+export const COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.9.0";
+export const PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.8.0";
+export const OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.7.0";
+export const EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.6.0";
+export const ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.5.0";
+export const HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.4.0";
+export const FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.3.0";
+export const LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.2.0";
+export const FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.1.0";
+export const PRIMAL_COMPLETE_ARCHIVE_SCHEMA_VERSION = "1.0.0";
 export const COMPLETE_ARCHIVE_MAX_BYTES = 100_000_000;
 
 type ArchiveValue = string | number | null;
@@ -60,6 +61,7 @@ const TABLE_COLUMNS = {
     "id",
     "session_id",
     "name",
+    "is_main",
     "parent_branch_id",
     "forked_from_turn_id",
     "head_turn_id",
@@ -414,6 +416,7 @@ const LEGACY_TABLE_NAMES = FOUNDATIONAL_TABLE_NAMES.filter(
   (table) => !table.startsWith("memory_"),
 );
 const FOUNDING_TABLE_NAMES = LEGACY_TABLE_NAMES;
+const PRIMAL_TABLE_NAMES = FOUNDING_TABLE_NAMES;
 const JSON_COLUMNS = new Set([
   "player_input_json",
   "generated_output_json",
@@ -483,7 +486,8 @@ export interface CompleteAdventureArchive {
     | typeof HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION
     | typeof FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
     | typeof LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION
-    | typeof FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION;
+    | typeof FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION
+    | typeof PRIMAL_COMPLETE_ARCHIVE_SCHEMA_VERSION;
   archiveId: string;
   exportedAt: string;
   summary: CompleteArchiveSummary;
@@ -643,6 +647,9 @@ function parseArchiveRows(
         if (table === "source_documents" && column === "is_deleted") {
           return false;
         }
+        if (table === "branches" && column === "is_main") {
+          return false;
+        }
         if (
           table === "content_asset_management_changes" &&
           [
@@ -682,7 +689,11 @@ function parseArchiveRows(
   return result;
 }
 
-function validateArchiveReferences(data: ArchiveData, issues: string[]) {
+function validateArchiveReferences(
+  data: ArchiveData,
+  issues: string[],
+  schemaVersion: unknown,
+) {
   const campaignId = data.campaigns[0]?.id;
   const sessionId = data.sessions[0]?.id;
   const ids = (table: ArchiveTableName) =>
@@ -743,6 +754,12 @@ function validateArchiveReferences(data: ArchiveData, issues: string[]) {
         issues.push(`分支《${branch.name}》引用了不存在的回合。`);
       }
     }
+  }
+  if (
+    schemaVersion === COMPLETE_ARCHIVE_SCHEMA_VERSION &&
+    data.branches.filter((branch) => branch.is_main === 1).length !== 1
+  ) {
+    issues.push("完整存档必须恰好有一个主线分支。");
   }
   for (const turn of data.turns) {
     if (!branchIds.has(turn.branch_id as string)) {
@@ -846,10 +863,11 @@ export function parseCompleteArchiveDocument(
     schemaVersion === HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
     schemaVersion === FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
     schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
-    schemaVersion === FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION;
+    schemaVersion === FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION ||
+    schemaVersion === PRIMAL_COMPLETE_ARCHIVE_SCHEMA_VERSION;
   if (!supportedVersion) {
     issues.push(
-      `schemaVersion 必须是 ${LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION} 或 ${COMPLETE_ARCHIVE_SCHEMA_VERSION}。`,
+      `schemaVersion 必须是 ${PRIMAL_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION}、${PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION} 或 ${COMPLETE_ARCHIVE_SCHEMA_VERSION}。`,
     );
   }
   if (typeof value.archiveId !== "string" || !value.archiveId.trim()) {
@@ -860,23 +878,25 @@ export function parseCompleteArchiveDocument(
   }
   if (!isRecord(value.data)) issues.push("完整存档缺少 data。");
   const requiredTables =
-    schemaVersion === FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION
-      ? FOUNDING_TABLE_NAMES
-      : schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION
-        ? LEGACY_TABLE_NAMES
-        : schemaVersion === FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
-          ? FOUNDATIONAL_TABLE_NAMES
-        : schemaVersion === HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION
-          ? HISTORIC_TABLE_NAMES
-          : schemaVersion === ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION
-            ? ANCIENT_TABLE_NAMES
-            : schemaVersion === EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION
-              ? EARLIER_TABLE_NAMES
-              : schemaVersion === OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION
-                ? OLDER_TABLE_NAMES
-                : schemaVersion === PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION
-                  ? PREVIOUS_TABLE_NAMES
-                  : TABLE_NAMES;
+    schemaVersion === PRIMAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
+      ? PRIMAL_TABLE_NAMES
+      : schemaVersion === FOUNDING_COMPLETE_ARCHIVE_SCHEMA_VERSION
+        ? FOUNDING_TABLE_NAMES
+        : schemaVersion === LEGACY_COMPLETE_ARCHIVE_SCHEMA_VERSION
+          ? LEGACY_TABLE_NAMES
+          : schemaVersion === FOUNDATIONAL_COMPLETE_ARCHIVE_SCHEMA_VERSION
+            ? FOUNDATIONAL_TABLE_NAMES
+            : schemaVersion === HISTORIC_COMPLETE_ARCHIVE_SCHEMA_VERSION
+              ? HISTORIC_TABLE_NAMES
+              : schemaVersion === ANCIENT_COMPLETE_ARCHIVE_SCHEMA_VERSION
+                ? ANCIENT_TABLE_NAMES
+                : schemaVersion === EARLIER_COMPLETE_ARCHIVE_SCHEMA_VERSION
+                  ? EARLIER_TABLE_NAMES
+                  : schemaVersion === OLDER_COMPLETE_ARCHIVE_SCHEMA_VERSION
+                    ? OLDER_TABLE_NAMES
+                    : schemaVersion === PREVIOUS_COMPLETE_ARCHIVE_SCHEMA_VERSION
+                      ? PREVIOUS_TABLE_NAMES
+                      : TABLE_NAMES;
   const data = parseArchiveRows(
     isRecord(value.data) ? value.data : {},
     issues,
@@ -887,7 +907,7 @@ export function parseCompleteArchiveDocument(
   if (data.sessions.length !== 1) issues.push("完整存档必须包含一个会话记录。");
   if (data.branches.length < 1) issues.push("完整存档至少需要一个剧情分支。");
   if (data.turns.length < 1) issues.push("完整存档至少需要一个剧情回合。");
-  validateArchiveReferences(data, issues);
+  validateArchiveReferences(data, issues, schemaVersion);
 
   const integrity = isRecord(value.integrity) ? value.integrity : {};
   if (integrity.algorithm !== "sha256" || typeof integrity.checksum !== "string") {
@@ -970,6 +990,9 @@ function insertRows(
       ...(columns.map((column) => {
         if (row[column] !== undefined) return row[column];
         if (table === "source_documents" && column === "is_deleted") return 0;
+        if (table === "branches" && column === "is_main") {
+          return row.parent_branch_id === null ? 1 : 0;
+        }
         if (
           table === "content_asset_management_changes" &&
           column === "revision"

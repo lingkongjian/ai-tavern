@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import {
   copyFileSync,
   mkdirSync,
@@ -36,6 +37,13 @@ test("validates branch and save requests", () => {
   assert.deepEqual(parseBranchUpdateRequest({ operation: "switch" }), {
     operation: "switch",
   });
+  assert.deepEqual(parseBranchUpdateRequest({ operation: "set_main" }), {
+    operation: "set_main",
+  });
+  assert.throws(
+    () => parseBranchUpdateRequest({ operation: "merge" }),
+    BranchAndSaveInputError,
+  );
   assert.deepEqual(parseCreateSavePointRequest({ name: "进入密室前" }), {
     name: "进入密室前",
   });
@@ -340,35 +348,88 @@ test("backfills a recovery snapshot when upgrading an existing local story", () 
     migrationsDir: previousMigrations,
   });
   try {
-    let store = new LocalStoryStore(database);
-    const started = store.startAdventure({
-      campaignName: "旧存档升级测试",
-      world: { name: "旧城", premise: "用于验证升级恢复点。" },
-      player: { name: "旧玩家", description: "本地旧存档的玩家。" },
-      mainCharacter: {
-        name: "旧向导",
-        role: "旧城向导",
-        personality: "会保留升级前的状态。",
-      },
-      openingScene: "旧玩家抵达旧城。",
-    });
+    // 用原始 SQL 模拟旧版本应用写入的存档（旧 schema 没有 is_main 列）
+    const sessionId = randomUUID();
+    const branchId = randomUUID();
+    const turnId = randomUUID();
+    const campaignId = randomUUID();
+    const now = new Date().toISOString();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database
+        .prepare(
+          "INSERT INTO campaigns (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(campaignId, "旧存档升级测试", "", now, now);
+      database
+        .prepare(
+          "INSERT INTO sessions (id, campaign_id, name, status, active_branch_id, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)",
+        )
+        .run(sessionId, campaignId, "旧存档会话", branchId, now, now);
+      database
+        .prepare(`
+          INSERT INTO branches (
+            id, session_id, name, parent_branch_id, forked_from_turn_id,
+            head_turn_id, next_sequence, created_at, updated_at
+          ) VALUES (?, ?, '主线', NULL, NULL, ?, 2, ?, ?)
+        `)
+        .run(branchId, sessionId, turnId, now, now);
+      database
+        .prepare(`
+          INSERT INTO turns (
+            id, session_id, branch_id, parent_turn_id, sequence,
+            idempotency_key, player_input_json, generated_output_json,
+            summary_patch, status, created_at
+          ) VALUES (?, ?, ?, NULL, 1, 'adventure-setup', ?, ?, '旧玩家抵达旧城。', 'committed', ?)
+        `)
+        .run(
+          turnId,
+          sessionId,
+          branchId,
+          JSON.stringify({ source: "setup_wizard" }),
+          JSON.stringify({ schemaVersion: "1.0.0", scene: "旧玩家抵达旧城。" }),
+          now,
+        );
+      database
+        .prepare(`
+          INSERT INTO materialized_states (
+            session_id, branch_id, entity_type, entity_id, state_json,
+            is_active, version, updated_turn_id, updated_at
+          ) VALUES (?, ?, 'session_state', 'core', ?, 1, 1, ?, ?)
+        `)
+        .run(
+          sessionId,
+          branchId,
+          JSON.stringify({ schemaVersion: "1.0.0", state: { currentScene: "旧城" } }),
+          turnId,
+          now,
+        );
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
     database.prepare("DELETE FROM snapshots").run();
     database.close();
 
     database = openLocalDatabase({ filePath: databasePath, migrationsDir });
-    store = new LocalStoryStore(database);
-    const points = store.listRecoveryPoints(started.sessionId);
+    const store = new LocalStoryStore(database);
+    // 升级后根分支自动成为主线
+    const upgradedBranches = store.listBranches(sessionId);
+    assert.equal(upgradedBranches.length, 1);
+    assert.equal(upgradedBranches[0].isMain, true);
+    const points = store.listRecoveryPoints(sessionId);
     assert.equal(points.length, 1);
     assert.equal(points[0].type, "automatic");
     assert.equal(points[0].name, "升级时自动存档");
     const restored = store.createBranch({
-      sessionId: started.sessionId,
+      sessionId,
       name: "从升级存档恢复",
       recoveryPointId: points[0].id,
     });
     assert.equal(restored.sourceSequence, 1);
     assert.equal(
-      store.loadAdventure(started.sessionId).branchState.states.length > 0,
+      store.loadAdventure(sessionId).branchState.states.length > 0,
       true,
     );
   } finally {
@@ -1090,6 +1151,230 @@ test("advances the next turn after restoring a save point in place", async () =>
     assert.equal(next.committedTurn.sequence, 3);
     assert.equal(next.committedTurn.branchId, started.branchId);
     assert.equal(next.adventure.branchState.turnHistory.length, 3);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("transfers the main-line identity and follows the delete protection", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-set-main-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    // 初始：根分支就是主线
+    let branches = store.listBranches(started.sessionId);
+    assert.equal(branches.length, 1);
+    assert.equal(branches[0].isMain, true);
+    assert.equal(branches[0].parentBranchId, null);
+    assert.equal(
+      store.loadBranchState(started.branchId).branch.isMain,
+      true,
+    );
+    // 开局主线不能删除
+    assert.throws(
+      () => store.deleteBranch(started.sessionId, started.branchId),
+      BranchManagementError,
+    );
+
+    // 从开局回合分叉出支线
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: started.openingTurnId,
+    });
+    branches = store.listBranches(started.sessionId);
+    assert.equal(branches.find((branch) => branch.id === fork.branchId).isMain, false);
+
+    // 把支线设为主线：主线身份转移
+    const transferred = store.setMainBranch(started.sessionId, fork.branchId);
+    assert.equal(transferred.isMain, true);
+    branches = store.listBranches(started.sessionId);
+    assert.equal(branches.filter((branch) => branch.isMain).length, 1);
+    assert.equal(branches.find((branch) => branch.isMain).id, fork.branchId);
+    assert.equal(
+      branches.find((branch) => branch.id === started.branchId).isMain,
+      false,
+    );
+    assert.equal(store.loadBranchState(fork.branchId).branch.isMain, true);
+    assert.equal(store.loadBranchState(started.branchId).branch.isMain, false);
+    const mainCount = database
+      .prepare(
+        "SELECT COUNT(*) AS total FROM branches WHERE session_id = ? AND is_main = 1",
+      )
+      .get(started.sessionId).total;
+    assert.equal(mainCount, 1);
+
+    // 重复设置幂等：仍然是同一个主线
+    const again = store.setMainBranch(started.sessionId, fork.branchId);
+    assert.equal(again.isMain, true);
+    branches = store.listBranches(started.sessionId);
+    assert.equal(branches.filter((branch) => branch.isMain).length, 1);
+    assert.equal(branches.find((branch) => branch.isMain).id, fork.branchId);
+
+    // 新主线不能删除
+    assert.throws(
+      () => store.deleteBranch(started.sessionId, fork.branchId),
+      BranchManagementError,
+    );
+    // 原主线仍有子分支，同样不能删除
+    assert.throws(
+      () => store.deleteBranch(started.sessionId, started.branchId),
+      BranchManagementError,
+    );
+
+    // 主线转移回原主线后，原支线成为普通支线且没有子分支，可以删除
+    store.setMainBranch(started.sessionId, started.branchId);
+    const deleted = store.deleteBranch(started.sessionId, fork.branchId);
+    assert.equal(deleted.branchId, fork.branchId);
+    branches = store.listBranches(started.sessionId);
+    assert.equal(branches.length, 1);
+    assert.equal(branches[0].isMain, true);
+    assert.equal(branches[0].id, started.branchId);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("rejects transferring the main identity to a branch of another session", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-set-main-foreign-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const first = startForkScenario(store);
+    const second = startForkScenario(store);
+    // 用第二个剧本的根分支去设置第一个剧本的主线
+    assert.throws(
+      () => store.setMainBranch(first.sessionId, second.branchId),
+      /没有找到指定的剧情分支/,
+    );
+    const firstBranches = store.listBranches(first.sessionId);
+    const secondBranches = store.listBranches(second.sessionId);
+    assert.equal(firstBranches.filter((branch) => branch.isMain).length, 1);
+    assert.equal(firstBranches[0].isMain, true);
+    assert.equal(secondBranches[0].isMain, true);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("keeps switching, forking and save points intact after transferring the main identity", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-set-main-flow-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    await advanceForkTurn(
+      store,
+      started,
+      started.openingTurnId,
+      "main-flow-root-2",
+      "走向北路",
+    );
+    const manual = store.createSavePoint(started.sessionId, "北路营地");
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: started.openingTurnId,
+    });
+    await advanceForkTurn(
+      store,
+      started,
+      started.openingTurnId,
+      "main-flow-fork-2",
+      "走向南路",
+    );
+
+    // 主线转移后：切换、创建分支、恢复点恢复照常工作
+    store.setMainBranch(started.sessionId, fork.branchId);
+    let branches = store.listBranches(started.sessionId);
+    assert.equal(branches.find((branch) => branch.isMain).id, fork.branchId);
+
+    // 切换回原主线分支再切回新主线，状态各自保持
+    store.switchBranch(started.sessionId, started.branchId);
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, started.branchId);
+    store.switchBranch(started.sessionId, fork.branchId);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, fork.branchId);
+
+    // 在新主线上继续推进
+    const next = await advanceForkTurn(
+      store,
+      started,
+      adventure.branchState.branch.headTurnId,
+      "main-flow-fork-3",
+      "继续南路",
+    );
+    assert.equal(next.committedTurn.branchId, fork.branchId);
+    assert.equal(next.committedTurn.sequence, 3);
+
+    // 从恢复点恢复为新分支
+    const fromSave = store.createBranch({
+      sessionId: started.sessionId,
+      name: "从北路营地恢复",
+      recoveryPointId: manual.id,
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, fromSave.branchId);
+    assert.equal(adventure.branchState.branch.headTurnId, manual.turnId);
+
+    // 就地恢复照常
+    const restored = store.restoreSavePoint(started.sessionId, manual.id);
+    assert.equal(restored.branchId, started.branchId);
+    assert.equal(restored.activeBranchId, started.branchId);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, started.branchId);
+
+    // 多分支场景：主线仍然唯一
+    branches = store.listBranches(started.sessionId);
+    assert.equal(branches.length, 3);
+    assert.equal(branches.filter((branch) => branch.isMain).length, 1);
+    assert.equal(branches.find((branch) => branch.isMain).id, fork.branchId);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("deleting the active non-main branch falls back to its parent", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-set-main-active-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: started.openingTurnId,
+    });
+    // 创建分支后活动分支是支线本身
+    assert.equal(
+      store.loadAdventure(started.sessionId).branchState.branch.id,
+      fork.branchId,
+    );
+    // 删除活动支线：活动分支回退到父分支（主线）
+    const deleted = store.deleteBranch(started.sessionId, fork.branchId);
+    assert.equal(deleted.activeBranchId, started.branchId);
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, started.branchId);
+    assert.equal(adventure.branchState.branch.isMain, true);
+    assert.equal(store.listBranches(started.sessionId).length, 1);
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

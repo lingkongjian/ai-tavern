@@ -29,7 +29,9 @@ export async function PATCH(
     const result =
       input.operation === "switch"
         ? store.switchBranch(sessionId, branchId)
-        : store.renameBranch(sessionId, branchId, input.name);
+        : input.operation === "rename"
+          ? store.renameBranch(sessionId, branchId, input.name)
+          : store.setMainBranch(sessionId, branchId);
     return noStoreJson({
       result,
       adventure: store.loadAdventure(sessionId),

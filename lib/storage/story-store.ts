@@ -307,6 +307,7 @@ export interface LoadedBranchState {
     id: string;
     name: string;
     sessionId: string;
+    isMain: boolean;
     parentBranchId: string | null;
     forkedFromTurnId: string | null;
     headTurnId: string | null;
@@ -855,6 +856,7 @@ export interface LoadedAdventure {
 export interface AdventureBranchSummary {
   id: string;
   name: string;
+  isMain: boolean;
   parentBranchId: string | null;
   forkedFromTurnId: string | null;
   headTurnId: string | null;
@@ -897,6 +899,7 @@ interface BranchRow {
   id: string;
   session_id: string;
   name: string;
+  is_main: number;
   parent_branch_id: string | null;
   forked_from_turn_id: string | null;
   head_turn_id: string | null;
@@ -2449,9 +2452,9 @@ export class LocalStoryStore {
       this.database
         .prepare(`
           INSERT INTO branches (
-            id, session_id, name, head_turn_id, next_sequence,
+            id, session_id, name, is_main, head_turn_id, next_sequence,
             created_at, updated_at
-          ) VALUES (?, ?, '主线', NULL, 1, ?, ?)
+          ) VALUES (?, ?, '主线', 1, NULL, 1, ?, ?)
         `)
         .run(branchId, sessionId, now, now);
       this.database
@@ -3827,7 +3830,7 @@ export class LocalStoryStore {
     if (!session) throw new StoryNotFoundError();
     const rows = this.database
       .prepare(`
-        SELECT branches.id, branches.name, branches.parent_branch_id,
+        SELECT branches.id, branches.name, branches.is_main, branches.parent_branch_id,
                branches.forked_from_turn_id, branches.head_turn_id,
                branches.next_sequence, branches.created_at, branches.updated_at,
                COALESCE(turns.sequence, 0) AS head_sequence
@@ -3840,6 +3843,7 @@ export class LocalStoryStore {
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
+      isMain: row.is_main === 1,
       parentBranchId: row.parent_branch_id,
       forkedFromTurnId: row.forked_from_turn_id,
       headTurnId: row.head_turn_id,
@@ -4070,6 +4074,40 @@ export class LocalStoryStore {
     return { branchId, name, updatedAt: now };
   }
 
+  setMainBranch(sessionId: string, branchId: string) {
+    requireText(sessionId, "sessionId");
+    requireText(branchId, "branchId");
+    const branch = this.getBranch(branchId);
+    if (branch.session_id !== sessionId) {
+      throw new StoryNotFoundError("没有找到指定的剧情分支。");
+    }
+    if (branch.is_main === 1) {
+      return { branchId, isMain: true, changedAt: branch.updated_at };
+    }
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database
+        .prepare(
+          "UPDATE branches SET is_main = 0, updated_at = ? WHERE session_id = ?",
+        )
+        .run(now, sessionId);
+      const result = this.database
+        .prepare(
+          "UPDATE branches SET is_main = 1, updated_at = ? WHERE id = ? AND session_id = ?",
+        )
+        .run(now, branchId, sessionId);
+      if (result.changes !== 1) {
+        throw new StoryNotFoundError("没有找到指定的剧情分支。");
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return { branchId, isMain: true, changedAt: now };
+  }
+
   deleteBranch(sessionId: string, branchId: string) {
     requireText(sessionId, "sessionId");
     requireText(branchId, "branchId");
@@ -4077,7 +4115,7 @@ export class LocalStoryStore {
     if (branch.session_id !== sessionId) {
       throw new StoryNotFoundError("没有找到指定的剧情分支。");
     }
-    if (!branch.parent_branch_id) {
+    if (branch.is_main === 1) {
       throw new BranchManagementError("主线分支不能删除。");
     }
     const child = this.database
@@ -4087,18 +4125,30 @@ export class LocalStoryStore {
       throw new BranchManagementError("该分支仍有子分支，请先删除最末端的子分支。");
     }
     const now = new Date().toISOString();
+    let fallbackBranchId: string | null = branch.parent_branch_id;
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const session = this.database
         .prepare("SELECT active_branch_id FROM sessions WHERE id = ?")
         .get(sessionId) as { active_branch_id: string | null } | undefined;
       if (!session) throw new StoryNotFoundError();
+      if (!fallbackBranchId) {
+        // 主线身份转移后，原主线可能成为没有父分支的普通分支：
+        // 删除时活动分支回退到当前主线。
+        const main = this.database
+          .prepare("SELECT id FROM branches WHERE session_id = ? AND is_main = 1")
+          .get(sessionId) as { id: string } | undefined;
+        fallbackBranchId = main?.id ?? null;
+      }
       if (session.active_branch_id === branchId) {
+        if (!fallbackBranchId) {
+          throw new BranchManagementError("没有找到可切换的剧情分支。");
+        }
         this.database
           .prepare(
             "UPDATE sessions SET active_branch_id = ?, updated_at = ? WHERE id = ?",
           )
-          .run(branch.parent_branch_id, now, sessionId);
+          .run(fallbackBranchId, now, sessionId);
       }
       this.database
         .prepare("DELETE FROM branches WHERE id = ? AND session_id = ?")
@@ -4108,7 +4158,7 @@ export class LocalStoryStore {
       this.database.exec("ROLLBACK");
       throw error;
     }
-    return { branchId, activeBranchId: branch.parent_branch_id };
+    return { branchId, activeBranchId: fallbackBranchId };
   }
 
   createSavePoint(sessionId: string, requestedName: string) {
@@ -6351,8 +6401,8 @@ export class LocalStoryStore {
       this.database
         .prepare(`
           INSERT INTO branches (
-            id, session_id, name, next_sequence, created_at, updated_at
-          ) VALUES (?, ?, '主线', 1, ?, ?)
+            id, session_id, name, is_main, next_sequence, created_at, updated_at
+          ) VALUES (?, ?, '主线', 1, 1, ?, ?)
         `)
         .run(branchId, sessionId, now, now);
 
@@ -7409,7 +7459,7 @@ export class LocalStoryStore {
   private getBranch(branchId: string): BranchRow {
     const branch = this.database
       .prepare(`
-        SELECT id, session_id, name, parent_branch_id, forked_from_turn_id,
+        SELECT id, session_id, name, is_main, parent_branch_id, forked_from_turn_id,
                head_turn_id, next_sequence, created_at, updated_at
         FROM branches
         WHERE id = ?
@@ -7422,7 +7472,7 @@ export class LocalStoryStore {
   private getActiveBranch(sessionId: string): BranchRow {
     const row = this.database
       .prepare(`
-        SELECT branches.id, branches.session_id, branches.name,
+        SELECT branches.id, branches.session_id, branches.name, branches.is_main,
                branches.parent_branch_id, branches.forked_from_turn_id,
                branches.head_turn_id, branches.next_sequence,
                branches.created_at, branches.updated_at
@@ -8896,7 +8946,7 @@ export class LocalStoryStore {
     requireText(branchId, "branchId");
     const branch = this.database
       .prepare(`
-        SELECT id, session_id, name, parent_branch_id, forked_from_turn_id,
+        SELECT id, session_id, name, is_main, parent_branch_id, forked_from_turn_id,
                head_turn_id, next_sequence, created_at, updated_at
         FROM branches
         WHERE id = ?
@@ -8934,6 +8984,7 @@ export class LocalStoryStore {
         id: branch.id,
         name: branch.name,
         sessionId: branch.session_id,
+        isMain: branch.is_main === 1,
         parentBranchId: branch.parent_branch_id,
         forkedFromTurnId: branch.forked_from_turn_id,
         headTurnId: branch.head_turn_id,

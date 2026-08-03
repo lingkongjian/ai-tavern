@@ -255,9 +255,21 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
       changeId: sourceSettingsChange.id,
       reason: "验证资料恢复链可随完整存档迁移",
     });
+    // 主线身份转移后导出，验证 is_main 随完整存档往返
+    store.setMainBranch(started.sessionId, fork.branchId);
+    assert.equal(
+      store
+        .listBranches(started.sessionId)
+        .find((branch) => branch.isMain).id,
+      fork.branchId,
+    );
 
     const archive = exportCompleteAdventure(database, started.sessionId);
-    assert.equal(archive.schemaVersion, "1.8.0");
+    assert.equal(archive.schemaVersion, "1.9.0");
+    assert.equal(
+      archive.data.branches.filter((row) => row.is_main === 1).length,
+      1,
+    );
     assert.equal(Array.isArray(archive.data.turn_context_snapshots), true);
     assert.equal(archive.data.memory_entries.length > 0, true);
     assert.equal(archive.data.story_module_management_changes.length > 0, true);
@@ -292,6 +304,14 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
     assert.equal(importedAdventure.branchState.branch.name, "拒绝触碰镜子");
     assert.equal(importedAdventure.branchState.turnHistory.length, 2);
     assert.equal(store.listBranches(imported.sessionId).length, 2);
+    assert.equal(
+      store.listBranches(imported.sessionId).filter((branch) => branch.isMain).length,
+      1,
+    );
+    assert.equal(
+      store.listBranches(imported.sessionId).find((branch) => branch.isMain).name,
+      "拒绝触碰镜子",
+    );
     assert.equal(store.listRecoveryPoints(imported.sessionId).some((point) => point.type === "manual"), true);
     assert.equal(store.listSourceDocuments(imported.sessionId).length, 1);
     assert.equal(
@@ -335,11 +355,14 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
     );
 
     const previousArchive = structuredClone(archive);
-    previousArchive.schemaVersion = "1.7.0";
+    previousArchive.schemaVersion = "1.8.0";
     delete previousArchive.data.plot_thread_management_changes;
     delete previousArchive.data.plot_trigger_management_changes;
     for (const row of previousArchive.data.source_documents) {
       delete row.is_deleted;
+    }
+    for (const row of previousArchive.data.branches) {
+      delete row.is_main;
     }
     for (const row of previousArchive.data.content_asset_management_changes) {
       delete row.revision;
@@ -350,9 +373,19 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
     previousArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(previousArchive.data))
       .digest("hex");
-    assert.equal(parseCompleteArchiveDocument(previousArchive).schemaVersion, "1.7.0");
+    assert.equal(parseCompleteArchiveDocument(previousArchive).schemaVersion, "1.8.0");
     const previousImported = importCompleteAdventure(database, previousArchive);
     assert.equal(store.listSourceDocuments(previousImported.sessionId).length, 1);
+    // 1.8.0 及更早存档没有 is_main：导入时按 parent_branch_id 派生（根分支为主线）
+    assert.equal(
+      store.listBranches(previousImported.sessionId).filter((branch) => branch.isMain).length,
+      1,
+    );
+    assert.equal(
+      store.listBranches(previousImported.sessionId).find((branch) => branch.isMain)
+        .parentBranchId,
+      null,
+    );
     assert.equal(
       store.listContentAssetManagementChanges(previousImported.sessionId)[0]
         .canRollback,
@@ -360,48 +393,48 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
     );
 
     const olderArchive = structuredClone(previousArchive);
-    olderArchive.schemaVersion = "1.6.0";
+    olderArchive.schemaVersion = "1.7.0";
     delete olderArchive.data.content_asset_management_changes;
     olderArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(olderArchive.data))
       .digest("hex");
-    assert.equal(parseCompleteArchiveDocument(olderArchive).schemaVersion, "1.6.0");
+    assert.equal(parseCompleteArchiveDocument(olderArchive).schemaVersion, "1.7.0");
 
     const earlierArchive = structuredClone(olderArchive);
-    earlierArchive.schemaVersion = "1.5.0";
+    earlierArchive.schemaVersion = "1.6.0";
     delete earlierArchive.data.world_book_management_changes;
     earlierArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(earlierArchive.data))
       .digest("hex");
-    assert.equal(parseCompleteArchiveDocument(earlierArchive).schemaVersion, "1.5.0");
+    assert.equal(parseCompleteArchiveDocument(earlierArchive).schemaVersion, "1.6.0");
 
     const ancientArchive = structuredClone(earlierArchive);
-    ancientArchive.schemaVersion = "1.4.0";
+    ancientArchive.schemaVersion = "1.5.0";
     delete ancientArchive.data.turn_context_snapshots;
     ancientArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(ancientArchive.data))
       .digest("hex");
-    assert.equal(parseCompleteArchiveDocument(ancientArchive).schemaVersion, "1.4.0");
+    assert.equal(parseCompleteArchiveDocument(ancientArchive).schemaVersion, "1.5.0");
 
     const historicArchive = structuredClone(ancientArchive);
-    historicArchive.schemaVersion = "1.3.0";
+    historicArchive.schemaVersion = "1.4.0";
     delete historicArchive.data.state_control_changes;
     delete historicArchive.data.state_field_lock_changes;
     delete historicArchive.data.state_lock_blocks;
     historicArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(historicArchive.data))
       .digest("hex");
-    assert.equal(parseCompleteArchiveDocument(historicArchive).schemaVersion, "1.3.0");
+    assert.equal(parseCompleteArchiveDocument(historicArchive).schemaVersion, "1.4.0");
 
     const foundationalArchive = structuredClone(historicArchive);
-    foundationalArchive.schemaVersion = "1.2.0";
+    foundationalArchive.schemaVersion = "1.3.0";
     delete foundationalArchive.data.story_module_management_changes;
     foundationalArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(foundationalArchive.data))
       .digest("hex");
     assert.equal(
       parseCompleteArchiveDocument(foundationalArchive).schemaVersion,
-      "1.2.0",
+      "1.3.0",
     );
 
     const legacyArchive = structuredClone(archive);
@@ -419,12 +452,19 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
     delete legacyArchive.data.memory_entries;
     delete legacyArchive.data.memory_chapters;
     delete legacyArchive.data.memory_retrievals;
+    for (const row of legacyArchive.data.branches) {
+      delete row.is_main;
+    }
     legacyArchive.integrity.checksum = createHash("sha256")
       .update(canonicalJson(legacyArchive.data))
       .digest("hex");
     assert.equal(parseCompleteArchiveDocument(legacyArchive).schemaVersion, "1.0.0");
     const legacyImported = importCompleteAdventure(database, legacyArchive);
     assert.equal(store.loadStoryMemory(legacyImported.sessionId).chapters.length > 0, true);
+    assert.equal(
+      store.listBranches(legacyImported.sessionId).filter((branch) => branch.isMain).length,
+      1,
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

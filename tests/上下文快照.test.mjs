@@ -214,7 +214,7 @@ test("保存实际 DeepSeek 上下文、覆盖诊断并随重新生成和完整�
     assert.equal(regenerated.repairApplied, true);
 
     const archive = exportCompleteAdventure(database, started.sessionId);
-    assert.equal(archive.schemaVersion, "1.8.0");
+    assert.equal(archive.schemaVersion, "1.9.0");
     assert.equal(archive.data.turn_context_snapshots.length, 1);
     const imported = importCompleteAdventure(database, archive);
     const importedAdventure = store.loadAdventure(imported.sessionId);

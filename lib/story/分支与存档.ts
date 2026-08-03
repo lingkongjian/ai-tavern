@@ -54,7 +54,8 @@ export function parseCreateBranchRequest(value: unknown) {
 
 export type BranchUpdateRequest =
   | { operation: "switch" }
-  | { operation: "rename"; name: string };
+  | { operation: "rename"; name: string }
+  | { operation: "set_main" };
 
 export function parseBranchUpdateRequest(value: unknown): BranchUpdateRequest {
   if (!isObject(value)) {
@@ -67,6 +68,7 @@ export function parseBranchUpdateRequest(value: unknown): BranchUpdateRequest {
       name: requiredText(value.name, "分支名称"),
     };
   }
+  if (value.operation === "set_main") return { operation: "set_main" };
   throw new BranchAndSaveInputError(["不支持该分支操作"]);
 }
 

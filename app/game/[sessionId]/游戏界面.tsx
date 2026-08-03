@@ -1710,6 +1710,38 @@ export function GameInterface({
     }
   }
 
+  async function setBranchAsMain(branch: AdventureBranchSummary) {
+    if (branchBusyAction || branch.isMain) return;
+    if (
+      !window.confirm(
+        `确定将分支“${branch.name}”设为主线吗？\n\n主线身份会转移到该分支，删除保护随之转移：原主线将变成普通支线，确认没有子分支后可以删除。分支内容和当前进度不会被改写。`,
+      )
+    ) {
+      return;
+    }
+    setBranchBusyAction(`set-main:${branch.id}`);
+    setBranchManagerError("");
+    try {
+      const response = await fetch(
+        `/api/adventures/${adventure.session.id}/branches/${branch.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operation: "set_main" }),
+        },
+      );
+      const body = (await response.json()) as BranchManagementResponse;
+      if (!response.ok) throw new Error(body.error ?? "设置主线失败。");
+      applyBranchPayload(body);
+    } catch (error) {
+      setBranchManagerError(
+        error instanceof Error ? error.message : "设置主线失败。",
+      );
+    } finally {
+      setBranchBusyAction("");
+    }
+  }
+
   async function deleteExistingBranch(branch: AdventureBranchSummary) {
     if (
       branchBusyAction ||
@@ -4772,7 +4804,7 @@ export function GameInterface({
                           {branch.isActive ? "当前分支" : "可切换"} · 回合 {branch.headSequence}
                         </span>
                         <small>
-                          {branch.parentBranchId ? "由历史剧情分叉" : "剧本主线"} · {formatTurnTime(branch.updatedAt)}
+                          {branch.isMain ? "主线" : "由历史剧情分叉"} · {formatTurnTime(branch.updatedAt)}
                         </small>
                       </div>
                       <footer>
@@ -4794,12 +4826,21 @@ export function GameInterface({
                         >
                           重命名
                         </button>
+                        {!branch.isMain ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(branchBusyAction)}
+                            onClick={() => void setBranchAsMain(branch)}
+                          >
+                            {branchBusyAction === `set-main:${branch.id}`
+                              ? "设置中……"
+                              : "设为主线"}
+                          </button>
+                        ) : null}
                         <button
                           className="deactivate"
                           type="button"
-                          disabled={
-                            Boolean(branchBusyAction) || !branch.parentBranchId
-                          }
+                          disabled={Boolean(branchBusyAction) || branch.isMain}
                           onClick={() => void deleteExistingBranch(branch)}
                         >
                           删除

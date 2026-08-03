@@ -114,6 +114,7 @@ export const branches = sqliteTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    isMain: integer("is_main").notNull().default(0),
     parentBranchId: text("parent_branch_id"),
     forkedFromTurnId: text("forked_from_turn_id"),
     headTurnId: text("head_turn_id"),
@@ -124,6 +125,9 @@ export const branches = sqliteTable(
   (table) => [
     index("idx_branches_session_id").on(table.sessionId),
     uniqueIndex("idx_branches_session_name").on(table.sessionId, table.name),
+    uniqueIndex("idx_branches_session_main")
+      .on(table.sessionId)
+      .where(sql`${table.isMain} = 1`),
   ],
 );
 
