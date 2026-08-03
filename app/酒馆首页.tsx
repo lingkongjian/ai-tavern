@@ -2,8 +2,10 @@
 
 import type {
   AdventureDeclaredLocation,
+  AdventureForeshadowingInput,
   AdventureRelationshipInput,
   AdventureStoryModuleInput,
+  AdventureTriggerInput,
   AdventureWorldBookEntryInput,
   AdventureSummary,
   JsonObject,
@@ -583,6 +585,12 @@ export function TavernHome() {
   const [bundleLocations, setBundleLocations] = useState<
     AdventureDeclaredLocation[]
   >([]);
+  const [bundleForeshadowing, setBundleForeshadowing] = useState<
+    AdventureForeshadowingInput[]
+  >([]);
+  const [bundleTriggers, setBundleTriggers] = useState<AdventureTriggerInput[]>(
+    [],
+  );
   const [initialStoryModuleId, setInitialStoryModuleId] = useState("");
   const [sourceDocuments, setSourceDocuments] = useState<SourceDocumentInput[]>(
     [],
@@ -1139,7 +1147,9 @@ export function TavernHome() {
       additionalCharacters.length > 0 ||
       importedWorldBooks.length > 0 ||
       sourceDocuments.length > 0 ||
-      storyModules.length > 0
+      storyModules.length > 0 ||
+      bundleForeshadowing.length > 0 ||
+      bundleTriggers.length > 0
     );
   }
 
@@ -1153,22 +1163,34 @@ export function TavernHome() {
   }
 
   function removeBundleSection(
-    kind: "modules" | "relationships" | "locations",
+    kind:
+      | "modules"
+      | "relationships"
+      | "locations"
+      | "foreshadowing"
+      | "triggers",
   ) {
     const nextModules = kind === "modules" ? [] : storyModules;
     const nextRelationships =
       kind === "relationships" ? [] : bundleRelationships;
     const nextLocations = kind === "locations" ? [] : bundleLocations;
+    const nextForeshadowing =
+      kind === "foreshadowing" ? [] : bundleForeshadowing;
+    const nextTriggers = kind === "triggers" ? [] : bundleTriggers;
     setStoryModules(nextModules);
     setInitialStoryModuleId(
       kind === "modules" ? "" : initialStoryModuleId,
     );
     setBundleRelationships(nextRelationships);
     setBundleLocations(nextLocations);
+    setBundleForeshadowing(nextForeshadowing);
+    setBundleTriggers(nextTriggers);
     if (
       nextModules.length === 0 &&
       nextRelationships.length === 0 &&
-      nextLocations.length === 0
+      nextLocations.length === 0 &&
+      nextForeshadowing.length === 0 &&
+      nextTriggers.length === 0
     ) {
       setBundleSourceFile("");
     }
@@ -1221,12 +1243,14 @@ export function TavernHome() {
     setStoryModules(adventure.storyModules ?? []);
     setBundleRelationships(adventure.initialRelationships ?? []);
     setBundleLocations(adventure.locations ?? []);
+    setBundleForeshadowing(adventure.foreshadowing ?? []);
+    setBundleTriggers(adventure.triggers ?? []);
     setInitialStoryModuleId(adventure.initialStoryModuleId ?? "");
     setBundleSourceFile(fileName);
     const presentCount = (adventure.additionalCharacters ?? []).filter(
       (character) => character.initiallyPresent !== false,
     ).length;
-    return `玩家 1 名、主要角色 1 名、其他角色 ${adventure.additionalCharacters?.length ?? 0} 名（开场在场 ${presentCount} 名）、世界书 ${preview.worldBook.entries.length} 条、原文参考 ${adventure.sourceDocuments?.length ?? 0} 份、剧情任务 ${adventure.storyModules?.length ?? 0} 个${preview.warnings.length ? `，包含 ${preview.warnings.length} 条兼容提示` : ""}`;
+    return `玩家 1 名、主要角色 1 名、其他角色 ${adventure.additionalCharacters?.length ?? 0} 名（开场在场 ${presentCount} 名）、世界书 ${preview.worldBook.entries.length} 条、原文参考 ${adventure.sourceDocuments?.length ?? 0} 份、剧情任务 ${adventure.storyModules?.length ?? 0} 个、伏笔 ${adventure.foreshadowing?.length ?? 0} 条、偏离触发器 ${adventure.triggers?.length ?? 0} 个${preview.warnings.length ? `，包含 ${preview.warnings.length} 条兼容提示` : ""}`;
   }
 
   function applyRegeneratedBundleSection(
@@ -1915,6 +1939,12 @@ export function TavernHome() {
           ...(bundleLocations.length > 0
             ? { locations: bundleLocations }
             : {}),
+          ...(bundleForeshadowing.length > 0
+            ? { foreshadowing: bundleForeshadowing }
+            : {}),
+          ...(bundleTriggers.length > 0
+            ? { triggers: bundleTriggers }
+            : {}),
         }),
       });
       const body = (await response.json()) as CreateAdventureResponse;
@@ -2248,6 +2278,8 @@ export function TavernHome() {
               setSourceDocuments([]);
               setStoryModules([]);
               setInitialStoryModuleId("");
+              setBundleForeshadowing([]);
+              setBundleTriggers([]);
               setImportNotice("");
               setImportError("");
               setError("");
@@ -2578,6 +2610,8 @@ export function TavernHome() {
                       setSourceDocuments([]);
                       setStoryModules([]);
                       setInitialStoryModuleId("");
+                      setBundleForeshadowing([]);
+                      setBundleTriggers([]);
                       setBundleSourceFile("");
                       setGeneratedBundleDocument(null);
                       setGeneratedBundleSummary(null);
@@ -3234,7 +3268,9 @@ export function TavernHome() {
             </label>
             {(storyModules.length > 0 ||
             bundleRelationships.length > 0 ||
-            bundleLocations.length > 0) ? (
+            bundleLocations.length > 0 ||
+            bundleForeshadowing.length > 0 ||
+            bundleTriggers.length > 0) ? (
               <div className="imported-bundle-sections">
                 {storyModules.length > 0 ? (
                   <div className="imported-story-modules">
@@ -3335,6 +3371,68 @@ export function TavernHome() {
                       onClick={() => removeBundleSection("locations")}
                     >
                       移除地点清单
+                    </button>
+                  </div>
+                ) : null}
+
+                {bundleForeshadowing.length > 0 ? (
+                  <div className="imported-story-modules">
+                    <div>
+                      <strong>
+                        已载入 {bundleForeshadowing.length} 条伏笔
+                      </strong>
+                      <small>
+                        满足出现条件后伏笔埋入剧情，相关时刻进入模型上下文；回收条件满足时呈现回收概要。进入游戏后可在“剧本工作台 → 伏笔”查看与修改。
+                      </small>
+                      <ul className="bundle-module-list">
+                        {bundleForeshadowing.slice(0, 10).map((thread, index) => (
+                          <li key={thread.id}>
+                            {thread.keywords.join(" / ")}
+                            {thread.characters?.length ? (
+                              <small> · {thread.characters.join("、")}</small>
+                            ) : null}
+                            {index === 9 && bundleForeshadowing.length > 10 ? (
+                              <em>等 {bundleForeshadowing.length} 条</em>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeBundleSection("foreshadowing")}
+                    >
+                      移除伏笔
+                    </button>
+                  </div>
+                ) : null}
+
+                {bundleTriggers.length > 0 ? (
+                  <div className="imported-story-modules">
+                    <div>
+                      <strong>
+                        已载入 {bundleTriggers.length} 个偏离触发器
+                      </strong>
+                      <small>
+                        满足触发条件或超过期限时，后果会作为“意外阻碍”真实写入剧情。进入游戏后可在“剧本工作台 → 触发器”查看与修改。
+                      </small>
+                      <ul className="bundle-module-list">
+                        {bundleTriggers.slice(0, 10).map((trigger) => (
+                          <li key={trigger.id}>
+                            {trigger.id}
+                            {trigger.deadlineDay !== undefined &&
+                            trigger.deadlineDay > 0 ? (
+                              <em>第 {trigger.deadlineDay} 日前生效</em>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeBundleSection("triggers")}
+                    >
+                      移除偏离触发器
                     </button>
                   </div>
                 ) : null}
