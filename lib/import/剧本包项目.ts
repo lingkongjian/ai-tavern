@@ -428,6 +428,24 @@ export async function assembleBundleProject(
       storyModules = structuredClone(campaign.storyModules) as JsonValue[];
     }
   }
+  let initialRelationships: JsonValue[] | undefined;
+  if (campaign.initialRelationships !== undefined) {
+    if (!Array.isArray(campaign.initialRelationships)) {
+      issues.push("campaign.initialRelationships 必须是数组。");
+    } else {
+      initialRelationships = structuredClone(
+        campaign.initialRelationships,
+      ) as JsonValue[];
+    }
+  }
+  let locations: JsonValue[] | undefined;
+  if (campaign.locations !== undefined) {
+    if (!Array.isArray(campaign.locations)) {
+      issues.push("campaign.locations 必须是数组。");
+    } else {
+      locations = structuredClone(campaign.locations) as JsonValue[];
+    }
+  }
 
   const bundleName = requiredText(
     bundleSettings.name,
@@ -681,6 +699,8 @@ export async function assembleBundleProject(
       })),
       worldBook: normalizedWorldBook(worldBook),
       ...(storyModules ? { storyModules } : {}),
+      ...(initialRelationships ? { initialRelationships } : {}),
+      ...(locations ? { locations } : {}),
       opening: {
         locationName: openingLocationName,
         scene: openingScene,
