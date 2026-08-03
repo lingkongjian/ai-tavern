@@ -4,7 +4,7 @@
 
 AI 酒馆把世界观、人物卡、世界书、剧情任务、原文参考和长期记忆组织成可持续演进的本地剧本。玩家可以从系统生成的候选回应中选择，也可以直接输入角色言行或长期剧情走向；模型负责扮演其他角色、评估世界变化并推进下一回合。
 
-> 当前版本：`0.1.16`，开发预览阶段。项目没有线上服务器，游戏数据默认只保存在玩家自己的电脑中。
+> 当前版本：`0.1.17`，开发预览阶段。项目没有线上服务器，游戏数据默认只保存在玩家自己的电脑中。
 
 [AI 酒馆完整操作手册](public/使用手册/AI酒馆操作手册.md) · [导入材料标准](public/文件标准/导入材料文件结构指导手册.md) · [项目范围](docs/PROJECT_SCOPE.md) · [参与贡献](CONTRIBUTING.md) · [安全与隐私](SECURITY.md)
 
@@ -227,7 +227,7 @@ node scripts/发布GitHubRelease.mjs  # 发布 GitHub Release（说明见 docs/r
 | [`docs/DEEPSEEK.md`](docs/DEEPSEEK.md) | 多供应商调用、校验、重试和上下文结构 |
 | [`docs/LOCAL_RUNTIME.md`](docs/LOCAL_RUNTIME.md) | 本地开发与 macOS 桌面封装 |
 | [`docs/GITHUB_PUBLICATION.md`](docs/GITHUB_PUBLICATION.md) | 不携带私有历史的 GitHub 发布流程 |
-| [`docs/release-说明-v0.1.15.md`](docs/release-说明-v0.1.15.md) | GitHub Release 文案模板：每版维护一份，由发布脚本读取 |
+| [`docs/release-说明-v0.1.17.md`](docs/release-说明-v0.1.17.md) | GitHub Release 文案模板：每版维护一份，由发布脚本读取 |
 
 ## 当前限制与后续方向
 
