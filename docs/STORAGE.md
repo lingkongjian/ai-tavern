@@ -133,7 +133,7 @@ macOS 桌面版由桌面入口强制设置绝对数据目录：`AI酒馆/用户�
 
 字段锁通过追加式 `state_field_lock_changes` 保存，最新一条记录决定字段当前是否锁定。路径使用 JSON Pointer，`$active` 表示实体启停状态，`*` 表示整个实体。锁定是剧本级约束，对所有分支生效；玩家的手工管理和明确回滚不受限制。AI 回合提交或重生成时，存储层会保留已锁定旧值、提交其他未锁字段，并把被拦截路径及模型建议写入 `state_lock_blocks`，页面据此显示本轮被阻止的修改。
 
-模型生成前会从启用的 `source_chunks` 中检索当前人物、地点、玩家输入、活动剧情任务和最近剧情最相关的少量片段。防剧透开启时，普通 `sourceReferences` 的 SQL 查询直接排除当前原作进度之后的片段。若当前为剧本任务且原文采用高度贴合模式，另一个受限查询只允许从下一章节选择最多两个、总计不超过 3,600 字符的导演锚点；这些内容以 `upcomingScriptGuidance` 进入请求，只约束重大方案和关键机制，不能作为已发生事实。实际普通引用和导演锚点分别保存到 `generated_output_json.sourceReferences` 与 `generated_output_json.scriptGuidanceReferences`，便于历史审计；页面不展开后者正文以避免剧透。
+模型生成前会从启用的 `source_chunks` 中检索当前人物、地点、玩家输入、活动剧情任务和最近剧情最相关的少量片段。防剧透开启时，普通 `sourceReferences` 的 SQL 查询直接排除当前原作进度之后的片段。程序还提供两类导演引导（`upcomingScriptGuidance`）：一是任务活动 + 高度贴合时的防剧透导演锚点（`scope=next_chapter_director_only`），二是剧情与大纲一致（aligned）时的剧本推进引导（`scope=next_chapter_progress_hint`），都只从下一章节选择最多两个、总计不超过 3,600 字符，只能作为导演方向而不能作为已发生事实。实际普通引用和导演引导分别保存到 `generated_output_json.sourceReferences` 与 `generated_output_json.scriptGuidanceReferences`（引用对象带 `scope` 标注，旧存档缺省按导演锚点处理），便于历史审计；页面不展开引导正文以避免剧透。
 
 原文进度支持"剧情驱动自动推进"：模型在回合输出顶层的可选 `sourceProgress` 字段报告剧情已推进到的原文章节号，本地在回合事务内校验后只进不退地更新启用且未删除文档的 `current_chapter`（收敛到各文档章节数），防剧透范围随之解锁。该变更写入 `content_asset_management_changes`（`operation='advance'`，只读审计、不可回滚、不阻断重生成），不写 `state_changes` 与 `materialized_states`。玩家仍可在原文资料设置中手动调整进度，自动推进不会把进度改小。
 

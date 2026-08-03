@@ -1013,6 +1013,11 @@ export function GameInterface({
   const scriptGuidanceReferences = records(
     displayedTurn?.generatedOutput.scriptGuidanceReferences,
   );
+  const scriptGuidanceScope =
+    (scriptGuidanceReferences[0]?.scope ?? "next_chapter_director_only") ===
+    "next_chapter_progress_hint"
+      ? "next_chapter_progress_hint"
+      : "next_chapter_director_only";
   const displayedStateChanges = displayedTurn?.stateChanges ?? [];
   const displayedBlockedStateChanges = displayedTurn?.blockedStateChanges ?? [];
   const generation = displayedTurn?.generation;
@@ -3210,7 +3215,11 @@ export function GameInterface({
                   <strong>
                     本轮使用了 {sourceReferences.length} 个可见片段
                     {scriptGuidanceReferences.length > 0
-                      ? ` · ${scriptGuidanceReferences.length} 个防剧透导演锚点`
+                      ? ` · ${scriptGuidanceReferences.length} ${
+                          scriptGuidanceScope === "next_chapter_progress_hint"
+                            ? "条剧本推进引导"
+                            : "个防剧透导演锚点"
+                        }`
                       : ""}
                   </strong>
                 </span>
@@ -3249,13 +3258,23 @@ export function GameInterface({
                   <article>
                     <header>
                       <div>
-                        <strong>下一章节剧本约束</strong>
-                        <span>高度贴合模式</span>
+                        <strong>
+                          {scriptGuidanceScope === "next_chapter_progress_hint"
+                            ? "剧本推进引导"
+                            : "下一章节剧本约束"}
+                        </strong>
+                        <span>
+                          {scriptGuidanceScope === "next_chapter_progress_hint"
+                            ? "大纲方向提示"
+                            : "高度贴合模式"}
+                        </span>
                       </div>
                       <small>内容隐藏以防剧透</small>
                     </header>
                     <p>
-                      这些片段只约束角色提出的重大方案、关键机制与必要参与者，不能被当作已经发生的剧情。
+                      {scriptGuidanceScope === "next_chapter_progress_hint"
+                        ? "这些片段只提示剧情应沿大纲推进的下一段方向，不能作为已发生的剧情或角色已知情报。"
+                        : "这些片段只约束角色提出的重大方案、关键机制与必要参与者，不能被当作已经发生的剧情。"}
                     </p>
                   </article>
                 ) : null}

@@ -231,6 +231,7 @@ test("高度贴合的剧本任务只把下一章节作为导演锚点", () => {
     );
     assert.equal(guidance.length, 1);
     assert.equal(guidance[0].chapterIndex, 2);
+    assert.equal(guidance[0].scope, "next_chapter_director_only");
     assert.match(guidance[0].content, /主动打开了钟楼侧门/);
   } finally {
     database.close();
@@ -718,6 +719,411 @@ test("属性判定待确认回合在掷骰提交后同样自动推进原文章�
         (change) => change.operation === "advance",
       ).length,
       1,
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+function makeGuidanceAdventure({ base, recentTurns, states }) {
+  return {
+    ...base,
+    branchState: {
+      ...base.branchState,
+      states: states ?? base.branchState.states,
+      recentTurns: recentTurns ?? base.branchState.recentTurns,
+    },
+  };
+}
+
+function makeMockTurn(base, { id, sequence, evaluation }) {
+  return {
+    id,
+    branchId: base.branchState.branch.id,
+    sequence,
+    parentTurnId: base.branchState.recentTurns.at(-1)?.id ?? null,
+    playerInput: {},
+    generatedOutput:
+      evaluation == null
+        ? { stateCommit: {} }
+        : { stateCommit: { storyDirectionEvaluation: evaluation } },
+    summaryPatch: "旅人与守钟人在钟楼调查。",
+    stateChanges: [],
+    blockedStateChanges: [],
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function alignedEvaluation({ status = "active", continuity = "aligned" } = {}) {
+  return {
+    status,
+    reason: "调查仍在继续。",
+    evidence: [],
+    continuity,
+    continuityReason: "与预埋剧本的连续性一致。",
+    recommendedModuleId: null,
+    suggestedNextDirection: null,
+  };
+}
+
+function startGuidanceAdventure(store, sourceDocuments) {
+  return store.startAdventure({
+    campaignName: "剧本推进引导测试",
+    world: { name: "潮汐城", premise: "钟声改变潮汐。" },
+    player: { name: "旅人", description: "调查失踪案。" },
+    mainCharacter: {
+      name: "守钟人",
+      role: "钟楼看守",
+      personality: "谨慎、克制。",
+    },
+    openingScene: "旅人来到钟楼。",
+    initialStoryDirection: "查明旅人的影子为何变淡。",
+    initialStoryModuleId: "fading-shadow",
+    storyModules: [
+      {
+        id: "fading-shadow",
+        title: "影子失踪",
+        objective: "查明旅人的影子为何变淡，并找到进入钟楼的办法。",
+        completionCriteria: ["影子变淡的原因得到可信解释"],
+        prerequisiteModuleIds: [],
+      },
+    ],
+    sourceDocuments,
+  });
+}
+
+test("剧本推进引导：剧情与大纲一致时从下一章节提取进度线索并标注 scope", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-hint-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startGuidanceAdventure(store, [sourceDocument]);
+    const base = store.loadAdventure(started.sessionId);
+    const adventure = makeGuidanceAdventure({
+      base,
+      recentTurns: [
+        ...base.branchState.recentTurns,
+        makeMockTurn(base, {
+          id: "turn-aligned-1",
+          sequence: 2,
+          evaluation: alignedEvaluation(),
+        }),
+      ],
+    });
+    const guidance = store.findUpcomingScriptGuidance({
+      sessionId: started.sessionId,
+      adventure,
+      query: "旅人询问守钟人能否进入钟楼",
+    });
+
+    assert.equal(guidance.length, 1);
+    assert.equal(guidance[0].chapterIndex, 2);
+    assert.equal(guidance[0].scope, "next_chapter_progress_hint");
+    assert.equal(guidance[0].fidelity, "balanced");
+    assert.match(guidance[0].content, /主动打开了钟楼侧门/);
+    assert.ok(guidance.reduce((sum, item) => sum + item.content.length, 0) <= 3_600);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("剧本推进引导：多文档命中时受 2 片段与 3600 字符预算限制", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-budget-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const documents = ["甲", "乙", "丙"].map((label) =>
+      parseSourceDocumentInput({
+        name: `原文${label}`,
+        fileName: `原文${label}.md`,
+        content: [
+          "# 第一章 初见",
+          `${label}章开篇。`,
+          "# 第二章 推进",
+          `${label}线索：${label.repeat(2_000)}`,
+        ].join("\n\n"),
+        currentChapter: 1,
+        preventFuture: true,
+        fidelity: "balanced",
+      }),
+    );
+    const started = startGuidanceAdventure(store, documents);
+    const base = store.loadAdventure(started.sessionId);
+    const adventure = makeGuidanceAdventure({
+      base,
+      recentTurns: [
+        ...base.branchState.recentTurns,
+        makeMockTurn(base, {
+          id: "turn-aligned-budget",
+          sequence: 2,
+          evaluation: alignedEvaluation(),
+        }),
+      ],
+    });
+    const guidance = store.findUpcomingScriptGuidance({
+      sessionId: started.sessionId,
+      adventure,
+      query: "旅人询问守钟人能否进入钟楼",
+    });
+
+    assert.ok(guidance.length >= 1);
+    assert.ok(guidance.length <= 2);
+    assert.ok(
+      guidance.reduce((sum, item) => sum + item.content.length, 0) <= 3_600,
+    );
+    assert.equal(
+      guidance.every((item) => item.chapterIndex === 2),
+      true,
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("剧本推进引导：diverged 或 uncertain 不注入", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-blocked-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startGuidanceAdventure(store, [sourceDocument]);
+    const base = store.loadAdventure(started.sessionId);
+    for (const continuity of ["diverged", "uncertain"]) {
+      const adventure = makeGuidanceAdventure({
+        base,
+        recentTurns: [
+          ...base.branchState.recentTurns,
+          makeMockTurn(base, {
+            id: `turn-${continuity}`,
+            sequence: 2,
+            evaluation: alignedEvaluation({ continuity }),
+          }),
+        ],
+      });
+      const guidance = store.findUpcomingScriptGuidance({
+        sessionId: started.sessionId,
+        adventure,
+        query: "旅人询问守钟人能否进入钟楼",
+      });
+      assert.equal(guidance.length, 0, `${continuity} 不应注入推进引导`);
+    }
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("剧本推进引导：无活动任务但最近完成的任务判定 aligned 时注入", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-completed-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startGuidanceAdventure(store, [sourceDocument]);
+    const base = store.loadAdventure(started.sessionId);
+    const completedTurnId = "turn-completed-1";
+    const states = base.branchState.states.map((state) =>
+      state.entityType === "story_direction"
+        ? {
+            ...state,
+            isActive: false,
+            updatedTurnId: completedTurnId,
+            state: {
+              ...state.state,
+              status: "completed",
+              continuity: "aligned",
+              continuityReason: "与预埋剧本的连续性一致。",
+            },
+          }
+        : state,
+    );
+    const adventure = makeGuidanceAdventure({
+      base,
+      recentTurns: [
+        ...base.branchState.recentTurns,
+        makeMockTurn(base, {
+          id: completedTurnId,
+          sequence: 2,
+          evaluation: null,
+        }),
+      ],
+      states,
+    });
+    const guidance = store.findUpcomingScriptGuidance({
+      sessionId: started.sessionId,
+      adventure,
+      query: "旅人询问守钟人能否进入钟楼",
+    });
+
+    assert.equal(guidance.length, 1);
+    assert.equal(guidance[0].scope, "next_chapter_progress_hint");
+    assert.equal(guidance[0].chapterIndex, 2);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("剧本推进引导：完成判定已超过最近 5 回合时不再注入", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-stale-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startGuidanceAdventure(store, [sourceDocument]);
+    const base = store.loadAdventure(started.sessionId);
+    const oldTurnId = "turn-completed-old";
+    const states = base.branchState.states.map((state) =>
+      state.entityType === "story_direction"
+        ? {
+            ...state,
+            isActive: false,
+            updatedTurnId: oldTurnId,
+            state: {
+              ...state.state,
+              status: "completed",
+              continuity: "aligned",
+              continuityReason: "与预埋剧本的连续性一致。",
+            },
+          }
+        : state,
+    );
+    const adventure = makeGuidanceAdventure({
+      base,
+      recentTurns: [
+        ...base.branchState.recentTurns,
+        makeMockTurn(base, {
+          id: oldTurnId,
+          sequence: 2,
+          evaluation: null,
+        }),
+        makeMockTurn(base, {
+          id: "turn-later-1",
+          sequence: 3,
+          evaluation: null,
+        }),
+        makeMockTurn(base, {
+          id: "turn-later-2",
+          sequence: 4,
+          evaluation: null,
+        }),
+        makeMockTurn(base, {
+          id: "turn-later-3",
+          sequence: 5,
+          evaluation: null,
+        }),
+        makeMockTurn(base, {
+          id: "turn-later-4",
+          sequence: 6,
+          evaluation: null,
+        }),
+        makeMockTurn(base, {
+          id: "turn-later-5",
+          sequence: 7,
+          evaluation: null,
+        }),
+        makeMockTurn(base, {
+          id: "turn-later-6",
+          sequence: 8,
+          evaluation: null,
+        }),
+      ],
+      states,
+    });
+    const guidance = store.findUpcomingScriptGuidance({
+      sessionId: started.sessionId,
+      adventure,
+      query: "旅人询问守钟人能否进入钟楼",
+    });
+    assert.equal(guidance.length, 0);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("剧本推进引导：开局首回合、无原文或未开启防剧透时不注入", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-guard-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+
+    // 开局首回合：还没有任何连续性评估
+    const withSource = startGuidanceAdventure(store, [sourceDocument]);
+    const openingAdventure = store.loadAdventure(withSource.sessionId);
+    assert.equal(
+      store.findUpcomingScriptGuidance({
+        sessionId: withSource.sessionId,
+        adventure: openingAdventure,
+        query: "旅人询问守钟人能否进入钟楼",
+      }).length,
+      0,
+    );
+
+    // 无原文：即使剧情一致也没有下一章节线索
+    const noSource = startGuidanceAdventure(store, []);
+    const noSourceBase = store.loadAdventure(noSource.sessionId);
+    const noSourceAdventure = makeGuidanceAdventure({
+      base: noSourceBase,
+      recentTurns: [
+        ...noSourceBase.branchState.recentTurns,
+        makeMockTurn(noSourceBase, {
+          id: "turn-aligned-no-source",
+          sequence: 2,
+          evaluation: alignedEvaluation(),
+        }),
+      ],
+    });
+    assert.equal(
+      store.findUpcomingScriptGuidance({
+        sessionId: noSource.sessionId,
+        adventure: noSourceAdventure,
+        query: "旅人询问守钟人能否进入钟楼",
+      }).length,
+      0,
+    );
+
+    // 未开启防剧透：进度之后的片段绝不能进入任何参考通道
+    const noPreventFuture = startGuidanceAdventure(store, [
+      { ...sourceDocument, preventFuture: false },
+    ]);
+    const noPreventBase = store.loadAdventure(noPreventFuture.sessionId);
+    const noPreventAdventure = makeGuidanceAdventure({
+      base: noPreventBase,
+      recentTurns: [
+        ...noPreventBase.branchState.recentTurns,
+        makeMockTurn(noPreventBase, {
+          id: "turn-aligned-no-prevent",
+          sequence: 2,
+          evaluation: alignedEvaluation(),
+        }),
+      ],
+    });
+    assert.equal(
+      store.findUpcomingScriptGuidance({
+        sessionId: noPreventFuture.sessionId,
+        adventure: noPreventAdventure,
+        query: "旅人询问守钟人能否进入钟楼",
+      }).length,
+      0,
     );
   } finally {
     database.close();

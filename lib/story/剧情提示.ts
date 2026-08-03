@@ -4,7 +4,10 @@ import type {
   JsonValue,
   LoadedAdventure,
 } from "../storage/story-store.ts";
-import type { SourceReferenceExcerpt } from "../reference/原文参考.ts";
+import type {
+  SourceReferenceExcerpt,
+  SourceReferenceScope,
+} from "../reference/原文参考.ts";
 import {
   estimateStoryMemoryTokens,
   extractMemoryTerms,
@@ -161,6 +164,8 @@ export function createStoryGenerationPrompt(input: {
   const { adventure, turnId, resolvedPlayerTurn } = input;
   const sourceReferences = input.sourceReferences ?? [];
   const scriptGuidanceReferences = input.scriptGuidanceReferences ?? [];
+  const guidanceScope: SourceReferenceScope =
+    scriptGuidanceReferences[0]?.scope ?? "next_chapter_director_only";
   const sourceProgressInfo = input.sourceProgressInfo ?? [];
   const memoryContext = input.memoryContext;
   const activeStateRecords = adventure.branchState.states.filter(
@@ -438,7 +443,9 @@ ${
 
 ${
   scriptGuidanceReferences.length > 0
-    ? `后续剧本锚点规则：upcomingScriptGuidance 是“高度贴合”剧本下一章节中与当前任务最相关的导演资料，不是角色自动知道的情报，也不是已经发生的事实。若当前对话自然抵达其中的方案、解释或关键剧情节点，必须保留锚点明确给出的核心机制、必要参与者、条件与因果，不得用自行发明的人名、机构、物品、地点或另一套解决办法替换。可以依据玩家选择和本剧本已发生事实调整表面过程；如已明显偏离或条件尚未满足，则暂缓揭示而不是强行照演。不得照抄、提及锚点或提前泄露与本轮无关的后续结果。`
+    ? guidanceScope === "next_chapter_progress_hint"
+      ? `剧本推进引导规则：upcomingScriptGuidance 本轮为“剧本推进引导”，取自剧本大纲当前进度之后紧邻章节的少量情节线索，用于提示剧情应沿大纲推进的下一段方向。它不是已经发生的事实，也不是角色自动知道的情报，更不是必须原样照演的台词或场景。不得把引导中的情节写成既定事实，不得照抄、提及引导或提前泄露与本轮无关的后续内容。若当前对话自然抵达其中的情节节点，应推进剧情并保持其核心方向、必要参与者与因果，可依据玩家选择和本剧本已发生事实调整表面过程；若剧情已明显偏离、线索与已发生事实冲突或条件尚未满足，应暂缓推进而不是强行拉回剧本路线。本规则与规则 20 一致：任何重大方案仍必须能在已发生事实、当前剧情任务、世界书、角色资料、sourceReferences 或 upcomingScriptGuidance 中找到依据。`
+      : `后续剧本锚点规则：upcomingScriptGuidance 是“高度贴合”剧本下一章节中与当前任务最相关的导演资料，不是角色自动知道的情报，也不是已经发生的事实。若当前对话自然抵达其中的方案、解释或关键剧情节点，必须保留锚点明确给出的核心机制、必要参与者、条件与因果，不得用自行发明的人名、机构、物品、地点或另一套解决办法替换。可以依据玩家选择和本剧本已发生事实调整表面过程；如已明显偏离或条件尚未满足，则暂缓揭示而不是强行照演。不得照抄、提及锚点或提前泄露与本轮无关的后续结果。`
     : "本轮没有下一章节导演锚点；任何重大解决方案都只能来自已发生事实、当前任务、世界书、角色资料或本轮可见原文，依据不足时必须先调查。"
 }
 
@@ -574,7 +581,7 @@ worldBookChanges 按需使用以下结构之一：
       chapterTitle: reference.chapterTitle,
       matchedCharacterNames: reference.matchedCharacterNames,
       matchedTerms: reference.matchedTerms,
-      scope: "next_chapter_director_only",
+      scope: reference.scope ?? "next_chapter_director_only",
       excerpt: reference.content,
     })),
   };
@@ -631,7 +638,12 @@ worldBookChanges 按需使用以下结构之一：
     ["章节摘要", context.chapterSummaries],
     ["长期记忆", context.longTermMemory],
     ["原文参考", context.sourceReferences],
-    ["后续剧本锚点", context.upcomingScriptGuidance],
+    [
+      guidanceScope === "next_chapter_progress_hint"
+        ? "剧本推进引导"
+        : "后续剧本锚点",
+      context.upcomingScriptGuidance,
+    ],
     ["玩家输入", context.playerInput],
   ] as const;
   const sections = sectionEntries.map(([name, value]) => ({
@@ -661,7 +673,9 @@ worldBookChanges 按需使用以下结构之一：
   }
   if (scriptGuidanceReferences.length > 0) {
     warnings.push(
-      `高度贴合模式已载入 ${scriptGuidanceReferences.length} 个下一章节导演锚点，用于约束重大方案与关键机制。`,
+      guidanceScope === "next_chapter_progress_hint"
+        ? `已载入 ${scriptGuidanceReferences.length} 条下一章节推进线索（剧本推进引导），用于提示剧情沿大纲自然推进。`
+        : `高度贴合模式已载入 ${scriptGuidanceReferences.length} 个下一章节导演锚点，用于约束重大方案与关键机制。`,
     );
   }
   if (stateTokens >= 5_000) {

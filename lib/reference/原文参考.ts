@@ -40,6 +40,10 @@ export interface SourceDocumentSettingsInput {
   fidelity?: SourceReferenceFidelity;
 }
 
+export type SourceReferenceScope =
+  | "next_chapter_director_only"
+  | "next_chapter_progress_hint";
+
 export interface SourceReferenceExcerpt {
   chunkId: string;
   ordinal: number;
@@ -53,6 +57,7 @@ export interface SourceReferenceExcerpt {
   matchedTerms: string[];
   fidelity: SourceReferenceFidelity;
   score: number;
+  scope?: SourceReferenceScope;
 }
 
 export interface SourceChunkCandidate {

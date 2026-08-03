@@ -19,6 +19,7 @@ import {
   type SourceDocumentSummary,
   type SourceReferenceExcerpt,
   type SourceReferenceFidelity,
+  type SourceReferenceScope,
 } from "../reference/原文参考.ts";
 import {
   ATTRIBUTE_ROLL_MAX,
@@ -1746,6 +1747,52 @@ function validateCommitInput(input: CommitTurnInput) {
   }
 }
 
+/**
+ * 判定当前剧情是否与剧本大纲一致，用于“剧本推进引导”的触发：
+ * - 有生效中的剧情走向时，以最近 5 个回合内最近一次非空的
+ *   storyDirectionEvaluation.continuity 为准（aligned 才触发）；
+ * - 没有生效走向时，仅当最近 5 个回合内完成过任务且落库的
+ *   story_direction.continuity === "aligned" 才触发，避免玩家取消走向
+ *   或长时间脱离任务后仍穿越旧回合误触发；
+ * - 没有任何回合（开局首回合）或没有任何连续性依据时不触发。
+ */
+function isAlignedWithOutline(adventure: LoadedAdventure): boolean {
+  const recentTurns = adventure.branchState.recentTurns;
+  if (recentTurns.length === 0) return false;
+  const recentWindow = recentTurns.slice(-5);
+  const activeDirection = adventure.branchState.states.find(
+    (state) => state.entityType === "story_direction" && state.isActive,
+  );
+  if (activeDirection) {
+    for (const turn of [...recentWindow].reverse()) {
+      const evaluation = readObject(
+        readObject(turn.generatedOutput.stateCommit).storyDirectionEvaluation,
+      );
+      const continuity = readString(evaluation.continuity);
+      if (
+        continuity === "aligned" ||
+        continuity === "diverged" ||
+        continuity === "uncertain"
+      ) {
+        return continuity === "aligned";
+      }
+    }
+    return false;
+  }
+  const recentTurnIds = new Set(recentWindow.map((turn) => turn.id));
+  const completedDirection = adventure.branchState.states.find(
+    (state) =>
+      state.entityType === "story_direction" &&
+      readString(state.state.continuity) !== "" &&
+      readString(state.state.status) === "completed",
+  );
+  return (
+    completedDirection !== undefined &&
+    recentTurnIds.has(completedDirection.updatedTurnId) &&
+    readString(completedDirection.state.continuity) === "aligned"
+  );
+}
+
 export class LocalStoryStore {
   private readonly database: DatabaseSync;
 
@@ -3430,20 +3477,49 @@ export class LocalStoryStore {
     const activeDirection = input.adventure.branchState.states.find(
       (state) => state.entityType === "story_direction" && state.isActive,
     )?.state;
-    if (
-      readString(activeDirection?.source) !== "script_module" ||
-      !readString(activeDirection?.moduleId)
-    ) {
-      return [];
-    }
+    const nextChapterRows = this.findNextChapterRows(input.sessionId);
+    if (nextChapterRows.length === 0) return [];
     const activeModuleId = readString(activeDirection?.moduleId);
-    const activeModule = input.adventure.branchState.states.find(
-      (state) =>
-        state.entityType === "story_module" &&
-        state.isActive &&
-        readString(state.state.moduleId) === activeModuleId,
-    )?.state;
-    const rows = this.database
+    const activeModule = activeModuleId
+      ? input.adventure.branchState.states.find(
+          (state) =>
+            state.entityType === "story_module" &&
+            state.isActive &&
+            readString(state.state.moduleId) === activeModuleId,
+        )?.state
+      : undefined;
+
+    const hasActiveScriptModule =
+      readString(activeDirection?.source) === "script_module" &&
+      Boolean(activeModuleId);
+    if (hasActiveScriptModule) {
+      const faithfulRows = nextChapterRows.filter(
+        (row) => row.fidelity === "faithful",
+      );
+      if (faithfulRows.length > 0) {
+        return this.rankUpcomingGuidance({
+          adventure: input.adventure,
+          query: input.query,
+          activeDirection,
+          activeModule,
+          rows: faithfulRows,
+          scope: "next_chapter_director_only",
+        });
+      }
+    }
+    if (!isAlignedWithOutline(input.adventure)) return [];
+    return this.rankUpcomingGuidance({
+      adventure: input.adventure,
+      query: input.query,
+      activeDirection,
+      activeModule,
+      rows: nextChapterRows,
+      scope: "next_chapter_progress_hint",
+    });
+  }
+
+  private findNextChapterRows(sessionId: string): SourceChunkRow[] {
+    return this.database
       .prepare(`
         SELECT source_chunks.id, source_chunks.document_id,
                source_documents.name AS document_name,
@@ -3457,21 +3533,30 @@ export class LocalStoryStore {
           AND source_documents.enabled = 1
           AND source_documents.is_deleted = 0
           AND source_documents.prevent_future = 1
-          AND source_documents.fidelity = 'faithful'
           AND source_documents.current_chapter < source_documents.chapter_count
           AND source_chunks.chapter_index = source_documents.current_chapter + 1
       `)
-      .all(input.sessionId) as unknown as SourceChunkRow[];
-    if (rows.length === 0) return [];
+      .all(sessionId) as unknown as SourceChunkRow[];
+  }
 
+  private rankUpcomingGuidance(input: {
+    adventure: LoadedAdventure;
+    query: string;
+    activeDirection: JsonObject | undefined;
+    activeModule: JsonObject | undefined;
+    rows: SourceChunkRow[];
+    scope: SourceReferenceScope;
+  }): SourceReferenceExcerpt[] {
+    const { adventure, query, activeDirection, activeModule, rows, scope } =
+      input;
     const activeCharacterIds = new Set(
-      input.adventure.branchState.states
+      adventure.branchState.states
         .filter(
           (state) => state.entityType === "character_card" && state.isActive,
         )
         .map((state) => state.entityId),
     );
-    const currentCharacterNames = input.adventure.branchState.states
+    const currentCharacterNames = adventure.branchState.states
       .filter(
         (state) =>
           state.entityType === "character_state" &&
@@ -3480,12 +3565,12 @@ export class LocalStoryStore {
       )
       .map((state) => readString(state.state.name))
       .filter(Boolean);
-    const sessionState = input.adventure.branchState.states.find(
+    const sessionState = adventure.branchState.states.find(
       (state) =>
         state.entityType === "session_state" && state.entityId === "core",
     )?.state;
     const enrichedQuery = [
-      input.query,
+      query,
       readString(activeDirection?.title),
       readString(activeDirection?.content),
       readString(activeModule?.title),
@@ -3495,7 +3580,7 @@ export class LocalStoryStore {
       readString(activeModule?.continuityNotes),
       readString(sessionState?.currentLocationName),
       readString(sessionState?.currentScene),
-      ...input.adventure.branchState.recentTurns
+      ...adventure.branchState.recentTurns
         .slice(-2)
         .map((turn) => turn.summaryPatch),
     ]
@@ -3517,9 +3602,9 @@ export class LocalStoryStore {
         content: row.content,
         characterNames: parseStringArray(row.character_names_json),
         currentChapter: row.current_chapter,
-        fidelity: "faithful",
+        fidelity: row.fidelity,
       })),
-    });
+    }).map((reference) => ({ ...reference, scope }));
   }
 
   listAdventures(): AdventureSummary[] {

@@ -407,7 +407,7 @@ function generatedOutputWithContext(
             matchedTerms: reference.matchedTerms,
             fidelity: reference.fidelity,
             score: reference.score,
-            scope: "next_chapter_director_only",
+            scope: reference.scope ?? "next_chapter_director_only",
           })),
         }
       : {}),

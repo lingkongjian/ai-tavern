@@ -350,3 +350,282 @@ test("generates, validates and atomically commits a DeepSeek story turn", async 
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+function parseStoryContext(content) {
+  return JSON.parse(content.slice(content.indexOf("{")));
+}
+
+test("剧情一致时注入剧本推进引导，偏离后停止且引导不写入历史", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-progress-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "剧本推进引导测试",
+      world: { name: "潮汐城", premise: "钟声会改变潮水方向。" },
+      player: { name: "旅人", description: "寻找失踪同伴的测绘师。" },
+      mainCharacter: {
+        name: "守钟人",
+        role: "钟楼看守",
+        personality: "警觉但守信。",
+        firstMessage: "钟还没有敲响。",
+      },
+      openingScene: "旅人在黄昏来到钟楼。",
+      initialStoryDirection: "查明旅人的影子为何变淡。",
+      initialStoryModuleId: "fading-shadow",
+      storyModules: [
+        {
+          id: "fading-shadow",
+          title: "影子失踪",
+          objective: "查明旅人的影子为何变淡，并找到进入钟楼的办法。",
+          completionCriteria: ["影子变淡的原因得到可信解释"],
+          prerequisiteModuleIds: [],
+        },
+      ],
+      sourceDocuments: [
+        {
+          name: "潮汐城原作",
+          fileName: "潮汐城原作.md",
+          content: [
+            "# 第一章 钟楼初见",
+            "守钟人把钥匙压在掌心，没有立刻交给旅人。",
+            "# 第二章 影子失踪",
+            "守钟人发现旅人的影子变淡后，第一次主动打开了钟楼侧门。",
+            "“跟紧我。现在不是证明你勇敢的时候。”",
+          ].join("\n\n"),
+          enabled: true,
+          currentChapter: 1,
+          preventFuture: true,
+          fidelity: "balanced",
+        },
+      ],
+    });
+
+    const storyDirection = "查明旅人的影子为何变淡。";
+    const evaluationFor = (continuity) => ({
+      status: "active",
+      reason: "调查仍在继续。",
+      evidence: [],
+      continuity,
+      continuityReason: `与预埋剧本的连续性${continuity === "aligned" ? "一致" : "不一致"}。`,
+      recommendedModuleId: null,
+      suggestedNextDirection: null,
+    });
+    const baseTurn = (eventId, scene) => ({
+      schemaVersion: "1.0.0",
+      turn: {
+        scene,
+        events: [
+          {
+            id: eventId,
+            type: "plot_progress",
+            summary: scene,
+            characterIds: [started.playerCharacterId, started.mainCharacterId],
+            locationId: "clock-tower",
+          },
+        ],
+        dialogue: [
+          {
+            id: `${eventId}-line`,
+            speakerId: started.mainCharacterId,
+            content: "钟楼里还有我们没看过的东西。",
+            addressedCharacterIds: [started.playerCharacterId],
+          },
+        ],
+      },
+      decision: {
+        context: "action_direction",
+        prompt: "旅人接下来准备做什么？",
+        choices: [
+          {
+            id: "choice-1",
+            label: "继续调查",
+            description: "留在钟楼继续调查。",
+            stance: "neutral",
+          },
+          {
+            id: "choice-2",
+            label: "回去休息",
+            description: "先离开钟楼休息。",
+            stance: "benevolent",
+          },
+        ],
+      },
+      stateCommit: {
+        sceneTransition: {
+          locationId: "clock-tower",
+          locationName: "逆流钟楼",
+          locationDescription: "铜钟悬在潮湿的石室中央。",
+          presentCharacterIds: [started.playerCharacterId, started.mainCharacterId],
+          reason: "旅人与守钟人仍在钟楼石室中。",
+          evidence: [eventId],
+        },
+        characterStateChanges: [],
+        relationshipChanges: [],
+        characterCardChanges: [],
+        worldBookChanges: [],
+        summaryPatch: scene,
+      },
+      warnings: [],
+    });
+
+    // 回合 1：没有上一回合的连续性信号，不注入推进引导
+    const firstOutput = {
+      ...baseTurn("event-progress-1", "旅人在钟楼门前提及影子变淡。"),
+      stateCommit: {
+        ...baseTurn("event-progress-1", "旅人在钟楼门前提及影子变淡。").stateCommit,
+        storyDirectionEvaluation: evaluationFor("aligned"),
+      },
+    };
+    let firstMessages;
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "progress-e2e-1",
+        selectedChoiceId: "opening-neutral",
+        roleplay: { mode: "action", content: "旅人先观察守钟人的反应。" },
+        storyDirection,
+      }),
+      createTurnId: () => "turn-progress-1",
+      generate: async (messages) => {
+        firstMessages = messages;
+        return {
+          content: firstOutput,
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        };
+      },
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    const firstContext = parseStoryContext(firstMessages[1].content);
+    assert.deepEqual(firstContext.upcomingScriptGuidance, []);
+    assert.doesNotMatch(firstMessages[0].content, /剧本推进引导规则/);
+
+    // 回合 2：上一回合 aligned → 注入剧本推进引导，且不写入历史
+    const secondOutput = {
+      ...baseTurn("event-progress-2", "守钟人讲述影子的异常。"),
+      stateCommit: {
+        ...baseTurn("event-progress-2", "守钟人讲述影子的异常。").stateCommit,
+        storyDirectionEvaluation: evaluationFor("aligned"),
+      },
+    };
+    let secondMessages;
+    const second = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: first.committedTurn.id,
+        idempotencyKey: "progress-e2e-2",
+        selectedChoiceId: "choice-1",
+        storyDirection,
+      }),
+      createTurnId: () => "turn-progress-2",
+      generate: async (messages) => {
+        secondMessages = messages;
+        return {
+          content: secondOutput,
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        };
+      },
+    });
+    assert.equal(second.committedTurn.sequence, 3);
+    assert.match(secondMessages[0].content, /剧本推进引导规则/);
+    assert.match(secondMessages[0].content, /不是已经发生的事实/);
+    assert.match(secondMessages[0].content, /暂缓推进而不是强行拉回剧本路线/);
+    const secondContext = parseStoryContext(secondMessages[1].content);
+    assert.equal(secondContext.upcomingScriptGuidance.length, 1);
+    assert.equal(
+      secondContext.upcomingScriptGuidance[0].scope,
+      "next_chapter_progress_hint",
+    );
+    assert.equal(secondContext.upcomingScriptGuidance[0].chapterIndex, 2);
+    assert.match(
+      secondContext.upcomingScriptGuidance[0].excerpt,
+      /主动打开了钟楼侧门/,
+    );
+    assert.equal(
+      JSON.stringify(secondContext.recentTurns).includes("主动打开了钟楼侧门"),
+      false,
+      "推进引导不得进入历史回合上下文",
+    );
+    assert.equal(
+      secondContext.upcomingScriptGuidance[0].excerpt.includes(
+        "跟紧我。现在不是证明你勇敢的时候。",
+      ),
+      true,
+    );
+    // 保存的引用带 scope 供审计与页面展示
+    assert.equal(
+      store.loadAdventure(started.sessionId).branchState.recentTurns.at(-1)
+        .generatedOutput.scriptGuidanceReferences[0].scope,
+      "next_chapter_progress_hint",
+    );
+
+    // 回合 3：输出 diverged 提交后，回合 4 不再注入
+    const thirdOutput = {
+      ...baseTurn("event-progress-3", "旅人决定放弃调查钟楼。"),
+      stateCommit: {
+        ...baseTurn("event-progress-3", "旅人决定放弃调查钟楼。").stateCommit,
+        storyDirectionEvaluation: evaluationFor("diverged"),
+      },
+    };
+    const third = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: second.committedTurn.id,
+        idempotencyKey: "progress-e2e-3",
+        selectedChoiceId: "choice-1",
+        storyDirection,
+      }),
+      createTurnId: () => "turn-progress-3",
+      generate: async () => ({
+        content: thirdOutput,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    assert.equal(third.committedTurn.sequence, 4);
+
+    let fourthMessages;
+    const fourth = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: third.committedTurn.id,
+        idempotencyKey: "progress-e2e-4",
+        selectedChoiceId: "choice-1",
+        storyDirection,
+      }),
+      createTurnId: () => "turn-progress-4",
+      generate: async (messages) => {
+        fourthMessages = messages;
+        return {
+          content: {
+            ...baseTurn("event-progress-4", "旅人收拾行装准备离开。"),
+            stateCommit: {
+              ...baseTurn("event-progress-4", "旅人收拾行装准备离开。").stateCommit,
+              storyDirectionEvaluation: evaluationFor("diverged"),
+            },
+          },
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        };
+      },
+    });
+    assert.equal(fourth.committedTurn.sequence, 5);
+    const fourthContext = parseStoryContext(fourthMessages[1].content);
+    assert.deepEqual(fourthContext.upcomingScriptGuidance, []);
+    assert.doesNotMatch(fourthMessages[0].content, /剧本推进引导规则/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
