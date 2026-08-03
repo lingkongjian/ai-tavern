@@ -143,6 +143,12 @@ function compactRecentTurns(adventure: LoadedAdventure, count: number) {
   });
 }
 
+export interface SourceProgressInfo {
+  documentName: string;
+  currentChapter: number;
+  chapterCount: number;
+}
+
 export function createStoryGenerationPrompt(input: {
   adventure: LoadedAdventure;
   turnId: string;
@@ -150,10 +156,12 @@ export function createStoryGenerationPrompt(input: {
   sourceReferences?: SourceReferenceExcerpt[];
   scriptGuidanceReferences?: SourceReferenceExcerpt[];
   memoryContext?: StoryMemoryContext;
+  sourceProgressInfo?: SourceProgressInfo[];
 }): StoryGenerationPrompt {
   const { adventure, turnId, resolvedPlayerTurn } = input;
   const sourceReferences = input.sourceReferences ?? [];
   const scriptGuidanceReferences = input.scriptGuidanceReferences ?? [];
+  const sourceProgressInfo = input.sourceProgressInfo ?? [];
   const memoryContext = input.memoryContext;
   const activeStateRecords = adventure.branchState.states.filter(
     (state) => state.isActive,
@@ -417,6 +425,17 @@ ${
     : "本轮没有检索到当前进度内的普通原文参考；人物表现依据当前剧本资料，若另有后续剧本锚点则只按下述边界使用。"
 }
 
+原文进度自动推进：${
+  sourceProgressInfo.length > 0
+    ? `当前已解锁${sourceProgressInfo
+        .map(
+          (item) =>
+            `《${item.documentName}》第 ${item.currentChapter}/${item.chapterCount} 章`,
+        )
+        .join("、")}；`
+    : ""
+}若本轮剧情实际发生的内容已经推进到原文第 N 章对应的情节（可跨章节推进），在顶层返回 "sourceProgress": N（1 起的整数）；对话、日常回合未触及新章节时省略该字段。绝不能只为解锁后续原文章节而虚报进度；本地只会向前解锁（只进不退），不会把进度改小。
+
 ${
   scriptGuidanceReferences.length > 0
     ? `后续剧本锚点规则：upcomingScriptGuidance 是“高度贴合”剧本下一章节中与当前任务最相关的导演资料，不是角色自动知道的情报，也不是已经发生的事实。若当前对话自然抵达其中的方案、解释或关键剧情节点，必须保留锚点明确给出的核心机制、必要参与者、条件与因果，不得用自行发明的人名、机构、物品、地点或另一套解决办法替换。可以依据玩家选择和本剧本已发生事实调整表面过程；如已明显偏离或条件尚未满足，则暂缓揭示而不是强行照演。不得照抄、提及锚点或提前泄露与本轮无关的后续结果。`
@@ -487,7 +506,7 @@ worldBookChanges 按需使用以下结构之一：
 - update：{"operation":"update","targetEntryId":"现有条目ID","patch":{"content":"更新后的事实"},"sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 - deactivate：{"operation":"deactivate","targetEntryId":"现有条目ID","sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 
-没有某类变化时必须返回空数组。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
+没有某类变化时必须返回空数组。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
 
   const context: JsonObject = {
     nextTurnId: turnId,

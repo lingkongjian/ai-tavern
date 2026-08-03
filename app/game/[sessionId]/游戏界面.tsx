@@ -89,6 +89,7 @@ const stateLabels: Record<LoadedStateChange["entityType"], string> = {
   plot_check: "属性判定",
   location: "地点",
   session_state: "场景状态",
+  source_document: "原文进度",
 };
 
 const operationLabels: Record<LoadedStateChange["operation"], string> = {
@@ -215,6 +216,7 @@ const contentAssetOperationLabels: Record<string, string> = {
   import: "导入原文",
   update: "调整原文",
   remove: "删除原文",
+  advance: "剧情推进自动解锁",
   update_entry: "修正记忆",
   update_settings: "调整记忆设置",
   rebuild: "重建记忆索引",
@@ -1777,6 +1779,39 @@ export function GameInterface({
     }
   }
 
+  async function restoreToSavePoint(point: AdventureRecoveryPoint) {
+    if (branchBusyAction) return;
+    const restoredHint =
+      point.branchId === adventure.branchState.branch.id
+        ? `恢复后当前分支会回到回合 ${point.sequence}，该回合之后推进的剧情与状态将被删除；其他分支不受影响。`
+        : `恢复后会切换到分支“${point.branchName}”并回到回合 ${point.sequence}，该分支在此之后推进的剧情与状态将被删除。`;
+    if (
+      !window.confirm(
+        `确定恢复到存档“${point.name}”吗？\n\n${restoredHint}\n\n此操作无法撤销，请谨慎选择。`,
+      )
+    ) {
+      return;
+    }
+    setBranchBusyAction(`restore:${point.id}`);
+    setBranchManagerError("");
+    try {
+      const response = await fetch(
+        `/api/adventures/${adventure.session.id}/saves/${point.id}/restore`,
+        { method: "POST" },
+      );
+      const body = (await response.json()) as BranchManagementResponse;
+      if (!response.ok) throw new Error(body.error ?? "恢复存档失败。");
+      applyBranchPayload(body);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setBranchManagerError(
+        error instanceof Error ? error.message : "恢复存档失败。",
+      );
+    } finally {
+      setBranchBusyAction("");
+    }
+  }
+
   async function sendStoryContentCommand(
     domain: StoryContentDomain,
     command: Record<string, unknown>,
@@ -2944,12 +2979,35 @@ export function GameInterface({
       <div className="game-layout">
         {sessionState?.badEnd === true ? (
           <div className="bad-end-banner" role="alert">
-            <strong>结局警示</strong>
-            <span>
-              {firedBadEndTriggers.length > 0
-                ? firedBadEndTriggers[0].consequence
-                : "局势正在滑向坏结局方向，接下来的选择将决定最后的结果。"}
-            </span>
+            <div className="bad-end-banner-copy">
+              <strong>结局警示</strong>
+              <span>
+                {firedBadEndTriggers.length > 0
+                  ? firedBadEndTriggers[0].consequence
+                  : "局势正在滑向坏结局方向，接下来的选择将决定最后的结果。"}
+              </span>
+            </div>
+            <div className="bad-end-actions">
+              <button
+                type="button"
+                disabled={Boolean(branchBusyAction)}
+                onClick={() => openBranchManagerForTurn()}
+              >
+                打开分支与存档
+              </button>
+              {recoveryPoints.slice(0, 3).map((point) => (
+                <button
+                  type="button"
+                  key={point.id}
+                  disabled={Boolean(branchBusyAction)}
+                  onClick={() => void restoreToSavePoint(point)}
+                >
+                  {branchBusyAction === `restore:${point.id}`
+                    ? "恢复中……"
+                    : `回到结局前 · ${point.name}（回合 ${point.sequence}）`}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         <section className="story-stage" aria-labelledby="scene-title">
@@ -3782,7 +3840,7 @@ export function GameInterface({
                   >
                     <strong>{document.name}</strong>
                     <p>
-                      进度 {document.currentChapter}/{document.chapterCount} · {document.fidelity === "faithful" ? "高度贴合（含后续锚点）" : "平衡参考"}
+                      进度 {document.currentChapter}/{document.chapterCount}（随剧情推进自动解锁） · {document.fidelity === "faithful" ? "高度贴合（含后续锚点）" : "平衡参考"}
                     </p>
                     <small>{document.enabled ? "检索中" : "已暂停"}</small>
                   </article>
@@ -4820,6 +4878,7 @@ export function GameInterface({
                 </form>
                 <p className="automatic-save-note">
                   系统会在开局及每 5 个回合自动保存一次；手动存档还会包含当前回合后的角色与地点管理结果。
+                  “恢复”会把当前剧情回到存档点并删除其后推进的内容；“恢复为新分支”则保留原路线。
                 </p>
                 <div className="recovery-point-list">
                   {recoveryPoints.map((point) => (
@@ -4843,6 +4902,15 @@ export function GameInterface({
                         </small>
                       </div>
                       <footer>
+                        <button
+                          type="button"
+                          disabled={Boolean(branchBusyAction)}
+                          onClick={() => void restoreToSavePoint(point)}
+                        >
+                          {branchBusyAction === `restore:${point.id}`
+                            ? "恢复中……"
+                            : "恢复"}
+                        </button>
                         <button
                           type="button"
                           disabled={Boolean(branchBusyAction)}
@@ -4987,6 +5055,9 @@ export function GameInterface({
                             </option>
                           ))}
                         </select>
+                        <small className="source-settings-hint">
+                          剧情推进到新章节时模型会自动向前解锁（只进不退），也可在此手动调整。
+                        </small>
                       </label>
                       <label>
                         <span>人物贴合度</span>

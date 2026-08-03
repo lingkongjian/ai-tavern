@@ -164,6 +164,7 @@ export interface ValidatedGeneratedTurn {
     dialogue: GeneratedDialogue[];
   };
   attributeChecks: GeneratedAttributeCheck[];
+  sourceProgress: number | null;
   decision: {
     context: "proposal_response" | "action_direction";
     prompt: string;
@@ -1428,6 +1429,19 @@ export function validateGeneratedTurn(
     ),
     ...normalizationWarnings,
   ];
+
+  let sourceProgress: number | null = null;
+  if (value.sourceProgress !== undefined) {
+    if (
+      typeof value.sourceProgress !== "number" ||
+      !Number.isInteger(value.sourceProgress) ||
+      value.sourceProgress < 1
+    ) {
+      issues.push("sourceProgress 必须是大于等于 1 的整数；本轮未触及新章节时省略该字段。");
+    } else {
+      sourceProgress = value.sourceProgress;
+    }
+  }
   const summaryPatch =
     typeof stateCommit.summaryPatch === "string"
       ? stateCommit.summaryPatch.trim().slice(0, 4_000)
@@ -1462,6 +1476,7 @@ export function validateGeneratedTurn(
         : value,
     turn: { scene, events, dialogue },
     attributeChecks,
+    sourceProgress,
     decision: {
       context,
       prompt: decisionPrompt,

@@ -375,3 +375,465 @@ test("backfills a recovery snapshot when upgrading an existing local story", () 
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+function sessionStateOf(adventure) {
+  return adventure.branchState.states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  )?.state ?? {};
+}
+
+function characterStateOf(adventure, characterId) {
+  return adventure.branchState.states.find(
+    (state) =>
+      state.entityType === "character_state" && state.entityId === characterId,
+  )?.state ?? {};
+}
+
+function startBadEndScenario(store) {
+  const started = store.startAdventure({
+    campaignName: "结局恢复测试",
+    world: { name: "迷雾城", premise: "结局后的选择。" },
+    player: { name: "旅人", description: "寻找出路的人。" },
+    mainCharacter: {
+      name: "引路人",
+      role: "向导",
+      personality: "谨慎",
+      firstMessage: "这边走。",
+    },
+    openingScene: "旅人与引路人在城门口。",
+  });
+  let headTurnId = started.openingTurnId;
+  const commit = (key, scene, mutations, summary) =>
+    store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: started.branchId,
+      expectedHeadTurnId: headTurnId,
+      idempotencyKey: key,
+      playerInput: { customChoice: scene },
+      generatedOutput: { schemaVersion: "1.0.0", scene },
+      summaryPatch: summary ?? scene,
+      stateMutations: mutations,
+    });
+  const turn2 = commit(
+    "badend-turn-2",
+    "旅人进入树林。",
+    [
+      {
+        entityType: "session_state",
+        entityId: "core",
+        operation: "merge",
+        value: { currentScene: "城外树林", currentLocationId: "loc-woods" },
+        reason: "场景推进",
+        evidence: ["badend-event-2"],
+      },
+    ],
+    "进入树林。",
+  );
+  headTurnId = turn2.id;
+  const turn3 = commit(
+    "badend-turn-3",
+    "旅人在小屋过夜。",
+    [
+      {
+        entityType: "session_state",
+        entityId: "core",
+        operation: "merge",
+        value: { gameTimeDay: 2, currentScene: "林中小屋" },
+        reason: "过夜",
+        evidence: ["badend-event-3"],
+      },
+      {
+        entityType: "character_state",
+        entityId: started.mainCharacterId,
+        operation: "merge",
+        value: { mood: "平静", trust: 30 },
+        reason: "同行过夜",
+        evidence: ["badend-event-3"],
+      },
+    ],
+    "小屋过夜，进入第 2 日。",
+  );
+  headTurnId = turn3.id;
+  const saveBeforeBadEnd = store.createSavePoint(
+    started.sessionId,
+    "结局前·小屋过夜",
+  );
+  const turn4 = commit(
+    "badend-turn-4",
+    "旅人坠入深渊。",
+    [
+      {
+        entityType: "session_state",
+        entityId: "core",
+        operation: "merge",
+        value: {
+          badEnd: true,
+          badEndReason: "旅人坠入深渊，再无音讯。",
+          currentScene: "深渊底部",
+        },
+        reason: "偏离触发器把局势推向了坏结局方向",
+        evidence: ["badend-event-4"],
+      },
+      {
+        entityType: "character_state",
+        entityId: started.mainCharacterId,
+        operation: "merge",
+        value: { mood: "绝望" },
+        reason: "结局",
+        evidence: ["badend-event-4"],
+      },
+    ],
+    "旅人坠入深渊。",
+  );
+  return { started, turn2, turn3, turn4, saveBeforeBadEnd, commit };
+}
+
+test("restores a bad-end story to the save point before the ending", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-badend-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const { started, turn3, turn4, saveBeforeBadEnd } =
+      startBadEndScenario(store);
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(sessionStateOf(adventure).badEnd, true);
+    assert.equal(sessionStateOf(adventure).gameTimeDay, 2);
+    assert.equal(characterStateOf(adventure, started.mainCharacterId).mood, "绝望");
+
+    const restored = store.restoreSavePoint(
+      started.sessionId,
+      saveBeforeBadEnd.id,
+    );
+    assert.equal(restored.sequence, 3);
+    assert.equal(restored.branchId, started.branchId);
+    assert.equal(restored.removedTurnCount, 1);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.headTurnId, turn3.id);
+    assert.equal(adventure.branchState.branch.nextSequence, 4);
+    assert.equal(sessionStateOf(adventure).badEnd, undefined);
+    assert.equal(sessionStateOf(adventure).badEndReason, undefined);
+    assert.equal(sessionStateOf(adventure).gameTimeDay, 2);
+    assert.equal(sessionStateOf(adventure).currentScene, "林中小屋");
+    assert.equal(characterStateOf(adventure, started.mainCharacterId).mood, "平静");
+    assert.equal(characterStateOf(adventure, started.mainCharacterId).trust, 30);
+    assert.deepEqual(
+      adventure.branchState.turnHistory.map((turn) => turn.sequence),
+      [3, 2, 1],
+    );
+    assert.equal(
+      adventure.branchState.turnHistory.some((turn) => turn.id === turn4.id),
+      false,
+    );
+
+    const turn5 = store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: started.branchId,
+      expectedHeadTurnId: turn3.id,
+      idempotencyKey: "badend-turn-5-after-restore",
+      playerInput: { customChoice: "旅人重新出发" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "旅人重新出发。" },
+      summaryPatch: "恢复后重新出发。",
+    });
+    assert.equal(turn5.sequence, 4);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.headTurnId, turn5.id);
+    assert.equal(sessionStateOf(adventure).badEnd, undefined);
+    assert.equal(adventure.branchState.turnHistory.length, 4);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("does not leak bad-end flag when forking from a historical turn", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-badend-fork-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const { started, turn3, saveBeforeBadEnd } = startBadEndScenario(store);
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(sessionStateOf(adventure).badEnd, true);
+
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "结局前重新选择",
+      sourceTurnId: turn3.id,
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, fork.branchId);
+    assert.equal(sessionStateOf(adventure).badEnd, undefined);
+    assert.equal(sessionStateOf(adventure).gameTimeDay, 2);
+    assert.equal(sessionStateOf(adventure).currentScene, "林中小屋");
+    assert.equal(characterStateOf(adventure, started.mainCharacterId).mood, "平静");
+    assert.equal(adventure.branchState.branch.headTurnId, turn3.id);
+
+    const fromSave = store.createBranch({
+      sessionId: started.sessionId,
+      name: "从结局前存档重新选择",
+      recoveryPointId: saveBeforeBadEnd.id,
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, fromSave.branchId);
+    assert.equal(sessionStateOf(adventure).badEnd, undefined);
+    assert.equal(sessionStateOf(adventure).gameTimeDay, 2);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("restores a save point owned by another branch and switches to it", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-cross-restore-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const { started, turn2, saveBeforeBadEnd } = startBadEndScenario(store);
+    // 从回合 2 分叉出另一条路线并推进（当前活动分支）
+    const alt = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: turn2.id,
+    });
+    const altTurn = store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: alt.branchId,
+      expectedHeadTurnId: turn2.id,
+      idempotencyKey: "cross-alt-turn",
+      playerInput: { customChoice: "旅人独自走向南路" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "旅人独自走向南路。" },
+      summaryPatch: "南路分支推进。",
+      stateMutations: [
+        {
+          entityType: "character_state",
+          entityId: started.mainCharacterId,
+          operation: "merge",
+          value: { mood: "坚定", route: "south" },
+          reason: "南路选择",
+          evidence: ["cross-alt-event"],
+        },
+      ],
+    });
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, alt.branchId);
+    assert.equal(adventure.branchState.branch.headTurnId, altTurn.id);
+
+    // 恢复到主线（badEnd 分支）的结局前存档：应切回主线并就地回退
+    const restored = store.restoreSavePoint(
+      started.sessionId,
+      saveBeforeBadEnd.id,
+    );
+    assert.equal(restored.branchId, started.branchId);
+    assert.equal(restored.activeBranchId, started.branchId);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, started.branchId);
+    assert.equal(sessionStateOf(adventure).badEnd, undefined);
+    assert.equal(sessionStateOf(adventure).gameTimeDay, 2);
+    assert.deepEqual(
+      adventure.branchState.turnHistory.map((turn) => turn.sequence),
+      [3, 2, 1],
+    );
+    // 子分支保留，切回去状态不受影响
+    store.switchBranch(started.sessionId, alt.branchId);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.headTurnId, altTurn.id);
+    assert.equal(characterStateOf(adventure, started.mainCharacterId).mood, "坚定");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("restoring deletes later turns and their automatic snapshots only", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restore-cleanup-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "清理测试",
+      world: { name: "钟楼", premise: "存档点清理验证。" },
+      player: { name: "记录员", description: "负责推进钟摆。" },
+      mainCharacter: { name: "守塔人", role: "看守", personality: "按回合记录变化。" },
+      openingScene: "记录员进入钟楼。",
+    });
+    let headTurnId = started.openingTurnId;
+    let manual;
+    for (let sequence = 2; sequence <= 7; sequence += 1) {
+      const committed = store.commitTurn({
+        sessionId: started.sessionId,
+        branchId: started.branchId,
+        expectedHeadTurnId: headTurnId,
+        idempotencyKey: `cleanup-turn-${sequence}`,
+        playerInput: { customChoice: `推进第 ${sequence} 次钟摆` },
+        generatedOutput: { schemaVersion: "1.0.0", scene: `第 ${sequence} 次钟声响起。` },
+        summaryPatch: `钟声推进到回合 ${sequence}。`,
+      });
+      headTurnId = committed.id;
+      if (sequence === 4) {
+        manual = store.createSavePoint(started.sessionId, "回合四结束");
+      }
+    }
+    assert.equal(manual.sequence, 4);
+    const pointsBefore = store.listRecoveryPoints(started.sessionId);
+    assert.equal(
+      pointsBefore.some(
+        (point) => point.type === "automatic" && point.sequence === 5,
+      ),
+      true,
+    );
+
+    const restored = store.restoreSavePoint(started.sessionId, manual.id);
+    assert.equal(restored.removedTurnCount, 3);
+    const pointsAfter = store.listRecoveryPoints(started.sessionId);
+    assert.equal(
+      pointsAfter.some((point) => point.type === "automatic" && point.sequence === 5),
+      false,
+    );
+    assert.equal(pointsAfter.some((point) => point.id === manual.id), true);
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.deepEqual(
+      adventure.branchState.turnHistory.map((turn) => turn.sequence),
+      [4, 3, 2, 1],
+    );
+    // 恢复点之后推进的回合被删除后，可以从该处继续推进
+    const next = store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: started.branchId,
+      expectedHeadTurnId: adventure.branchState.branch.headTurnId,
+      idempotencyKey: "cleanup-turn-after-restore",
+      playerInput: { customChoice: "继续推进钟摆" },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "钟声再次响起。" },
+      summaryPatch: "恢复后继续推进。",
+    });
+    assert.equal(next.sequence, 5);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("rejects restoring past a child branch fork and keeps story unchanged", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restore-guard-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "保护测试",
+      world: { name: "岔口", premise: "分叉后的存档保护。" },
+      player: { name: "旅人", description: "面对岔口的人。" },
+      mainCharacter: { name: "向导", role: "引路", personality: "谨慎。" },
+      openingScene: "旅人在岔口。",
+    });
+    let headTurnId = started.openingTurnId;
+    const commits = [];
+    let manual;
+    for (let sequence = 2; sequence <= 6; sequence += 1) {
+      const committed = store.commitTurn({
+        sessionId: started.sessionId,
+        branchId: started.branchId,
+        expectedHeadTurnId: headTurnId,
+        idempotencyKey: `guard-turn-${sequence}`,
+        playerInput: { customChoice: `选择 ${sequence}` },
+        generatedOutput: { schemaVersion: "1.0.0", scene: `回合 ${sequence}。` },
+        summaryPatch: `回合 ${sequence}。`,
+      });
+      commits.push(committed);
+      headTurnId = committed.id;
+      if (sequence === 5) {
+        manual = store.createSavePoint(started.sessionId, "回合五结束");
+      }
+    }
+    assert.equal(manual.sequence, 5);
+    // 在回合 6（恢复点之后）分叉出子分支
+    store.createBranch({
+      sessionId: started.sessionId,
+      name: "从回合六分叉",
+      sourceTurnId: commits[4].id,
+    });
+    assert.throws(
+      () => store.restoreSavePoint(started.sessionId, manual.id),
+      BranchManagementError,
+    );
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.headTurnId, commits[4].id);
+    assert.equal(adventure.branchState.turnHistory.length, 6);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("restores an automatic snapshot with its frozen state", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-autosave-restore-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "自动恢复测试",
+      world: { name: "雾港", premise: "自动存档恢复。" },
+      player: { name: "水手", description: "回到雾港的人。" },
+      mainCharacter: { name: "港务长", role: "港口负责人", personality: "按簿登记。" },
+      openingScene: "水手回到雾港。",
+    });
+    let headTurnId = started.openingTurnId;
+    for (let sequence = 2; sequence <= 6; sequence += 1) {
+      const committed = store.commitTurn({
+        sessionId: started.sessionId,
+        branchId: started.branchId,
+        expectedHeadTurnId: headTurnId,
+        idempotencyKey: `auto-restore-turn-${sequence}`,
+        playerInput: { customChoice: `推进回合 ${sequence}` },
+        generatedOutput: { schemaVersion: "1.0.0", scene: `回合 ${sequence}。` },
+        summaryPatch: `回合 ${sequence}。`,
+        stateMutations:
+          sequence === 6
+            ? [
+                {
+                  entityType: "session_state",
+                  entityId: "core",
+                  operation: "merge",
+                  value: { gameTimeDay: 3, currentScene: "雾港深处" },
+                  reason: "航程推进",
+                  evidence: [`auto-restore-event-${sequence}`],
+                },
+              ]
+            : [],
+      });
+      headTurnId = committed.id;
+    }
+    const automatic5 = store
+      .listRecoveryPoints(started.sessionId)
+      .find((point) => point.type === "automatic" && point.sequence === 5);
+    assert.ok(automatic5);
+    const restored = store.restoreSavePoint(started.sessionId, automatic5.id);
+    assert.equal(restored.sequence, 5);
+    assert.equal(restored.removedTurnCount, 1);
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.equal(sessionStateOf(adventure).gameTimeDay, 1);
+    assert.equal(adventure.branchState.branch.nextSequence, 6);
+    assert.deepEqual(
+      adventure.branchState.turnHistory.map((turn) => turn.sequence),
+      [5, 4, 3, 2, 1],
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});

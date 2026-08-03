@@ -41,6 +41,7 @@ import {
 import {
   createStoryGenerationPrompt,
   resolvePlayerTurn,
+  type SourceProgressInfo,
 } from "./剧情提示.ts";
 import { DEFAULT_ATTRIBUTE_VALUE } from "./判定服务.ts";
 import type { SourceReferenceExcerpt } from "../reference/原文参考.ts";
@@ -630,6 +631,17 @@ function createStateMutations(input: {
   const mutations: StateMutationInput[] = [];
   const firstEvidenceId =
     generated.turn.events[0]?.id ?? generated.turn.dialogue[0]?.id;
+
+  if (generated.sourceProgress !== null) {
+    mutations.push({
+      entityType: "source_document",
+      entityId: "auto",
+      operation: "merge",
+      value: { currentChapter: generated.sourceProgress },
+      reason: `本轮剧情推进到原文章节 ${generated.sourceProgress}，自动向前解锁原文进度`,
+      evidence: [firstEvidenceId ?? turnId],
+    });
+  }
   const activeDirectionState = adventure.branchState.states.find(
     (state) => state.entityType === "story_direction" && state.isActive,
   );
@@ -1287,6 +1299,14 @@ export async function advanceAdventureTurn(
     adventure,
     query: memoryQuery,
   });
+  const sourceProgressInfo: SourceProgressInfo[] = store
+    .listSourceDocuments(sessionId)
+    .filter((document) => document.enabled)
+    .map((document) => ({
+      documentName: document.name,
+      currentChapter: document.currentChapter,
+      chapterCount: document.chapterCount,
+    }));
   const prompt = createStoryGenerationPrompt({
     adventure,
     turnId,
@@ -1294,6 +1314,7 @@ export async function advanceAdventureTurn(
     sourceReferences,
     scriptGuidanceReferences,
     memoryContext,
+    sourceProgressInfo,
   });
   const messages = prompt.messages;
   const generate =
@@ -1491,6 +1512,14 @@ export async function regenerateLatestAdventureTurn(
     adventure: prepared.adventureBeforeTurn,
     query: memoryQuery,
   });
+  const sourceProgressInfo: SourceProgressInfo[] = store
+    .listSourceDocuments(sessionId)
+    .filter((document) => document.enabled)
+    .map((document) => ({
+      documentName: document.name,
+      currentChapter: document.currentChapter,
+      chapterCount: document.chapterCount,
+    }));
   const prompt = createStoryGenerationPrompt({
     adventure: prepared.adventureBeforeTurn,
     turnId: prepared.currentTurn.id,
@@ -1498,6 +1527,7 @@ export async function regenerateLatestAdventureTurn(
     sourceReferences,
     scriptGuidanceReferences,
     memoryContext,
+    sourceProgressInfo,
   });
   const regenerationSystemPrompt = [
     prompt.snapshot.systemPrompt,

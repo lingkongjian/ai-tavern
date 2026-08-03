@@ -6609,6 +6609,7 @@ a {
 .recovery-point-list footer {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -7314,9 +7315,8 @@ a {
 }
 
 .bad-end-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  display: grid;
+  gap: 10px;
   margin: 0 0 16px;
   padding: 12px 16px;
   border: 1px solid rgb(196 84 78 / 55%);
@@ -7325,7 +7325,13 @@ a {
   color: #f3c9c3;
 }
 
-.bad-end-banner > strong {
+.bad-end-banner-copy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bad-end-banner-copy > strong {
   flex: 0 0 auto;
   padding: 4px 10px;
   border: 1px solid rgb(226 122 110 / 60%);
@@ -7336,9 +7342,31 @@ a {
   letter-spacing: 0.14em;
 }
 
-.bad-end-banner > span {
+.bad-end-banner-copy > span {
   font-size: 0.72rem;
   line-height: 1.6;
+}
+
+.bad-end-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bad-end-actions button {
+  padding: 7px 11px;
+  border: 1px solid rgb(226 122 110 / 42%);
+  border-radius: 3px;
+  color: #f3c9c3;
+  background: rgb(84 22 22 / 55%);
+  cursor: pointer;
+  font-size: 0.62rem;
+}
+
+.bad-end-actions button:first-child {
+  border-color: rgb(240 183 128 / 45%);
+  color: #ffe0c0;
+  background: rgb(94 58 26 / 55%);
 }
 
 .dice-panel {

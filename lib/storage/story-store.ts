@@ -45,7 +45,8 @@ export type StateEntityType =
   | "plot_trigger"
   | "plot_check"
   | "location"
-  | "session_state";
+  | "session_state"
+  | "source_document";
 
 export type StateMutationOperation =
   | "merge"
@@ -882,6 +883,16 @@ export interface CreatedAdventureBranch {
   sourceSequence: number;
 }
 
+export interface RestoredSavePoint {
+  savePointId: string;
+  branchId: string;
+  branchName: string;
+  turnId: string;
+  sequence: number;
+  activeBranchId: string;
+  removedTurnCount: number;
+}
+
 interface BranchRow {
   id: string;
   session_id: string;
@@ -1192,6 +1203,10 @@ function parseObject(value: string): JsonObject {
     throw new Error("数据库中的状态不是有效 JSON 对象。");
   }
   return parsed;
+}
+
+function asNumber(value: JsonValue | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function parseStringArray(value: string) {
@@ -4152,6 +4167,96 @@ export class LocalStoryStore {
       throw new StoryNotFoundError("没有找到指定的手动存档。");
     }
     return { savePointId };
+  }
+
+  restoreSavePoint(sessionId: string, savePointId: string): RestoredSavePoint {
+    requireText(sessionId, "sessionId");
+    requireText(savePointId, "savePointId");
+    const recovery = this.loadRecoveryPoint(sessionId, savePointId);
+    const branch = this.getBranch(recovery.branchId);
+    if (branch.session_id !== sessionId) {
+      throw new StoryNotFoundError("没有找到指定的存档。");
+    }
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const children = this.database
+        .prepare(`
+          SELECT child.id AS child_id, child.name AS child_name,
+                 turns.sequence AS fork_sequence
+          FROM branches AS child
+          LEFT JOIN turns ON turns.id = child.forked_from_turn_id
+          WHERE child.parent_branch_id = ?
+        `)
+        .all(branch.id) as unknown as Array<{
+        child_id: string;
+        child_name: string;
+        fork_sequence: number | null;
+      }>;
+      const blocking = children.find(
+        (child) =>
+          child.fork_sequence !== null && child.fork_sequence > recovery.sequence,
+      );
+      if (blocking) {
+        throw new BranchManagementError(
+          `存档“${recovery.name}”之后仍有分支“${blocking.child_name}”从这里分叉，直接恢复会破坏那条路线；请改用“恢复为新分支”。`,
+        );
+      }
+      const removed = this.database
+        .prepare(`
+          DELETE FROM turns
+          WHERE branch_id = ? AND sequence > ?
+        `)
+        .run(branch.id, recovery.sequence);
+      this.database
+        .prepare("DELETE FROM materialized_states WHERE branch_id = ?")
+        .run(branch.id);
+      const insertState = this.database.prepare(`
+        INSERT INTO materialized_states (
+          session_id, branch_id, entity_type, entity_id, state_json,
+          is_active, version, updated_turn_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const state of recovery.states) {
+        insertState.run(
+          sessionId,
+          branch.id,
+          state.entityType,
+          state.entityId,
+          stringifyJson(state.state),
+          state.isActive ? 1 : 0,
+          state.version,
+          state.updatedTurnId,
+          state.updatedAt || now,
+        );
+      }
+      this.database
+        .prepare(`
+          UPDATE branches
+          SET head_turn_id = ?, next_sequence = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(recovery.turnId, recovery.sequence + 1, now, branch.id);
+      this.database
+        .prepare(
+          "UPDATE sessions SET active_branch_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(branch.id, now, sessionId);
+      this.synchronizeStoryMemory(sessionId, branch.id);
+      this.database.exec("COMMIT");
+      return {
+        savePointId,
+        branchId: branch.id,
+        branchName: branch.name,
+        turnId: recovery.turnId,
+        sequence: recovery.sequence,
+        activeBranchId: branch.id,
+        removedTurnCount: Number(removed.changes),
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   manageCharacter(input: CharacterManagementInput): ManagedCharacterResult {
@@ -7261,6 +7366,7 @@ export class LocalStoryStore {
         SELECT 1 AS found
         FROM content_asset_management_changes
         WHERE session_id = ? AND branch_id = ? AND reference_turn_id = ?
+          AND operation <> 'advance'
         UNION ALL
         SELECT 1 AS found
         FROM state_control_changes
@@ -7519,7 +7625,7 @@ export class LocalStoryStore {
   private loadRecoveryPoint(sessionId: string, recoveryPointId: string) {
     const manual = this.database
       .prepare(`
-        SELECT branch_id, turn_id, sequence, state_json
+        SELECT branch_id, turn_id, sequence, name, state_json
         FROM save_points
         WHERE id = ? AND session_id = ?
       `)
@@ -7528,6 +7634,7 @@ export class LocalStoryStore {
           branch_id: string;
           turn_id: string;
           sequence: number;
+          name: string;
           state_json: string;
         }
       | undefined;
@@ -7535,7 +7642,7 @@ export class LocalStoryStore {
       ? undefined
       : (this.database
           .prepare(`
-            SELECT branch_id, turn_id, sequence, state_json
+            SELECT branch_id, turn_id, sequence, name, state_json
             FROM snapshots
             WHERE id = ? AND session_id = ?
           `)
@@ -7544,6 +7651,7 @@ export class LocalStoryStore {
               branch_id: string;
               turn_id: string;
               sequence: number;
+              name: string;
               state_json: string;
             }
           | undefined);
@@ -7553,6 +7661,7 @@ export class LocalStoryStore {
       branchId: row.branch_id,
       turnId: row.turn_id,
       sequence: row.sequence,
+      name: row.name,
       states: this.decodeSnapshotStates(row.state_json),
     };
   }
@@ -8402,6 +8511,16 @@ export class LocalStoryStore {
     }
 
     for (const [ordinal, mutation] of input.mutations.entries()) {
+      if (mutation.entityType === "source_document") {
+        this.applySourceDocumentAdvance({
+          sessionId: input.sessionId,
+          branchId: input.branchId,
+          turnId: input.turnId,
+          mutation,
+          now: input.now,
+        });
+        continue;
+      }
       const current = readCurrent.get(
         input.sessionId,
         input.branchId,
@@ -8486,6 +8605,79 @@ export class LocalStoryStore {
         isActive ? 1 : 0,
         (current?.version ?? 0) + 1,
         input.turnId,
+        input.now,
+      );
+    }
+  }
+
+  private applySourceDocumentAdvance(input: {
+    sessionId: string;
+    branchId: string;
+    turnId: string;
+    mutation: StateMutationInput;
+    now: string;
+  }) {
+    const reported = asNumber(input.mutation.value?.currentChapter);
+    if (!Number.isInteger(reported) || reported < 1) return;
+    const rows = this.database
+      .prepare(`
+        SELECT id, name, file_name, content_length, chapter_count,
+               chunk_count, enabled, current_chapter, prevent_future,
+               fidelity, is_deleted, created_at, updated_at
+        FROM source_documents
+        WHERE session_id = ? AND enabled = 1 AND is_deleted = 0
+        ORDER BY created_at, id
+      `)
+      .all(input.sessionId) as unknown as SourceDocumentRow[];
+    if (rows.length === 0) return;
+    const updateChapter = this.database.prepare(`
+      UPDATE source_documents
+      SET current_chapter = ?, updated_at = ?
+      WHERE id = ? AND session_id = ?
+    `);
+    const insertAudit = this.database.prepare(`
+      INSERT INTO content_asset_management_changes (
+        id, action_id, session_id, branch_id, reference_turn_id,
+        domain, operation, target_id, request_hash, summary_json,
+        revision, before_json, after_json, reverted_by_action_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+    `);
+    for (const row of rows) {
+      const nextChapter = Math.min(Math.max(1, reported), row.chapter_count);
+      if (nextChapter <= row.current_chapter) continue;
+      const updated = updateChapter.run(
+        nextChapter,
+        input.now,
+        row.id,
+        input.sessionId,
+      );
+      if (updated.changes !== 1) continue;
+      const before = sourceDocumentSnapshot(row);
+      const after = { ...before, currentChapter: nextChapter };
+      const revision = this.nextContentAssetRevision({
+        branchId: input.branchId,
+        domain: "sources",
+        targetId: row.id,
+      });
+      insertAudit.run(
+        randomUUID(),
+        `turn-auto-advance:${input.turnId}:${row.id}`,
+        input.sessionId,
+        input.branchId,
+        input.turnId,
+        "sources",
+        "advance",
+        row.id,
+        `auto-advance:${input.turnId}:${row.id}`,
+        stringifyJson({
+          documentName: row.name,
+          fileName: row.file_name,
+          fromChapter: row.current_chapter,
+          currentChapter: nextChapter,
+        }),
+        revision,
+        stringifyJson(before),
+        stringifyJson(after),
         input.now,
       );
     }

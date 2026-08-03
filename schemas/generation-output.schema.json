@@ -30,6 +30,11 @@
       "items": {
         "$ref": "#/$defs/attributeCheck"
       }
+    },
+    "sourceProgress": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "可选：本轮剧情实际推进到的原文章节号（1 起，可跨章节推进）。本轮剧情未明显推进到新章节时省略该字段；不能只为解锁后续原文章节而虚报进度。系统只会向前解锁，不会回退。"
     }
   },
   "$defs": {

@@ -11,6 +11,8 @@ import {
   splitSourceDocument,
 } from "../lib/reference/原文参考.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
+import { parsePlayerTurnRequest } from "../lib/story/回合协议.ts";
+import { advanceAdventureTurn } from "../lib/story/回合服务.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 
@@ -230,6 +232,493 @@ test("高度贴合的剧本任务只把下一章节作为导演锚点", () => {
     assert.equal(guidance.length, 1);
     assert.equal(guidance[0].chapterIndex, 2);
     assert.match(guidance[0].content, /主动打开了钟楼侧门/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+function fiveChapterSourceDocument(overrides = {}) {
+  return parseSourceDocumentInput({
+    name: "潮汐城原作",
+    fileName: "潮汐城原作.md",
+    content: [
+      "# 第一章 钟楼初见",
+      "守钟人把钥匙压在掌心。",
+      "# 第二章 影子失踪",
+      "守钟人发现旅人的影子变淡。",
+      "# 第三章 潮汐铜钥匙",
+      "守钟人取出潮汐铜钥匙。",
+      "# 第四章 逆流铜钟",
+      "铜钟逆流滴水。",
+      "# 第五章 归还钟声",
+      "旅人把钟声还给潮汐。",
+    ].join("\n\n"),
+    currentChapter: 1,
+    preventFuture: true,
+    fidelity: "balanced",
+    ...overrides,
+  });
+}
+
+function makeGeneratedTurn({
+  eventId,
+  scene,
+  sourceProgress,
+  playerCharacterId,
+  mainCharacterId,
+  attributeChecks,
+}) {
+  const output = {
+    schemaVersion: "1.0.0",
+    turn: {
+      scene,
+      events: [
+        {
+          id: eventId,
+          type: "plot_progress",
+          summary: scene,
+          characterIds: [playerCharacterId, mainCharacterId],
+          locationId: "clock-tower",
+        },
+      ],
+      dialogue: [
+        {
+          id: `${eventId}-line`,
+          speakerId: mainCharacterId,
+          content: "钟楼里还有我们没看过的东西。",
+          addressedCharacterIds: [playerCharacterId],
+        },
+      ],
+    },
+    decision: {
+      context: "action_direction",
+      prompt: "旅人接下来准备做什么？",
+      choices: [
+        {
+          id: "choice-1",
+          label: "继续调查",
+          description: "留在钟楼继续调查。",
+          stance: "neutral",
+        },
+        {
+          id: "choice-2",
+          label: "回去休息",
+          description: "先离开钟楼休息。",
+          stance: "benevolent",
+        },
+      ],
+    },
+    stateCommit: {
+      sceneTransition: {
+        locationId: "clock-tower",
+        locationName: "逆流钟楼",
+        locationDescription: "铜钟悬在潮湿的石室中央。",
+        presentCharacterIds: [playerCharacterId, mainCharacterId],
+        reason: "旅人与守钟人仍在钟楼石室中。",
+        evidence: [eventId],
+      },
+      characterStateChanges: [],
+      relationshipChanges: [],
+      characterCardChanges: [],
+      worldBookChanges: [],
+      storyDirectionEvaluation: {
+        status: "active",
+        reason: "调查仍在继续。",
+        evidence: [],
+        continuity: "uncertain",
+        continuityReason: "当前没有预埋剧本任务可供比较。",
+        recommendedModuleId: null,
+        suggestedNextDirection: null,
+      },
+      summaryPatch: scene,
+    },
+    warnings: [],
+  };
+  if (sourceProgress !== undefined) output.sourceProgress = sourceProgress;
+  if (attributeChecks !== undefined) output.attributeChecks = attributeChecks;
+  return output;
+}
+
+function startFiveChapterAdventure(store) {
+  return store.startAdventure({
+    campaignName: "自动推进测试",
+    world: { name: "潮汐城", premise: "钟声改变潮汐。" },
+    player: { name: "旅人", description: "调查失踪案。" },
+    mainCharacter: {
+      name: "守钟人",
+      role: "钟楼看守",
+      personality: "谨慎、克制。",
+    },
+    openingScene: "旅人来到钟楼。",
+    initialStoryDirection: "查明影子失踪的原因。",
+    sourceDocuments: [fiveChapterSourceDocument()],
+  });
+}
+
+async function runAdvanceTurn({ store, started, expectedHeadTurnId, idempotencyKey, turnId, sourceProgress, scene, selectedChoiceId = "choice-1" }) {
+  const generatedContent = makeGeneratedTurn({
+    eventId: `event-${turnId}`,
+    scene: scene ?? "旅人与守钟人继续调查钟楼的秘密。",
+    sourceProgress,
+    playerCharacterId: started.playerCharacterId,
+    mainCharacterId: started.mainCharacterId,
+  });
+  return advanceAdventureTurn({
+    store,
+    sessionId: started.sessionId,
+    input: parsePlayerTurnRequest({
+      expectedHeadTurnId,
+      idempotencyKey,
+      selectedChoiceId,
+      storyDirection: "查明影子失踪的原因。",
+    }),
+    createTurnId: () => turnId,
+    generate: async () => ({
+      content: generatedContent,
+      model: "deepseek-v4-flash",
+      usage: { totalTokens: 800 },
+    }),
+  });
+}
+
+test("回合输出 sourceProgress 时自动向前推进原文章节（只进不退）", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-auto-advance-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startFiveChapterAdventure(store);
+    const document = store.listSourceDocuments(started.sessionId)[0];
+    // 玩家手动把进度推进到第 3 章
+    store.updateSourceDocument(started.sessionId, document.id, {
+      currentChapter: 3,
+    });
+
+    const first = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "auto-advance-1",
+      turnId: "turn-advance-1",
+      sourceProgress: 5,
+      scene: "旅人把钟声还给潮汐。",
+      selectedChoiceId: "opening-neutral",
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    assert.equal(
+      store.listSourceDocuments(started.sessionId)[0].currentChapter,
+      5,
+    );
+    // 检索已解锁第 5 章
+    const adventure = store.loadAdventure(started.sessionId);
+    const references = store.findRelevantSourceReferences({
+      sessionId: started.sessionId,
+      adventure,
+      query: "旅人把钟声还给潮汐",
+    });
+    assert.equal(references.some((reference) => reference.chapterIndex === 5), true);
+
+    // 下一回合报告更小或相同的进度：保持不回退
+    const second = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: first.committedTurn.id,
+      idempotencyKey: "auto-advance-2",
+      turnId: "turn-advance-2",
+      sourceProgress: 2,
+      scene: "旅人与守钟人停留在钟楼。",
+    });
+    assert.equal(second.committedTurn.sequence, 3);
+    assert.equal(
+      store.listSourceDocuments(started.sessionId)[0].currentChapter,
+      5,
+    );
+
+    // 省略 sourceProgress：进度不变
+    const third = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: second.committedTurn.id,
+      idempotencyKey: "auto-advance-3",
+      turnId: "turn-advance-3",
+      scene: "两人只是交谈了几句日常。",
+    });
+    assert.equal(third.committedTurn.sequence, 4);
+    assert.equal(
+      store.listSourceDocuments(started.sessionId)[0].currentChapter,
+      5,
+    );
+
+    // 连续多回合推进：5 -> 6（超出总章数时收敛到 chapterCount）
+    const fourth = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: third.committedTurn.id,
+      idempotencyKey: "auto-advance-4",
+      turnId: "turn-advance-4",
+      sourceProgress: 8,
+      scene: "潮汐城的钟声响彻全城。",
+    });
+    assert.equal(fourth.committedTurn.sequence, 5);
+    assert.equal(
+      store.listSourceDocuments(started.sessionId)[0].currentChapter,
+      5,
+    );
+
+    // 自动推进写入了可审计的修改记录，且不会阻断该回合重新生成
+    const changes = store.listContentAssetManagementChanges(started.sessionId);
+    const advanceChanges = changes.filter(
+      (change) => change.operation === "advance",
+    );
+    assert.ok(advanceChanges.length >= 1);
+    assert.equal(advanceChanges[0].canRollback, false);
+    const prepared = store.prepareTurnRegeneration(
+      started.sessionId,
+      fourth.committedTurn.id,
+    );
+    assert.equal(prepared.currentTurn.id, fourth.committedTurn.id);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("多份原文文档时 sourceProgress 分别向前解锁到各自的章节数", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-multi-source-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startFiveChapterAdventure(store);
+    const shorter = fiveChapterSourceDocument({
+      name: "外传短篇",
+      fileName: "外传短篇.md",
+      content: [
+        "# 第一章 起风",
+        "风从海面吹来。",
+        "# 第二章 落潮",
+        "潮水退去。",
+        "# 第三章 归航",
+        "小船回到码头。",
+      ].join("\n\n"),
+    });
+    store.importSourceDocument(started.sessionId, shorter);
+
+    const first = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "multi-source-1",
+      turnId: "turn-multi-1",
+      sourceProgress: 4,
+      scene: "铜钟逆流滴水。",
+      selectedChoiceId: "opening-neutral",
+    });
+    const documents = store.listSourceDocuments(started.sessionId);
+    const main = documents.find((item) => item.fileName === "潮汐城原作.md");
+    const side = documents.find((item) => item.fileName === "外传短篇.md");
+    assert.equal(main.currentChapter, 4);
+    assert.equal(side.currentChapter, 3);
+
+    // 停用的文档不参与自动推进
+    store.updateSourceDocument(started.sessionId, side.id, {
+      enabled: false,
+      currentChapter: 1,
+    });
+    const second = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: first.committedTurn.id,
+      idempotencyKey: "multi-source-2",
+      turnId: "turn-multi-2",
+      sourceProgress: 5,
+      scene: "旅人把钟声还给潮汐。",
+    });
+    assert.equal(second.committedTurn.sequence, 3);
+    const after = store.listSourceDocuments(started.sessionId);
+    assert.equal(
+      after.find((item) => item.fileName === "潮汐城原作.md").currentChapter,
+      5,
+    );
+    assert.equal(
+      after.find((item) => item.fileName === "外传短篇.md").currentChapter,
+      1,
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("手动设置与自动推进共存：自动推进不覆盖玩家更早的更高进度", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-manual-auto-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startFiveChapterAdventure(store);
+    const document = store.listSourceDocuments(started.sessionId)[0];
+    // 玩家手动设置到第 4 章
+    store.updateSourceDocument(started.sessionId, document.id, {
+      currentChapter: 4,
+    });
+    // 模型报告第 2 章：不得把进度改小
+    const first = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "manual-auto-1",
+      turnId: "turn-manual-1",
+      sourceProgress: 2,
+      scene: "旅人与守钟人交谈。",
+      selectedChoiceId: "opening-neutral",
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    assert.equal(
+      store.listSourceDocuments(started.sessionId)[0].currentChapter,
+      4,
+    );
+    // 模型随后报告第 5 章：继续向前解锁
+    const second = await runAdvanceTurn({
+      store,
+      started,
+      expectedHeadTurnId: first.committedTurn.id,
+      idempotencyKey: "manual-auto-2",
+      turnId: "turn-manual-2",
+      sourceProgress: 5,
+      scene: "旅人把钟声还给潮汐。",
+    });
+    assert.equal(second.committedTurn.sequence, 3);
+    assert.equal(
+      store.listSourceDocuments(started.sessionId)[0].currentChapter,
+      5,
+    );
+    // 回合输出中保留 sourceProgress 原始值
+    const lastOutput = store.loadAdventure(started.sessionId).branchState
+      .recentTurns.at(-1).generatedOutput;
+    assert.equal(lastOutput.sourceProgress, 5);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("提示词包含当前原文进度与自动推进规则", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-source-prompt-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startFiveChapterAdventure(store);
+    const document = store.listSourceDocuments(started.sessionId)[0];
+    store.updateSourceDocument(started.sessionId, document.id, {
+      currentChapter: 2,
+    });
+    let receivedMessages;
+    const generatedContent = makeGeneratedTurn({
+      eventId: "event-prompt-1",
+      scene: "旅人与守钟人继续调查。",
+      sourceProgress: 3,
+      playerCharacterId: started.playerCharacterId,
+      mainCharacterId: started.mainCharacterId,
+    });
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "source-prompt-1",
+        selectedChoiceId: "opening-neutral",
+        storyDirection: "查明影子失踪的原因。",
+      }),
+      createTurnId: () => "turn-prompt-1",
+      generate: async (messages) => {
+        receivedMessages = messages;
+        return {
+          content: generatedContent,
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 800 },
+        };
+      },
+    });
+    assert.match(receivedMessages[0].content, /原文进度自动推进/);
+    assert.match(receivedMessages[0].content, /已解锁《潮汐城原作》第 2\/5 章/);
+    assert.match(receivedMessages[0].content, /绝不能只为解锁后续原文章节而虚报进度/);
+    assert.match(receivedMessages[0].content, /"sourceProgress": N/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("属性判定待确认回合在掷骰提交后同样自动推进原文章节", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-pending-advance-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startFiveChapterAdventure(store);
+    const generatedContent = makeGeneratedTurn({
+      eventId: "event-pending-1",
+      scene: "旅人潜入钟楼地下石室。",
+      sourceProgress: 4,
+      playerCharacterId: started.playerCharacterId,
+      mainCharacterId: started.mainCharacterId,
+      attributeChecks: [
+        {
+          id: "check-stealth",
+          characterId: started.playerCharacterId,
+          attribute: "敏捷",
+          difficulty: 65,
+          context: "在不惊动守钟人的情况下潜入石室",
+        },
+      ],
+    });
+    const pending = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "pending-advance-1",
+        selectedChoiceId: "opening-neutral",
+        storyDirection: "查明影子失踪的原因。",
+      }),
+      createTurnId: () => "turn-pending-1",
+      generate: async () => ({
+        content: generatedContent,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    assert.equal(pending.committedTurn, null);
+    // 待确认阶段：进度尚未落库
+    assert.equal(store.listSourceDocuments(started.sessionId)[0].currentChapter, 1);
+    const backfill = store.resolvePendingTurnChecks({
+      sessionId: started.sessionId,
+      pendingTurnId: pending.pendingTurnId,
+      expectedHeadTurnId: started.openingTurnId,
+      results: [{ checkId: "check-stealth", roll: 80 }],
+    });
+    assert.equal(backfill.committedTurn.id, pending.pendingTurnId);
+    // 提交后：自动推进生效
+    assert.equal(store.listSourceDocuments(started.sessionId)[0].currentChapter, 4);
+    assert.equal(
+      store.listContentAssetManagementChanges(started.sessionId).filter(
+        (change) => change.operation === "advance",
+      ).length,
+      1,
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
