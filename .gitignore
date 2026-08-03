@@ -59,6 +59,7 @@ ai-tavern-archive-*.json
 
 # agent workflow notes (not published)
 /AGENTS.md
+/.opencode/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
