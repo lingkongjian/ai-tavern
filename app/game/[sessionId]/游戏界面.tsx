@@ -833,6 +833,12 @@ export function GameInterface({
     signature: string;
     actionId: string;
   } | null>(null);
+  // 当前分支 ID 的即时引用：分支/存档面板切换、恢复等操作会整体替换 adventure，
+  // 在途请求（回合生成、重生成、属性判定、内容管理、状态审计）完成后若发现
+  // 响应属于旧分支，必须丢弃，避免旧分支状态覆盖新分支界面，导致后续提交因
+  // 分支头不一致而失败（“本轮没有保存”）。
+  const currentBranchIdRef = useRef(adventure.branchState.branch.id);
+  currentBranchIdRef.current = adventure.branchState.branch.id;
 
   const sessionState = adventure.branchState.states.find(
     (state) => state.entityType === "session_state" && state.entityId === "core",
@@ -1303,6 +1309,12 @@ export function GameInterface({
           ),
       );
       if (!body.adventure) throw new Error("生成本轮剧情失败。");
+      if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
+        // 生成期间切换了分支：本轮已保存到原分支，这里丢弃旧分支响应，
+        // 保持当前分支界面不变，玩家可直接在当前分支重新提交。
+        pendingIdempotencyKey.current = null;
+        return;
+      }
       setStreamingChars(0);
       if (body.pendingChecks && body.pendingChecks.length > 0) {
         setPendingChecks(body.pendingChecks);
@@ -1384,6 +1396,12 @@ export function GameInterface({
           ),
       );
       if (!body.adventure) throw new Error("重新生成最新剧情失败。");
+      if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
+        // 重新生成期间切换了分支：替换已发生在原分支，这里丢弃旧分支响应，
+        // 保持当前分支界面不变。
+        pendingRegenerationAction.current = null;
+        return;
+      }
       setStreamingChars(0);
       if (body.pendingChecks && body.pendingChecks.length > 0) {
         setPendingChecks(body.pendingChecks);
@@ -1467,6 +1485,13 @@ export function GameInterface({
       const body = (await response.json()) as AttributeCheckResolveResponse;
       if (!response.ok || !body.adventure) {
         throw new Error(body.issues?.[0] ?? body.error ?? "属性判定结算失败。");
+      }
+      if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
+        // 判定结算期间切换了分支：结算已落库到原分支，这里关闭判定面板，
+        // 保持当前分支界面不变。
+        setPendingChecks(null);
+        pendingIdempotencyKey.current = null;
+        return;
       }
       setAdventure(body.adventure);
       setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
@@ -1845,13 +1870,15 @@ export function GameInterface({
       );
     }
 
-    setAdventure(body.content.adventure);
-    setSourceDocuments(body.content.sourceDocuments);
-    setMemory(body.content.memory);
-    if (!isViewingHistory) {
-      setViewedTurn(
-        body.content.adventure.branchState.recentTurns.at(-1) ?? null,
-      );
+    if (body.content.adventure.branchState.branch.id === currentBranchIdRef.current) {
+      setAdventure(body.content.adventure);
+      setSourceDocuments(body.content.sourceDocuments);
+      setMemory(body.content.memory);
+      if (!isViewingHistory) {
+        setViewedTurn(
+          body.content.adventure.branchState.recentTurns.at(-1) ?? null,
+        );
+      }
     }
     delete pendingContentActions.current[domain];
     return body.content;
@@ -2054,10 +2081,12 @@ export function GameInterface({
         payload,
         "保存剧情任务变化失败。",
       );
-      const nextDirection = content.adventure.branchState.states.find(
-        (state) => state.entityType === "story_direction" && state.isActive,
-      );
-      setDirectionInput(text(nextDirection?.state.content));
+      if (content.adventure.branchState.branch.id === currentBranchIdRef.current) {
+        const nextDirection = content.adventure.branchState.states.find(
+          (state) => state.entityType === "story_direction" && state.isActive,
+        );
+        setDirectionInput(text(nextDirection?.state.content));
+      }
       return true;
     } catch (error) {
       setStoryModuleManagerError(
@@ -2585,6 +2614,12 @@ export function GameInterface({
         throw new Error(
           body.issues?.[0] ?? body.error ?? "保存状态审计操作失败。",
         );
+      }
+      if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
+        // 审计操作期间切换了分支：操作已应用到原分支，这里丢弃旧分支响应，
+        // 保持当前分支界面不变。
+        pendingStateAuditAction.current = null;
+        return true;
       }
       setStateAudit(body.audit);
       setAdventure(body.adventure);

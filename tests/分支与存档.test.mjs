@@ -21,6 +21,7 @@ import {
   parseCreateBranchRequest,
   parseCreateSavePointRequest,
 } from "../lib/story/分支与存档.ts";
+import { advanceAdventureTurn } from "../lib/story/回合服务.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 
@@ -832,6 +833,263 @@ test("restores an automatic snapshot with its frozen state", () => {
       adventure.branchState.turnHistory.map((turn) => turn.sequence),
       [5, 4, 3, 2, 1],
     );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+function startForkScenario(store) {
+  return store.startAdventure({
+    campaignName: "分支后推进测试",
+    world: { name: "岔路城", premise: "每个选择都会留下可见的道路。" },
+    player: { name: "旅人", description: "能够看见道路分叉的人。" },
+    mainCharacter: {
+      name: "引路人",
+      role: "岔路城的向导",
+      personality: "谨慎，只相信已经发生的选择。",
+      firstMessage: "你选中的路会记住你。",
+    },
+    openingScene: "旅人与引路人站在三岔路口。",
+  });
+}
+
+function forkTurnOutput(started, scene) {
+  const eventId = `fork-event-${Math.random().toString(36).slice(2)}`;
+  return {
+    schemaVersion: "1.0",
+    turn: {
+      scene,
+      events: [
+        {
+          id: eventId,
+          type: "scene_advance",
+          summary: "剧情推进。",
+          characterIds: [started.playerCharacterId, started.mainCharacterId],
+          locationId: "inn",
+        },
+      ],
+      dialogue: [],
+    },
+    decision: {
+      context: "action_direction",
+      prompt: "接下来如何行动？",
+      choices: [
+        {
+          id: "fork-choice-a",
+          label: "继续",
+          description: "继续行动。",
+          stance: "neutral",
+        },
+        {
+          id: "fork-choice-b",
+          label: "暂缓",
+          description: "先观察局势。",
+          stance: "benevolent",
+        },
+      ],
+    },
+    stateCommit: {
+      sceneTransition: {
+        locationId: "inn",
+        locationName: "岔路城客栈",
+        locationDescription: "灯火昏暗的客栈。",
+        presentCharacterIds: [
+          started.playerCharacterId,
+          started.mainCharacterId,
+        ],
+        reason: "两人仍在客栈。",
+        evidence: [eventId],
+      },
+      characterStateChanges: [],
+      relationshipChanges: [],
+      characterCardChanges: [],
+      worldBookChanges: [],
+      storyDirectionEvaluation: null,
+      summaryPatch: scene,
+    },
+    warnings: [],
+  };
+}
+
+async function advanceForkTurn(store, started, expectedHeadTurnId, key, choice) {
+  return advanceAdventureTurn({
+    store,
+    sessionId: started.sessionId,
+    input: { expectedHeadTurnId, idempotencyKey: key, customChoice: choice },
+    generate: async () => ({
+      content: forkTurnOutput(started, choice),
+      model: "deepseek-test",
+      usage: { totalTokens: 100 },
+    }),
+  });
+}
+
+test("advances the next turn after switching branches with the fresh branch head", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-switch-advance-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    await advanceForkTurn(
+      store,
+      started,
+      started.openingTurnId,
+      "switch-root-2",
+      "走向北路",
+    );
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "南路分支",
+      sourceTurnId: started.openingTurnId,
+    });
+    await advanceForkTurn(
+      store,
+      started,
+      started.openingTurnId,
+      "switch-fork-2",
+      "走向南路",
+    );
+
+    // 切回主线，用切换响应后 loadAdventure 的 head 提交（等价于前端 submitTurn）
+    store.switchBranch(started.sessionId, started.branchId);
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, started.branchId);
+    const next = await advanceForkTurn(
+      store,
+      started,
+      adventure.branchState.branch.headTurnId,
+      "switch-root-3",
+      "继续北路",
+    );
+    assert.equal(next.committedTurn.sequence, 3);
+    assert.equal(next.committedTurn.branchId, started.branchId);
+
+    // 再切回分支，同样直接续接
+    store.switchBranch(started.sessionId, fork.branchId);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, fork.branchId);
+    const forkNext = await advanceForkTurn(
+      store,
+      started,
+      adventure.branchState.branch.headTurnId,
+      "switch-fork-3",
+      "继续南路",
+    );
+    assert.equal(forkNext.committedTurn.sequence, 3);
+    assert.equal(forkNext.committedTurn.branchId, fork.branchId);
+
+    // 分支隔离：两边的回合互不干扰
+    const mainAdventure = store.loadAdventure(started.sessionId);
+    const mainHead = mainAdventure.branchState.branch.headTurnId;
+    store.switchBranch(started.sessionId, started.branchId);
+    const rootAdventure = store.loadAdventure(started.sessionId);
+    assert.notEqual(rootAdventure.branchState.branch.headTurnId, mainHead);
+    assert.deepEqual(
+      rootAdventure.branchState.turnHistory.map((turn) => turn.sequence),
+      [3, 2, 1],
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("advances the next turn after creating a branch from a recovery point", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-recover-fork-advance-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    const root2 = await advanceForkTurn(
+      store,
+      started,
+      started.openingTurnId,
+      "recover-root-2",
+      "走向北路",
+    );
+    const manual = store.createSavePoint(started.sessionId, "北路营地");
+    assert.equal(manual.sequence, 2);
+    await advanceForkTurn(
+      store,
+      started,
+      root2.committedTurn.id,
+      "recover-root-3",
+      "继续北路",
+    );
+
+    // “恢复为新分支”：从存档创建并自动切换，然后用返回的 head 直接提交
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "从营地存档恢复",
+      recoveryPointId: manual.id,
+    });
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.id, fork.branchId);
+    assert.equal(adventure.branchState.branch.headTurnId, root2.committedTurn.id);
+    const next = await advanceForkTurn(
+      store,
+      started,
+      adventure.branchState.branch.headTurnId,
+      "recover-fork-3",
+      "改走岔道",
+    );
+    assert.equal(next.committedTurn.sequence, 3);
+    assert.equal(next.committedTurn.branchId, fork.branchId);
+    assert.equal(next.adventure.branchState.branch.headTurnId, next.committedTurn.id);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("advances the next turn after restoring a save point in place", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restore-advance-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startForkScenario(store);
+    const root2 = await advanceForkTurn(
+      store,
+      started,
+      started.openingTurnId,
+      "restore-root-2",
+      "走向北路",
+    );
+    const manual = store.createSavePoint(started.sessionId, "北路营地");
+    await advanceForkTurn(
+      store,
+      started,
+      root2.committedTurn.id,
+      "restore-root-3",
+      "继续北路",
+    );
+
+    // 就地恢复：回退后分支头回到存档回合，用新 head 直接续接
+    const restored = store.restoreSavePoint(started.sessionId, manual.id);
+    assert.equal(restored.turnId, root2.committedTurn.id);
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.equal(adventure.branchState.branch.headTurnId, root2.committedTurn.id);
+    assert.equal(adventure.branchState.branch.nextSequence, 3);
+    const next = await advanceForkTurn(
+      store,
+      started,
+      adventure.branchState.branch.headTurnId,
+      "restore-after-3",
+      "重新选择路线",
+    );
+    assert.equal(next.committedTurn.sequence, 3);
+    assert.equal(next.committedTurn.branchId, started.branchId);
+    assert.equal(next.adventure.branchState.turnHistory.length, 3);
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
