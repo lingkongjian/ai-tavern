@@ -1016,6 +1016,10 @@ export function GameInterface({
       ? change.payload.gameTimeDay
       : undefined;
   }
+  const mapPresentCount = [...charactersByLocation.values()].reduce(
+    (total, names) => total + names.length,
+    0,
+  );
   function auditTargetLabel(
     change: Pick<StateAuditChange, "entityType" | "entityId">,
   ) {
@@ -4821,7 +4825,10 @@ export function GameInterface({
               <div>
                 <p className="eyebrow">世界地图 · 游戏内第 {gameTimeDay} 日</p>
                 <h2 id="map-manager-title">地点与人物位置</h2>
-                <p>尚未登场或位置未知的人物不会出现在地图上。</p>
+                <p>
+                  {locations.length} 处地点 · {mapPresentCount} 名人物位置已知
+                  · 尚未登场或位置未知的人物不会显示。
+                </p>
               </div>
               <button
                 className="character-manager-close"
