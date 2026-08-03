@@ -35,6 +35,7 @@ import {
   GeneratedTurnValidationError,
   normalizeGeneratedTurnVersion,
   type PlayerTurnRequest,
+  type SceneTimeAdvance,
   validateGeneratedTurn,
 } from "./回合协议.ts";
 import {
@@ -152,6 +153,14 @@ export interface RegenerateTurnOptions {
 
 function asNumber(value: JsonValue | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+// 游戏内时间只由剧情推进驱动：timeAdvance 缺省视为时间基本不变（相当于 moment），
+// 只有剧情显式声明 hours/one_day/several_days 时才对天数产生影响（hours 不跨天）。
+function timeAdvanceDayDelta(
+  timeAdvance: SceneTimeAdvance | undefined,
+): number {
+  return timeAdvance === "several_days" ? 3 : timeAdvance === "one_day" ? 1 : 0;
 }
 
 function readText(value: JsonValue | undefined) {
@@ -716,9 +725,8 @@ function createStateMutations(input: {
       },
     );
 
-    const timeAdvance = transition.timeAdvance ?? "one_day";
-    const dayDelta =
-      timeAdvance === "several_days" ? 3 : timeAdvance === "one_day" ? 1 : 0;
+    const timeAdvance = transition.timeAdvance ?? "moment";
+    const dayDelta = timeAdvanceDayDelta(timeAdvance);
     const currentDay =
       typeof sessionState?.state.gameTimeDay === "number"
         ? sessionState.state.gameTimeDay
@@ -985,13 +993,9 @@ function createStateMutations(input: {
     typeof sessionStateForDay?.state.gameTimeDay === "number"
       ? sessionStateForDay.state.gameTimeDay
       : 1;
-  const dayDelta =
-    generated.stateCommit.sceneTransition?.timeAdvance === "several_days"
-      ? 3
-      : generated.stateCommit.sceneTransition?.timeAdvance === "one_day" ||
-          generated.stateCommit.sceneTransition?.timeAdvance === undefined
-        ? 1
-        : 0;
+  const dayDelta = timeAdvanceDayDelta(
+    generated.stateCommit.sceneTransition?.timeAdvance,
+  );
   const currentDayAfterTurn = currentDayBeforeTurn + dayDelta;
   const armedTriggers = adventure.branchState.states.filter(
     (state) =>

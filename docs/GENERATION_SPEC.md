@@ -259,7 +259,7 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 ## 9.1 游戏内时间
 
-`session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。每回合默认推进一天；`sceneTransition.timeAdvance` 可以覆盖：`moment` 与 `hours` 不推进天数，`one_day` 推进一天（默认），`several_days` 推进约数日。任务 `deadlineDay` 到期后，`expiredDeadlines` 作为导演级硬事实注入上下文，模型必须让期限后果在本轮显现。
+`session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。游戏内时间只由剧情推进驱动：`sceneTransition.timeAdvance` 缺省视为时间基本不变（相当于 `moment`），不推进天数；只有剧情中明确经过数小时、次日或数日后，模型才用 `timeAdvance` 显式声明时间流逝——`moment` 与 `hours` 不推进天数，`one_day` 推进一天，`several_days` 推进约数日。任务 `deadlineDay` 到期后，`expiredDeadlines` 作为导演级硬事实注入上下文，模型必须让期限后果在本轮显现；期限只会在剧情时间实际推进到该日之后到期。
 
 ## 10. 角色当前状态变更
 

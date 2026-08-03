@@ -139,6 +139,7 @@ function turnOutput(started, scene, extra = {}) {
         ],
         reason: "两人仍在客栈。",
         evidence: [extra.eventId ?? "event-trigger"],
+        ...extra.sceneTransition,
       },
       characterStateChanges: [],
       relationshipChanges: [],
@@ -342,7 +343,7 @@ test("已触发的触发器不能重复触发", async () => {
   }
 });
 
-test("deadline 到期后触发器被强制触发", async () => {
+test("deadline 仅在剧情时间推进到期后强制触发", async () => {
   const { directory, database, store } = temporaryDatabase();
   try {
     const started = startAdventureWithTriggers(store, {
@@ -358,7 +359,9 @@ test("deadline 到期后触发器被强制触发", async () => {
         },
       ],
     });
-    const result = await advanceAdventureTurn({
+
+    // 第一回合剧情未发生时间推移（timeAdvance 缺省）：第 1 日，期限未到，不应误触发
+    const first = await advanceAdventureTurn({
       store,
       sessionId: started.sessionId,
       input: {
@@ -366,7 +369,7 @@ test("deadline 到期后触发器被强制触发", async () => {
         expectedHeadTurnId: started.openingTurnId,
       },
       generate: async () => ({
-        content: turnOutput(started, "第 2 天，旧堤在暴雨中崩裂。", {
+        content: turnOutput(started, "江离加固堤坝的进度缓慢。", {
           topLevel: {
             warnings: [],
           },
@@ -375,7 +378,39 @@ test("deadline 到期后触发器被强制触发", async () => {
         usage: { totalTokens: 100 },
       }),
     });
-    const states = result.adventure.branchState.states;
+    const firstStates = first.adventure.branchState.states;
+    const firstTrigger = firstStates.find(
+      (state) =>
+        state.entityType === "plot_trigger" &&
+        state.state.triggerId === "deadline-flood",
+    );
+    assert.equal(firstTrigger.state.status, "armed", "未推进到期限前不应触发");
+    const firstSession = firstStates.find(
+      (state) => state.entityType === "session_state" && state.entityId === "core",
+    );
+    assert.equal(firstSession.state.gameTimeDay, 1);
+
+    // 第二回合剧情显式推进一天：进入第 2 天，期限已至，系统强制触发并应用后果
+    const second = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: {
+        ...playerInput(),
+        expectedHeadTurnId: first.adventure.branchState.branch.headTurnId,
+      },
+      generate: async () => ({
+        content: turnOutput(started, "第 2 天，旧堤在暴雨中崩裂。", {
+          eventId: "event-trigger-2",
+          sceneTransition: { timeAdvance: "one_day" },
+          topLevel: {
+            warnings: [],
+          },
+        }),
+        model: "deepseek-test",
+        usage: { totalTokens: 100 },
+      }),
+    });
+    const states = second.adventure.branchState.states;
     const trigger = states.find(
       (state) =>
         state.entityType === "plot_trigger" &&
@@ -386,6 +421,7 @@ test("deadline 到期后触发器被强制触发", async () => {
     const sessionState = states.find(
       (state) => state.entityType === "session_state" && state.entityId === "core",
     );
+    assert.equal(sessionState.state.gameTimeDay, 2);
     assert.equal(sessionState.state.badEnd, true);
   } finally {
     database.close();

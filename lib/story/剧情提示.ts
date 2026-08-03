@@ -441,7 +441,7 @@ ${
 11. 角色卡演化 path 只能使用：identity.titles、identity.affiliations、goals.longTerm、beliefs、fears、vows、permanentConditions、abilities、revealedSecrets、relationshipMilestones。
 12. character_state 中 present=false 的角色当前不在场，不能直接说话或行动；如果本轮剧情明确让其重新登场，必须写入真实事件，并在 sceneTransition.presentCharacterIds 中加入该角色。可用角色 ID 列表之外的停用角色不能重新登场或被扮演。
 13. 每轮必须返回 sceneTransition，准确描述本轮结束时的当前位置和完整在场阵容。人物离场、加入或随地点移动产生的阵容变化只在 sceneTransition 中表达，不能把 present 或 locationId 写入 characterStateChanges。进入已有地点时沿用其 ID；进入尚未记录的新地点时创建稳定的新 ID、名称和描述。不在场角色的所在地点变化（如某角色返回宅邸、前往城外）通过 sceneTransition.offstageUpdates 表达：目标角色必须不在 presentCharacterIds 中，进入已知地点沿用其 ID，进入新地点必须提供地点名称。
-14. 游戏内时间从第 1 日开始。每轮默认推进一天（sceneTransition.timeAdvance 缺省按 one_day 处理）；时间基本不变时用 moment 或 hours；跨越明显时日时用 several_days（约数日）。session 的 gameTimeDay 会随回合推进，中毒、限期、季节等时间敏感状态必须依据它。
+14. 游戏内时间从第 1 日开始，只由剧情推进驱动：时间流逝必须与剧情一致，只有剧情中明确经过数小时、次日或数日后，才用 sceneTransition.timeAdvance 显式声明（moment 表示时间基本不变，hours 表示数小时，one_day 表示过了一天，several_days 表示约数日）；对话、行动、决策等未发生时间推移的回合不得强行推进时间，timeAdvance 缺省即视为时间基本不变（相当于 moment）。session 的 gameTimeDay 只在剧情显式推进时间时更新，中毒、限期、季节等时间敏感状态必须依据它。
 15. longTermMemory 和 chapterSummaries 是从已发生剧情提炼并按本轮输入召回的长期记忆。它们可补充 recentTurns 之外的旧事实，但不能覆盖更晚回合、当前状态或玩家本轮输入；不得臆造未提供的旧事。
 16. storyModules 是剧本包预埋的任务链，对 NPC 不可见。当前目标未完成时，recommendedModuleId 和 suggestedNextDirection 必须均为 null。
 17. 当前目标完成后，先判定已发生剧情与预埋剧本的连续性。只有 continuity=aligned 时，才能从 readyAfterCurrentCompletion=true 的任务中选择一个 recommendedModuleId；必须结合 activationConditions 和 continuityNotes，不能只按顺序强行接续。此时 suggestedNextDirection 必须严格为 null，即使你还能想到备选目标也不得同时填写。
@@ -449,7 +449,7 @@ ${
 19. 玩家手动输入的剧情走向优先级最高。suggestedNextDirection 是对下一阶段的导演目标，不是本轮已发生事实，也不能向角色透露。
 20. 剧本一致性属于硬约束。AI 控制角色提出会显著改变主线的治疗、解封、调查、营救、交易、作战或制度方案时，必须能在已发生事实、当前剧情任务、世界书、角色资料、sourceReferences 或 upcomingScriptGuidance 中找到具体依据。若后续剧本锚点已有明确方案，优先保持其核心机制，不得自行发明替代方案；若所有资料都没有依据，角色只能提出核验、试探或调查步骤，不能把臆测包装成确定可行的完整方案。
 21. 剧情必须推进：scene 是对本轮的叙述，不得复述或改写 recentTurns 中上一回合已经展示过的场景、动作或结论。若当前输入主要是在同一情境中继续对话或行动，scene 仍应只写本轮新发生的事实和新的进展，而不是重述背景或重放上一轮的事件；与上一回合场景高度重复的续写会被后端判定为无效并要求重写。
-22. expiredDeadlines 中的任务已经超过其期限（deadlineDay 已到），这是导演级硬事实：本轮必须让期限后果在剧情中显现（中毒恶化、救援失败、约期已过、反派抢先等），并把结果写入事件、状态或世界书，不能再假装时间没有流逝。玩家仍保有回应权，但后果应真实可见。
+22. expiredDeadlines 中的任务已经超过其期限（deadlineDay 已到），这是导演级硬事实：本轮必须让期限后果在剧情中显现（中毒恶化、救援失败、约期已过、反派抢先等），并把结果写入事件、状态或世界书，不能再假装时间没有流逝。玩家仍保有回应权，但后果应真实可见。期限只会在剧情时间实际推进到 deadlineDay（或更晚）后到期：如果本轮没有时间推移（时间仍停留在期限前），不得提前宣布期限后果。
 23. plotThreads 是剧本包预埋的伏笔，对 NPC 不可见。status=seeded 的伏笔已经埋下：若本轮剧情自然抵达其 payoffCondition 所描述的情形，必须回收该伏笔——在叙述中呈现 payoffSummary 的核心信息，并在 stateCommit.plotThreadUpdates 中报告 {"threadId":"...","operation":"payoff"}；不要提前泄露或跳过。status=dormant 且与本轮相关的伏笔：若本轮剧情满足了 seedCondition（如角色进入相关地点、遭遇相关人物或关键物件），把伏笔悄然埋入本轮叙述（保持含蓄，NPC 不应察觉其目的），并在 plotThreadUpdates 中报告 {"threadId":"...","operation":"seed"}。
 24. plotTriggers 是剧本包预埋的偏离触发器，对 NPC 不可见。任何未触发的触发器若其 when 条件在本轮剧情中得到满足，consequence 必须作为“意外阻碍”真实写入本轮事实（人物、场面、事件），不得因为后果严厉而回避、淡化或改期；同时在 stateCommit.plotTriggerUpdates 中报告 {"triggerId":"...","operation":"fire"}。deadlineExpired=true 的触发器期限已至，本轮必须让 consequence 显现并报告 fire。触发器声明的关系/属性/标志变化由系统在报告 fire 后强制应用，模型不得自行重复或改写这些数值。
 25. 属性判定：character_state.attributes 保存角色属性（力量/敏捷/感知/意志/魅力/智力/体质，0-100，未设定时按 50 计）。当玩家角色或在场角色进行有明显成败可能的关键行动（潜行、说服、对抗、搜索、拆解、战斗动作等）时，可以在顶层 attributeChecks 中提议判定：模型只提议“何时判、用什么属性、多难（1-100 整数）”，绝不自行写出判定结果。玩家掷骰后由系统确定性结算并把结果作为已发生事实回填本回合。每轮最多 4 项；角色属性随剧情变化通过 characterStateChanges 的 attributes 对象（0-100 绝对数值）更新。
@@ -468,7 +468,7 @@ ${
     "choices": [{"id":"choice-id","label":"简短标题","description":"具体选择","stance":"允许的立场"}]
   },
   "stateCommit": {
-    "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"one_day（或 moment/hours/several_days）","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
+    "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"moment（缺省即时间基本不变；仅剧情实际经过数小时/次日/数日时填 hours/one_day/several_days）","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
     "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60}},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
     "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"]}],
     "characterCardChanges": [{"characterId":"角色ID","operation":"add","path":"允许路径","value":{},"reason":"原因","evidence":["事件或对话ID"],"sourceTurnId":"${turnId}"}],

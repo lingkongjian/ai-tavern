@@ -129,7 +129,7 @@ function startP1Adventure(store, extra = {}) {
   });
 }
 
-test("game time advances by one day per turn by default", async () => {
+test("缺省回合不推进游戏内时间，剧情显式推进时才更新天数", async () => {
   const { directory, database, store } = temporaryDatabase();
   try {
     const started = startP1Adventure(store);
@@ -139,73 +139,51 @@ test("game time advances by one day per turn by default", async () => {
     );
     assert.equal(core.state.gameTimeDay, 1);
 
-    await advanceAdventureTurn({
-      store,
-      sessionId: started.sessionId,
-      input: parsePlayerTurnRequest({
-        expectedHeadTurnId: started.openingTurnId,
-        idempotencyKey: "request-time-1",
-        customChoice: "继续调查钟楼。",
-      }),
-      createTurnId: () => "turn-time-1",
-      generate: async () => ({
-        content: turnContent(started, "旅人记录下铜钟的逆流规律。"),
-        model: "deepseek-v4-flash",
-        usage: {},
-      }),
-    });
-
+    // 连续两个缺省回合（剧情未发生时间推移）：gameTimeDay 保持第 1 日不变
+    for (const [index, scene] of [
+      "旅人记录下铜钟的逆流规律。",
+      "旅人与守钟人继续交谈。",
+    ].entries()) {
+      const before = store.loadAdventure(started.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: `request-time-default-${index}`,
+          customChoice: "继续调查钟楼。",
+        }),
+        createTurnId: () => `turn-time-default-${index}`,
+        generate: async () => ({
+          content: turnContent(started, scene, {
+            eventId: `event-default-${index}`,
+            evidenceId: `event-default-${index}`,
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+    }
     const after = store.loadAdventure(started.sessionId);
     const coreAfter = after.branchState.states.find(
       (state) => state.entityType === "session_state" && state.entityId === "core",
     );
-    assert.equal(coreAfter.state.gameTimeDay, 2);
-  } finally {
-    database.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
+    assert.equal(coreAfter.state.gameTimeDay, 1);
 
-test("sceneTransition timeAdvance overrides day progression", async () => {
-  const { directory, database, store } = temporaryDatabase();
-  try {
-    const started = startP1Adventure(store);
-    await advanceAdventureTurn({
-      store,
-      sessionId: started.sessionId,
-      input: parsePlayerTurnRequest({
-        expectedHeadTurnId: started.openingTurnId,
-        idempotencyKey: "request-time-2",
-        customChoice: "原地修整片刻。",
-      }),
-      createTurnId: () => "turn-time-2",
-      generate: async () => ({
-        content: turnContent(started, "旅人守在钟楼内等候消息。", {
-          sceneTransition: { timeAdvance: "moment" },
-        }),
-        model: "deepseek-v4-flash",
-        usage: {},
-      }),
-    });
-    const after = store.loadAdventure(started.sessionId);
-    const core = after.branchState.states.find(
-      (state) => state.entityType === "session_state" && state.entityId === "core",
-    );
-    assert.equal(core.state.gameTimeDay, 1);
-
+    // 随后剧情显式推进数日：several_days 正确推进约数日
     await advanceAdventureTurn({
       store,
       sessionId: started.sessionId,
       input: parsePlayerTurnRequest({
         expectedHeadTurnId: after.branchState.branch.headTurnId,
-        idempotencyKey: "request-time-3",
-        customChoice: "前往城外追查。",
+        idempotencyKey: "request-time-several",
+        customChoice: "连夜赶路。",
       }),
-      createTurnId: () => "turn-time-3",
+      createTurnId: () => "turn-time-several",
       generate: async () => ({
         content: turnContent(started, "旅人连夜赶路数日，抵达城外。", {
-          eventId: "event-p1b",
-          evidenceId: "event-p1b",
+          eventId: "event-several",
+          evidenceId: "event-several",
           sceneTransition: { timeAdvance: "several_days" },
         }),
         model: "deepseek-v4-flash",
@@ -217,6 +195,80 @@ test("sceneTransition timeAdvance overrides day progression", async () => {
       (state) => state.entityType === "session_state" && state.entityId === "core",
     );
     assert.equal(coreFinal.state.gameTimeDay, 4);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("timeAdvance 显式声明控制天数推进（moment/hours 不变、one_day/several_days 推进）", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    async function advanceTurn(advance, scene, eventId, customChoice) {
+      const before = store.loadAdventure(started.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: `request-time-${eventId}`,
+          customChoice,
+        }),
+        createTurnId: () => `turn-time-${eventId}`,
+        generate: async () => ({
+          content: turnContent(started, scene, {
+            eventId,
+            evidenceId: eventId,
+            sceneTransition: { timeAdvance: advance },
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+      const after = store.loadAdventure(started.sessionId);
+      return after.branchState.states.find(
+        (state) =>
+          state.entityType === "session_state" && state.entityId === "core",
+      );
+    }
+
+    // moment：时间基本不变
+    const coreMoment = await advanceTurn(
+      "moment",
+      "旅人守在钟楼内等候消息。",
+      "event-moment",
+      "原地修整片刻。",
+    );
+    assert.equal(coreMoment.state.gameTimeDay, 1);
+
+    // hours：小时级推进不跨天
+    const coreHours = await advanceTurn(
+      "hours",
+      "数小时后，钟楼外传来新的动静。",
+      "event-hours",
+      "在钟楼内守候数小时。",
+    );
+    assert.equal(coreHours.state.gameTimeDay, 1);
+
+    // one_day：显式推进一天
+    const coreOneDay = await advanceTurn(
+      "one_day",
+      "次日清晨，旅人再次来到钟楼。",
+      "event-oneday",
+      "等到第二天再调查。",
+    );
+    assert.equal(coreOneDay.state.gameTimeDay, 2);
+
+    // several_days：推进约数日
+    const coreSeveral = await advanceTurn(
+      "several_days",
+      "旅人连夜赶路数日，抵达城外。",
+      "event-severaldays",
+      "前往城外追查。",
+    );
+    assert.equal(coreSeveral.state.gameTimeDay, 5);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
