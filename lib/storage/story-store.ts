@@ -734,6 +734,8 @@ export interface AdventureInitialStatusInput {
 export interface StartAdventureInput {
   campaignName: string;
   campaignDescription?: string;
+  /** 游戏内时间模式（缺省 story 剧情驱动）：turn_based 为五回合一天，开局确定后游戏中不可切换。 */
+  timeMode?: "story" | "turn_based";
   world: {
     name: string;
     premise: string;
@@ -2151,7 +2153,9 @@ export class LocalStoryStore {
           currentLocationId: openingLocationId,
           currentLocationName: openingLocationName,
           gameTimeDay: 1,
-          timeMode: "story",
+          // 时间模式在开局时确定（缺省 story 剧情驱动），游戏中不可切换；
+          // turn_based 五回合一天从第 1 日早上（phaseOffset 0）开始。
+          timeMode: input.timeMode === "turn_based" ? "turn_based" : "story",
           phaseOffset: 0,
           phase: "opening",
           storyMode: storyModules.length > 0 ? "script" : "free",
@@ -3881,91 +3885,6 @@ export class LocalStoryStore {
       sessionId,
       branchId: branch.id,
     });
-  }
-
-  /**
-   * 切换游戏内时间模式（session_state.core 字段，随实体整体序列化，无新表无迁移）：
-   * - story → turn_based：gameTimeDay 保持当前值，phaseOffset 置 0
-   *   （下一回合=早上，此后每回合推进一个时段、每 5 回合进入下一天）；
-   * - turn_based → story：恢复 timeAdvance / gameTimeDayNext 驱动，
-   *   phaseOffset 不再维护（保留旧值不影响 story 模式推导）。
-   * 不写 state_changes：切换动作本身不产生回合，历史回看由回合提交的
-   * phaseOffset 快照还原，无需为切换单独记录。
-   */
-  updateTimeMode(
-    sessionId: string,
-    timeMode: "story" | "turn_based",
-  ): { timeMode: "story" | "turn_based"; phaseOffset: number; gameTimeDay: number } {
-    requireText(sessionId, "sessionId");
-    if (timeMode !== "story" && timeMode !== "turn_based") {
-      throw new Error("时间模式必须是 story 或 turn_based。");
-    }
-    const branch = this.getActiveBranch(sessionId);
-    const now = new Date().toISOString();
-    const row = this.database
-      .prepare(`
-        SELECT state_json
-        FROM materialized_states
-        WHERE session_id = ? AND branch_id = ?
-          AND entity_type = 'session_state' AND entity_id = 'core'
-      `)
-      .get(sessionId, branch.id) as { state_json: string } | undefined;
-    const state = row ? parseObject(row.state_json) : {};
-    const nextState: JsonObject = {
-      ...state,
-      timeMode,
-      ...(timeMode === "turn_based" ? { phaseOffset: 0 } : {}),
-    };
-    // updated_turn_id 非空且外键引用 turns(id)：切换动作挂在当前分支头回合上
-    // （开局后恒有头回合）；极端情况下无头回合时只更新 state_json。
-    if (branch.head_turn_id) {
-      this.database
-        .prepare(`
-          INSERT INTO materialized_states (
-            session_id, branch_id, entity_type, entity_id, state_json,
-            is_active, version, updated_turn_id, updated_at
-          ) VALUES (?, ?, 'session_state', 'core', ?, 1, ?, ?, ?)
-          ON CONFLICT(session_id, branch_id, entity_type, entity_id)
-          DO UPDATE SET
-            state_json = excluded.state_json,
-            version = excluded.version,
-            updated_turn_id = excluded.updated_turn_id,
-            updated_at = excluded.updated_at
-        `)
-        .run(
-          sessionId,
-          branch.id,
-          stringifyJson(nextState),
-          typeof state.version === "number" ? state.version + 1 : 1,
-          branch.head_turn_id,
-          now,
-        );
-    } else {
-      this.database
-        .prepare(`
-          UPDATE materialized_states
-          SET state_json = ?, version = ?, updated_at = ?
-          WHERE session_id = ? AND branch_id = ?
-            AND entity_type = 'session_state' AND entity_id = 'core'
-        `)
-        .run(
-          stringifyJson(nextState),
-          typeof state.version === "number" ? state.version + 1 : 1,
-          now,
-          sessionId,
-          branch.id,
-        );
-    }
-    this.database
-      .prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
-      .run(now, sessionId);
-    return {
-      timeMode,
-      phaseOffset:
-        typeof nextState.phaseOffset === "number" ? nextState.phaseOffset : 0,
-      gameTimeDay:
-        typeof nextState.gameTimeDay === "number" ? nextState.gameTimeDay : 1,
-    };
   }
 
   renameAdventure(sessionId: string, requestedName: string): RenamedAdventure {

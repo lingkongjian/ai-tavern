@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,10 @@ import {
 import { advanceAdventureTurn } from "../lib/story/回合服务.ts";
 import { createStoryGenerationPrompt } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
-import { parseStartAdventureInput } from "../lib/story/开局.ts";
+import {
+  AdventureInputError,
+  parseStartAdventureInput,
+} from "../lib/story/开局.ts";
 
 const migrationsDir = join(
   fileURLToPath(new URL("..", import.meta.url)),
@@ -440,6 +443,59 @@ test("start adventure input accepts declared locations and deadlines", () => {
   assert.equal(parsed.locations.length, 1);
   assert.equal(parsed.locations[0].name, "码头");
   assert.equal(parsed.storyModules[0].deadlineDay, 3);
+});
+
+test("开局解析：timeMode 可选，turn_based 透传、非法拒绝、缺省 story", () => {
+  const base = {
+    campaignName: "解析测试",
+    world: { name: "雪域", premise: "长夜无星。" },
+    player: { name: "旅人", description: "测绘师。" },
+    mainCharacter: { name: "守钟人", role: "看守", personality: "警觉。" },
+    openingScene: "旅人抵达钟楼。",
+  };
+  assert.equal(parseStartAdventureInput(base).timeMode, "story", "缺省为 story");
+  assert.equal(
+    parseStartAdventureInput({ ...base, timeMode: "story" }).timeMode,
+    "story",
+  );
+  assert.equal(
+    parseStartAdventureInput({ ...base, timeMode: "turn_based" }).timeMode,
+    "turn_based",
+  );
+  assert.throws(
+    () => parseStartAdventureInput({ ...base, timeMode: "hourly" }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.includes("时间模式必须是 story 或 turn_based。"),
+    "非法 timeMode 应被拒绝",
+  );
+});
+
+test("五回合一天：规则 14 注入高效推进基础约束", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store, { timeMode: "turn_based" });
+    const adventure = store.loadAdventure(started.sessionId);
+    const prompt = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-eff",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人继续调查。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    const systemText = prompt.messages[0].content;
+    assert.match(systemText, /五回合一天/);
+    assert.match(systemText, /高效推进/);
+    assert.match(systemText, /场景主事件应在当回合完成/);
+    assert.match(systemText, /候选选项聚焦关键决策/);
+    assert.match(systemText, /避免回合白白消耗/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 function turnWithEvaluation(started, scene, options = {}) {
@@ -981,19 +1037,15 @@ function findCore(adventure) {
   );
 }
 
-test("五回合一天：切换后每回合推进一个时段、每 5 回合进入下一天，时段由 phaseOffset 推导", async () => {
+test("五回合一天：开局选择 turn_based 后每回合推进一个时段、每 5 回合进入下一天，时段由 phaseOffset 推导", async () => {
   const { directory, database, store } = temporaryDatabase();
   try {
-    const started = startP1Adventure(store);
-
-    // story → turn_based：日期保留、phaseOffset 置 0
-    const switched = store.updateTimeMode(started.sessionId, "turn_based");
-    assert.equal(switched.timeMode, "turn_based");
-    assert.equal(switched.phaseOffset, 0);
-    assert.equal(switched.gameTimeDay, 1, "切换不改变当前游戏内日期");
+    // 开局设置：turn_based → 物化 timeMode=turn_based、phaseOffset=0（第 1 日早上）
+    const started = startP1Adventure(store, { timeMode: "turn_based" });
     let adventure = store.loadAdventure(started.sessionId);
     assert.equal(findCore(adventure).state.timeMode, "turn_based");
     assert.equal(findCore(adventure).state.phaseOffset, 0);
+    assert.equal(findCore(adventure).state.gameTimeDay, 1, "开局固定从第 1 日开始");
 
     // 连续 6 回合：每回合开始时时段依次为
     // 早上→上午→中午→下午→晚上→早上；第 5 回合结束进入第 2 天
@@ -1064,8 +1116,7 @@ test("五回合一天：切换后每回合推进一个时段、每 5 回合进�
 test("五回合一天：模型输出的 timeAdvance / gameTimeDayNext 被忽略，日期仍按回合推导", async () => {
   const { directory, database, store } = temporaryDatabase();
   try {
-    const started = startP1Adventure(store);
-    store.updateTimeMode(started.sessionId, "turn_based");
+    const started = startP1Adventure(store, { timeMode: "turn_based" });
 
     const before = store.loadAdventure(started.sessionId);
     await advanceAdventureTurn({
@@ -1100,28 +1151,29 @@ test("五回合一天：模型输出的 timeAdvance / gameTimeDayNext 被忽略�
   }
 });
 
-test("时间模式切换：turn_based → story 恢复剧情驱动推进，切回 turn_based 重新置 0", async () => {
+test("时间模式开局确定：story 开局保持 story、turn_based 开局保持 turn_based，无游戏中切换入口", async () => {
   const { directory, database, store } = temporaryDatabase();
   try {
+    // story 开局（缺省）：连续缺省回合不推进日期，模式保持不变
     const started = startP1Adventure(store);
-    store.updateTimeMode(started.sessionId, "turn_based");
-
-    // 推进 6 回合：第 2 天、phaseOffset 6
-    for (const index of [1, 2, 3, 4, 5, 6]) {
+    for (const [index, scene] of [
+      "旅人在钟楼整理线索。",
+      "旅人与守钟人交谈。",
+    ].entries()) {
       const before = store.loadAdventure(started.sessionId);
       await advanceAdventureTurn({
         store,
         sessionId: started.sessionId,
         input: parsePlayerTurnRequest({
           expectedHeadTurnId: before.branchState.branch.headTurnId,
-          idempotencyKey: `request-tb-switch-${index}`,
+          idempotencyKey: `request-story-fixed-${index}`,
           customChoice: "继续调查。",
         }),
-        createTurnId: () => `turn-tb-switch-${index}`,
+        createTurnId: () => `turn-story-fixed-${index}`,
         generate: async () => ({
-          content: turnContent(started, "旅人在钟楼调查。", {
-            eventId: `event-tb-switch-${index}`,
-            evidenceId: `event-tb-switch-${index}`,
+          content: turnContent(started, scene, {
+            eventId: `event-story-fixed-${index}`,
+            evidenceId: `event-story-fixed-${index}`,
           }),
           model: "deepseek-v4-flash",
           usage: {},
@@ -1129,66 +1181,52 @@ test("时间模式切换：turn_based → story 恢复剧情驱动推进，切�
       });
     }
     let core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.timeMode, "story", "story 开局回合推进后模式不变");
+    assert.equal(core.gameTimeDay, 1, "story 模式缺省回合不推进日期");
+
+    // turn_based 开局：推进 6 回合 → 第 2 天、phaseOffset 6，模式保持 turn_based
+    const turnBased = startP1Adventure(store, { timeMode: "turn_based" });
+    for (const index of [1, 2, 3, 4, 5, 6]) {
+      const before = store.loadAdventure(turnBased.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: turnBased.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: `request-tb-fixed-${index}`,
+          customChoice: "继续调查。",
+        }),
+        createTurnId: () => `turn-tb-fixed-${index}`,
+        generate: async () => ({
+          content: turnContent(turnBased, "旅人在钟楼调查。", {
+            eventId: `event-tb-fixed-${index}`,
+            evidenceId: `event-tb-fixed-${index}`,
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+    }
+    core = findCore(store.loadAdventure(turnBased.sessionId)).state;
+    assert.equal(core.timeMode, "turn_based", "turn_based 开局回合推进后模式不变");
     assert.equal(core.gameTimeDay, 2);
     assert.equal(core.phaseOffset, 6);
 
-    // 切回 story：phaseOffset 不再维护，恢复模型驱动
-    const switched = store.updateTimeMode(started.sessionId, "story");
-    assert.equal(switched.timeMode, "story");
-    core = findCore(store.loadAdventure(started.sessionId)).state;
-    assert.equal(core.gameTimeDay, 2, "切回 story 保持当前日期");
-
-    // 缺省回合（无 timeAdvance）：日期不再自动推进
-    let before = store.loadAdventure(started.sessionId);
-    await advanceAdventureTurn({
-      store,
-      sessionId: started.sessionId,
-      input: parsePlayerTurnRequest({
-        expectedHeadTurnId: before.branchState.branch.headTurnId,
-        idempotencyKey: "request-story-default",
-        customChoice: "在钟楼整理线索。",
-      }),
-      createTurnId: () => "turn-story-default",
-      generate: async () => ({
-        content: turnContent(started, "旅人在钟楼整理线索。", {
-          eventId: "event-story-default",
-          evidenceId: "event-story-default",
-        }),
-        model: "deepseek-v4-flash",
-        usage: {},
-      }),
-    });
-    core = findCore(store.loadAdventure(started.sessionId)).state;
-    assert.equal(core.gameTimeDay, 2, "story 模式缺省回合不推进日期");
-
-    // 剧情显式推进一天：one_day 生效
-    before = store.loadAdventure(started.sessionId);
-    await advanceAdventureTurn({
-      store,
-      sessionId: started.sessionId,
-      input: parsePlayerTurnRequest({
-        expectedHeadTurnId: before.branchState.branch.headTurnId,
-        idempotencyKey: "request-story-oneday",
-        customChoice: "等到第二天再调查。",
-      }),
-      createTurnId: () => "turn-story-oneday",
-      generate: async () => ({
-        content: turnContent(started, "次日清晨，旅人再次来到钟楼。", {
-          eventId: "event-story-oneday",
-          evidenceId: "event-story-oneday",
-          sceneTransition: { timeAdvance: "one_day" },
-        }),
-        model: "deepseek-v4-flash",
-        usage: {},
-      }),
-    });
-    core = findCore(store.loadAdventure(started.sessionId)).state;
-    assert.equal(core.gameTimeDay, 3, "story 模式下 timeAdvance 恢复生效");
-
-    // 再次切回 turn_based：日期保留、phaseOffset 重新置 0
-    const switchedBack = store.updateTimeMode(started.sessionId, "turn_based");
-    assert.equal(switchedBack.phaseOffset, 0);
-    assert.equal(switchedBack.gameTimeDay, 3);
+    // 移除验证：游戏中不再存在切换能力
+    assert.equal(
+      store.updateTimeMode,
+      undefined,
+      "story-store 不再导出 updateTimeMode 方法",
+    );
+    assert.ok(
+      !existsSync(
+        join(
+          fileURLToPath(new URL("..", import.meta.url)),
+          "app/api/adventures/[sessionId]/time-mode/route.ts",
+        ),
+      ),
+      "time-mode API 路由文件应已删除",
+    );
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1199,6 +1237,7 @@ test("五回合一天：任务 deadlineDay 与触发器 deadline 按天到期（
   const { directory, database, store } = temporaryDatabase();
   try {
     const started = startP1Adventure(store, {
+      timeMode: "turn_based",
       storyModules: [
         {
           id: "two-day-task",
@@ -1221,7 +1260,6 @@ test("五回合一天：任务 deadlineDay 与触发器 deadline 按天到期（
         },
       ],
     });
-    store.updateTimeMode(started.sessionId, "turn_based");
 
     // 前 4 回合（第 1 天）：期限未到，任务 active、触发器 armed
     for (const index of [1, 2, 3, 4]) {
@@ -1295,8 +1333,7 @@ test("五回合一天：任务 deadlineDay 与触发器 deadline 按天到期（
 test("五回合一天：正文出现跨日短语不触发时间短语一致性警告（日期由回合驱动）", async () => {
   const { directory, database, store } = temporaryDatabase();
   try {
-    const started = startP1Adventure(store);
-    store.updateTimeMode(started.sessionId, "turn_based");
+    const started = startP1Adventure(store, { timeMode: "turn_based" });
 
     // e2e：正文"次日"但未声明任何日期推进 → turn_based 下不产生警告，回合正常提交
     const before = store.loadAdventure(started.sessionId);
@@ -1439,11 +1476,6 @@ test("旧会话兼容：缺失 timeMode/phaseOffset 字段按 story 模式处理
       validated.warnings.some((warning) => warning.includes("时间流逝短语")),
       "缺失 timeMode 时校验按 story 模式处理，跨日短语警告保留",
     );
-
-    // 旧档仍可正常切换为 turn_based：日期保留、phaseOffset 0
-    const switched = store.updateTimeMode(started.sessionId, "turn_based");
-    assert.equal(switched.phaseOffset, 0);
-    assert.equal(switched.gameTimeDay, 1);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

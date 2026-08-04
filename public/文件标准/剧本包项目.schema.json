@@ -37,6 +37,11 @@
       "properties": {
         "campaignName": { "type": "string", "minLength": 1, "maxLength": 80 },
         "campaignDescription": { "type": "string", "maxLength": 2000 },
+        "timeMode": {
+          "type": "string",
+          "enum": ["story", "turn_based"],
+          "description": "游戏内时间模式（可选，缺省 story）：story 剧情驱动 / turn_based 五回合一天。开局确定后游戏中不可切换"
+        },
         "world": {
           "type": "object",
           "required": ["name", "premise"],

@@ -26,6 +26,7 @@ test("parses a complete adventure bundle including the player card", async () =>
 
   assert.equal(parsed.kind, "adventure_bundle");
   assert.equal(parsed.adventure.player.name, "记录员");
+  assert.equal(parsed.adventure.timeMode, "story", "标准示例显式声明 story");
   assert.equal(
     parsed.adventure.player.card.data.system_prompt,
     "不得替玩家决定记录员的言行。",
@@ -172,6 +173,67 @@ test("materializes bundle initial statuses into character states", async () => {
     assert.equal(mainState.state.statuses.length, 2);
     assert.equal(mainState.state.statuses[1].hidden, true);
     assert.equal(mainState.state.statuses[1].id, "linwu-lamp-dust");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("剧本包 timeMode 声明：透传解析并物化到开局 core，缺省为 story", async () => {
+  const document = await readJson(
+    "../public/文件标准/剧本包标准示例.json",
+  );
+  const without = structuredClone(document);
+  delete without.adventure.timeMode;
+  assert.equal(
+    parseAdventureBundleDocument(without).adventure.timeMode,
+    "story",
+    "剧本包未声明 timeMode 时缺省为 story",
+  );
+
+  const turnBased = structuredClone(document);
+  turnBased.adventure.timeMode = "turn_based";
+  const parsedTurnBased = parseAdventureBundleDocument(turnBased);
+  assert.equal(parsedTurnBased.adventure.timeMode, "turn_based");
+
+  const invalid = structuredClone(document);
+  invalid.adventure.timeMode = "hourly";
+  assert.throws(
+    () => parseAdventureBundleDocument(invalid),
+    (error) =>
+      error instanceof ImportFileError &&
+      error.issues.some((issue) => /时间模式必须是 story 或 turn_based/.test(issue)),
+    "非法 timeMode 声明应被剧本包导入拒绝",
+  );
+
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-bundle-timemode-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const turnBasedStarted = store.startAdventure(parsedTurnBased.adventure);
+    const turnBasedCore = store
+      .loadAdventure(turnBasedStarted.sessionId)
+      .branchState.states.find(
+        (state) =>
+          state.entityType === "session_state" && state.entityId === "core",
+      );
+    assert.equal(turnBasedCore.state.timeMode, "turn_based");
+    assert.equal(turnBasedCore.state.phaseOffset, 0);
+    assert.equal(turnBasedCore.state.gameTimeDay, 1);
+
+    const storyParsed = parseAdventureBundleDocument(without);
+    const storyStarted = store.startAdventure(storyParsed.adventure);
+    const storyCore = store
+      .loadAdventure(storyStarted.sessionId)
+      .branchState.states.find(
+        (state) =>
+          state.entityType === "session_state" && state.entityId === "core",
+      );
+    assert.equal(storyCore.state.timeMode, "story");
+    assert.equal(storyCore.state.phaseOffset, 0);
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

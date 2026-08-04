@@ -192,6 +192,7 @@ export function parseAdventureBundleDocument(
     adventure = parseStartAdventureInput({
       campaignName: source.campaignName,
       campaignDescription: source.campaignDescription,
+      timeMode: source.timeMode,
       world: {
         name: world.name,
         premise: world.premise,

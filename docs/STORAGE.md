@@ -212,7 +212,7 @@ DeepSeek 每轮返回 `sceneTransition`，其中包含回合结束时的地点�
 
 `session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。游戏内时间只由剧情推进驱动：`sceneTransition.timeAdvance` 缺省视为时间基本不变（相当于 `moment`），不推进天数；`hours` 不推进天数、`one_day` 推进一天、`several_days` 推进约数日。时间推进与回合状态变化在同一事务内提交，历史回合通过其 `stateChanges` 可还原当时的日期。
 
-`session_state.core` 另有 `timeMode`（`story` 缺省 / `turn_based`）与 `phaseOffset`（缺省 0）字段：`turn_based`（五回合一天）下每个回合固定推进一个时段（`DAY_PHASES[phaseOffset % 5]`：早上/上午/中午/下午/晚上），每 5 回合 `gameTimeDay +1`，`timeAdvance`/`gameTimeDayNext` 被忽略；切换模式保留当前日期、`phaseOffset` 归零重新计时。`phaseOffset` 随回合提交写入 `stateChanges`，历史回看可按快照还原当时时段；`updateTimeMode` 切换动作挂当前分支头回合、不写 `state_changes`（历史还原不依赖）。
+`session_state.core` 另有 `timeMode`（`story` 缺省 / `turn_based`）与 `phaseOffset`（缺省 0）字段：`turn_based`（五回合一天）下每个回合固定推进一个时段（`DAY_PHASES[phaseOffset % 5]`：早上/上午/中午/下午/晚上），每 5 回合 `gameTimeDay +1`，`timeAdvance`/`gameTimeDayNext` 被忽略。时间模式在**新建剧本时确定**（开局表单或剧本包 `adventure.timeMode` 可选声明，开局物化写入 `session_state.core.timeMode`、turn_based 时 `phaseOffset: 0`），开局后不可切换。`phaseOffset` 随回合提交写入 `stateChanges`，历史回看可按快照还原当时时段。
 
 剧情任务可声明 `deadlineDay`（游戏内期限）。每回合组装提示词时，已到期的任务作为 `expiredDeadlines` 硬事实注入上下文，模型必须让期限后果在本轮显现；该机制与回合生成共用同一套校验与提交路径，不单独写库。
 

@@ -170,3 +170,48 @@ test("拒绝任务循环、路径越界、资料覆盖和角色姓名漂移", as
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("开局预设 campaign.timeMode 透传到剧本包 adventure（缺省不声明，非法拒绝）", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ai-tavern-bundle-timemode-"));
+  try {
+    // 缺省：不写 timeMode，解析后按 story 处理
+    const manifest = await createProject(directory);
+    const defaultProject = await assembleBundleProject(
+      join(directory, "开局预设.json"),
+    );
+    assert.equal(
+      defaultProject.bundle.adventure.timeMode,
+      undefined,
+      "未声明时剧本包不写 timeMode 字段",
+    );
+    assert.equal(
+      parseAdventureBundleDocument(defaultProject.bundle).adventure.timeMode,
+      "story",
+      "未声明时缺省为 story",
+    );
+
+    // 显式声明 turn_based → 透传并可通过剧本包导入
+    manifest.campaign.timeMode = "turn_based";
+    await writeJson(join(directory, "开局预设.json"), manifest);
+    const turnBasedProject = await assembleBundleProject(
+      join(directory, "开局预设.json"),
+    );
+    assert.equal(turnBasedProject.bundle.adventure.timeMode, "turn_based");
+    assert.equal(
+      parseAdventureBundleDocument(turnBasedProject.bundle).adventure.timeMode,
+      "turn_based",
+    );
+
+    // 非法声明 → 拒绝
+    manifest.campaign.timeMode = "hourly";
+    await writeJson(join(directory, "开局预设.json"), manifest);
+    await assert.rejects(
+      assembleBundleProject(join(directory, "开局预设.json")),
+      (error) =>
+        error instanceof BundleProjectError &&
+        error.issues.some((issue) => /timeMode 必须是 story 或 turn_based/.test(issue)),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

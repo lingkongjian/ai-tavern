@@ -59,6 +59,14 @@
           "type": "string",
           "maxLength": 2000
         },
+        "timeMode": {
+          "type": "string",
+          "enum": [
+            "story",
+            "turn_based"
+          ],
+          "description": "游戏内时间模式（可选，缺省 story）：story 剧情驱动（时间只由剧情显式推进）；turn_based 五回合一天（每回合系统自动推进一个时段，5 回合一天）。在新建剧本时确定，游戏中不可切换。"
+        },
         "world": {
           "type": "object",
           "required": [

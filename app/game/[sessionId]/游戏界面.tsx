@@ -3074,68 +3074,6 @@ export function GameInterface({
     );
   }
 
-  async function saveTimeMode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const nextMode = String(data.get("timeMode"));
-    if (nextMode !== "story" && nextMode !== "turn_based") return;
-    if (nextMode === timeMode) return;
-    const confirmed = window.confirm(
-      nextMode === "turn_based"
-        ? "切换到「五回合一天」时间模式：此后每完成一个回合，系统自动推进一个时段（早上→上午→中午→下午→晚上，每 5 个回合进入下一天），剧情不再由模型声明推进时间（timeAdvance/gameTimeDayNext 会被忽略），当前游戏内日期保持不变。已发生的剧情历史不受影响。确认切换吗？"
-        : "切回「剧情驱动」时间模式：此后游戏内时间只由剧情显式声明推进（sceneTransition.timeAdvance / gameTimeDayNext），不再按回合自动推进时段与日期。已发生的剧情历史不受影响。确认切换吗？",
-    );
-    if (!confirmed) return;
-    setMemoryBusy("time-mode");
-    setMemoryManagerError("");
-    try {
-      const response = await fetch(
-        `/api/adventures/${adventure.session.id}/time-mode`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ timeMode: nextMode }),
-        },
-      );
-      const body = (await response.json()) as {
-        time?: {
-          timeMode: string;
-          phaseOffset: number;
-          gameTimeDay: number;
-        };
-        error?: string;
-      };
-      if (!response.ok || !body.time) {
-        throw new Error(body.error ?? "切换时间模式失败。");
-      }
-      setAdventure((previous) => ({
-        ...previous,
-        branchState: {
-          ...previous.branchState,
-          states: previous.branchState.states.map((state) =>
-            state.entityType === "session_state" && state.entityId === "core"
-              ? {
-                  ...state,
-                  state: {
-                    ...state.state,
-                    timeMode: body.time!.timeMode,
-                    phaseOffset: body.time!.phaseOffset,
-                    gameTimeDay: body.time!.gameTimeDay,
-                  },
-                }
-              : state,
-          ),
-        },
-      }));
-    } catch (error) {
-      setMemoryManagerError(
-        error instanceof Error ? error.message : "切换时间模式失败。",
-      );
-    } finally {
-      setMemoryBusy("");
-    }
-  }
-
   async function rebuildMemory() {
     if (
       memoryBusy ||
@@ -4836,34 +4774,6 @@ export function GameInterface({
                 {memoryManagerError}
               </div>
             ) : null}
-
-            <form
-              className="time-mode-settings"
-              onSubmit={(event) => void saveTimeMode(event)}
-            >
-              <label>
-                <span>游戏内时间模式</span>
-                <select
-                  name="timeMode"
-                  defaultValue={timeMode}
-                  key={`time-mode-${timeMode}`}
-                  disabled={Boolean(memoryBusy)}
-                >
-                  <option value="story">剧情驱动 · 时间只由剧情显式推进</option>
-                  <option value="turn_based">
-                    五回合一天 · 每回合推进一个时段（早上→上午→中午→下午→晚上）
-                  </option>
-                </select>
-                <small>
-                  {timeMode === "turn_based"
-                    ? `当前第 ${gameTimeDay} 日 · ${currentDayPhase ?? ""}；每 5 个回合进入下一天，模型声明的时间推进将被忽略。`
-                    : "当前时间由剧情声明推进（timeAdvance / gameTimeDayNext），回合本身不推进时间。"}
-                </small>
-              </label>
-              <button type="submit" disabled={Boolean(memoryBusy)}>
-                {memoryBusy === "time-mode" ? "切换中……" : "切换模式"}
-              </button>
-            </form>
 
             <form className="memory-settings" onSubmit={saveMemorySettings}>
               <label>

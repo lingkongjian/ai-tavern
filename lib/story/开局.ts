@@ -349,6 +349,14 @@ export function parseStartAdventureInput(
   }
 
   const issues: string[] = [];
+  let timeMode: "story" | "turn_based" = "story";
+  if (value.timeMode !== undefined && value.timeMode !== null) {
+    if (value.timeMode !== "story" && value.timeMode !== "turn_based") {
+      issues.push("时间模式必须是 story 或 turn_based。");
+    } else {
+      timeMode = value.timeMode;
+    }
+  }
   const storyModules = readStoryModules(value.storyModules, issues);
   const initialStoryModuleId = readOptionalText(
     value,
@@ -471,6 +479,7 @@ export function parseStartAdventureInput(
       limits.description,
       issues,
     ),
+    timeMode,
     world: {
       name: readRequiredText(
         world,

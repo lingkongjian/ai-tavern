@@ -423,6 +423,14 @@ export async function assembleBundleProject(
     120,
     issues,
   );
+  let declaredTimeMode: "story" | "turn_based" | undefined;
+  if (campaign.timeMode !== undefined) {
+    if (campaign.timeMode !== "story" && campaign.timeMode !== "turn_based") {
+      issues.push("campaign.timeMode 必须是 story 或 turn_based。");
+    } else {
+      declaredTimeMode = campaign.timeMode;
+    }
+  }
   let storyModules: JsonValue[] | undefined;
   if (campaign.storyModules !== undefined) {
     if (!Array.isArray(campaign.storyModules)) {
@@ -705,6 +713,7 @@ export async function assembleBundleProject(
     adventure: {
       campaignName,
       campaignDescription,
+      ...(declaredTimeMode ? { timeMode: declaredTimeMode } : {}),
       world: {
         name: worldName,
         premise: worldPremise,

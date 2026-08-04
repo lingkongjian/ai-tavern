@@ -16,6 +16,7 @@ const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 const validInput = {
   campaignName: "雾港余烬",
   campaignDescription: "一场本地测试冒险。",
+  timeMode: "story",
   world: {
     name: "灰潮群岛",
     premise: "群岛依靠潮汐灯塔维持航线。",

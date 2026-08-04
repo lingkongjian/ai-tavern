@@ -13,6 +13,7 @@
   "campaign": {
     "campaignName": "纸城失踪档案",
     "campaignDescription": "调查一份会自行改写的失踪者档案。",
+    "timeMode": "story",
     "world": {
       "name": "纸城",
       "premise": "纸城的公共档案会在日落前短暂影响现实，档案馆负责核验证据并修订错误记录。"

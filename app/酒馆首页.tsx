@@ -280,6 +280,7 @@ interface ImportedWorldBookDraft extends ImportedWorldBook {
 const emptyForm = {
   campaignName: "",
   campaignDescription: "",
+  timeMode: "story",
   worldName: "",
   worldPremise: "",
   playerName: "",
@@ -296,6 +297,7 @@ const emptyForm = {
 const exampleForm = {
   campaignName: "雾港余烬",
   campaignDescription: "一场围绕失踪航船、古老灯塔与港口秘密展开的悬疑冒险。",
+  timeMode: "story",
   worldName: "灰潮群岛",
   worldPremise:
     "群岛终年被银灰色海雾笼罩，航线依靠会歌唱的潮汐灯塔维系。三个月前，北方灯塔突然沉默，此后每逢退潮，港内就会出现不属于任何时代的船骸。教会宣称这是海神的警告，商会却在暗中回收船骸上的黑色晶体。",
@@ -1204,6 +1206,7 @@ export function TavernHome() {
     setForm({
       campaignName: adventure.campaignName,
       campaignDescription: adventure.campaignDescription ?? "",
+      timeMode: adventure.timeMode === "turn_based" ? "turn_based" : "story",
       worldName: adventure.world.name,
       worldPremise: adventure.world.premise,
       playerName: adventure.player.name,
@@ -1905,6 +1908,7 @@ export function TavernHome() {
         body: JSON.stringify({
           campaignName: form.campaignName,
           campaignDescription: form.campaignDescription,
+          timeMode: form.timeMode,
           world: { name: form.worldName, premise: form.worldPremise },
           player: {
             name: form.playerName,
@@ -3266,6 +3270,42 @@ export function TavernHome() {
                 placeholder="例如：让玩家逐步发现灯塔与失踪航船的联系。"
               />
             </label>
+            <fieldset className="time-mode-options">
+              <legend>游戏内时间模式</legend>
+              <label className={form.timeMode === "story" ? "selected" : ""}>
+                <input
+                  type="radio"
+                  name="timeMode"
+                  value="story"
+                  checked={form.timeMode === "story"}
+                  onChange={() => updateField("timeMode", "story")}
+                />
+                <span>
+                  <strong>剧情驱动</strong>
+                  <small>时间只由剧情显式推进（建议默认）</small>
+                </span>
+              </label>
+              <label
+                className={form.timeMode === "turn_based" ? "selected" : ""}
+              >
+                <input
+                  type="radio"
+                  name="timeMode"
+                  value="turn_based"
+                  checked={form.timeMode === "turn_based"}
+                  onChange={() => updateField("timeMode", "turn_based")}
+                />
+                <span>
+                  <strong>五回合一天</strong>
+                  <small>
+                    每回合推进一个时段（早上/上午/中午/下午/晚上）、5 回合一天，适合跑团式节奏
+                  </small>
+                </span>
+              </label>
+              <p>
+                开局确定后游戏中不可切换，请按本剧本的节奏需要选择。
+              </p>
+            </fieldset>
             {(storyModules.length > 0 ||
             bundleRelationships.length > 0 ||
             bundleLocations.length > 0 ||

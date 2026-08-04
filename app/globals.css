@@ -2700,6 +2700,74 @@ a {
   line-height: 1.5;
 }
 
+.time-mode-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 19px;
+  padding: 0;
+  border: 0;
+}
+
+.time-mode-options legend {
+  padding: 0;
+  color: #cfc0ad;
+  font-size: 0.78rem;
+  font-weight: 650;
+  margin-bottom: 9px;
+}
+
+.time-mode-options label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 3px;
+  background: rgb(10 8 9 / 27%);
+  cursor: pointer;
+}
+
+.time-mode-options label.selected {
+  border-color: rgb(212 124 69 / 42%);
+  background: rgb(81 42 35 / 14%);
+}
+
+.time-mode-options label input {
+  margin-top: 3px;
+  accent-color: #d47c45;
+}
+
+.time-mode-options label > span {
+  display: grid;
+  gap: 4px;
+}
+
+.time-mode-options strong {
+  color: #cfc0ad;
+  font-size: 0.75rem;
+}
+
+.time-mode-options small {
+  color: #6f6660;
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+
+.time-mode-options > p {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: #6f6660;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .time-mode-options {
+    grid-template-columns: 1fr;
+  }
+}
+
 .character-columns {
   margin-top: 18px;
 }
@@ -5349,57 +5417,6 @@ a {
   gap: 10px;
 }
 
-.time-mode-settings {
-  display: grid;
-  padding: 16px 22px;
-  border-bottom: 1px solid var(--line);
-  grid-template-columns: minmax(220px, 1fr) auto;
-  align-items: end;
-  gap: 10px;
-}
-
-.time-mode-settings label {
-  display: grid;
-  gap: 6px;
-}
-
-.time-mode-settings label span {
-  color: #796c63;
-  font-size: 0.58rem;
-}
-
-.time-mode-settings label small {
-  color: #8d7f73;
-  font-size: 0.54rem;
-  line-height: 1.55;
-}
-
-.time-mode-settings select {
-  width: 100%;
-  padding: 9px 10px;
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 3px;
-  color: #c1afa1;
-  background: rgb(11 9 10 / 48%);
-  font: inherit;
-}
-
-.time-mode-settings button {
-  min-height: 35px;
-  padding: 8px 11px;
-  border: 1px solid rgb(212 124 69 / 22%);
-  border-radius: 3px;
-  color: #aa7c66;
-  background: rgb(50 31 31 / 52%);
-  cursor: pointer;
-  font-size: 0.59rem;
-}
-
-.time-mode-settings button:disabled {
-  cursor: wait;
-  opacity: 0.45;
-}
-
 .memory-settings label,
 .memory-entry-list form label {
   display: grid;
@@ -5586,10 +5603,6 @@ a {
 
 @media (max-width: 720px) {
   .memory-settings {
-    grid-template-columns: 1fr;
-  }
-
-  .time-mode-settings {
     grid-template-columns: 1fr;
   }
 
