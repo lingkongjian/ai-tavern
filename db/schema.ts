@@ -739,6 +739,45 @@ export const snapshots = sqliteTable(
   ],
 );
 
+export const turnContextSnapshots = sqliteTable(
+  "turn_context_snapshots",
+  {
+    turnId: text("turn_id")
+      .primaryKey()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    schemaVersion: text("schema_version").notNull().default("1.0.0"),
+    model: text("model").notNull(),
+    systemPrompt: text("system_prompt").notNull(),
+    contextJson: text("context_json").notNull(),
+    diagnosticsJson: text("diagnostics_json").notNull(),
+    messagesJson: text("messages_json").notNull(),
+    estimatedTokens: integer("estimated_tokens").notNull().default(0),
+    promptTokens: integer("prompt_tokens"),
+    requestCount: integer("request_count").notNull().default(1),
+    repairApplied: integer("repair_applied", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("idx_turn_context_snapshots_session_turn").on(
+      table.sessionId,
+      table.turnId,
+    ),
+    index("idx_turn_context_snapshots_branch_updated").on(
+      table.branchId,
+      table.updatedAt,
+    ),
+  ],
+);
+
 export const savePoints = sqliteTable(
   "save_points",
   {

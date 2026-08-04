@@ -871,7 +871,6 @@ function createStateMutations(input: {
         operation: "merge",
         value: {
           gameTimeDay: currentDay + dayDelta,
-          lastTimeAdvance: timeAdvance,
         },
         reason: timeAdvance === "several_days" ? "剧情推进了数日" : "剧情推进了一天",
         evidence: transition.evidence,

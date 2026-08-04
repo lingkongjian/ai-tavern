@@ -1,6 +1,5 @@
 // 兼容旧导入路径。新代码应使用“模型供应商.ts”中的通用名称。
 import {
-  getAiProviderConfig,
   getAiProviderStatus,
   requestAiJson,
   testAiConnection,
@@ -18,10 +17,6 @@ export type {
   AiRequestOptions as DeepSeekRequestOptions,
   AiUsage as DeepSeekUsage,
 } from "./模型供应商.ts";
-
-export function getDeepSeekConfig() {
-  return getAiProviderConfig();
-}
 
 export function getDeepSeekStatus() {
   const status = getAiProviderStatus();
