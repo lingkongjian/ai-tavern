@@ -18,6 +18,7 @@ import {
 } from "../lib/story/回合服务.ts";
 import { createStoryGenerationMessages, createStoryGenerationPrompt } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
+import { sceneSimilarity } from "../lib/story/重复检测.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 
@@ -2209,6 +2210,17 @@ function statusesTestTurn(started, eventId, scene, extra = {}) {
   };
 }
 
+function choiceDiversityTurn(started, eventId, scene, choices) {
+  return {
+    ...statusesTestTurn(started, eventId, scene),
+    decision: {
+      context: "action_direction",
+      prompt: "旅人接下来准备做什么？",
+      choices,
+    },
+  };
+}
+
 function statusesAdventure(store, campaignName) {
   return store.startAdventure({
     campaignName,
@@ -2957,6 +2969,345 @@ test("状态一致性警告随回合正常提交并写入生成输出，不阻�
     assert.equal(state.state.statuses.length, 1);
     assert.equal(state.state.statuses[0].id, "poison-1");
     assert.equal(state.state.statuses[0].description, "毒性潜伏，左臂发麻");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("规则 21/32/33：scene 充实度、承接顺序与选项实质差异", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-scene-richness-rules-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "scene 充实度规则测试");
+    const adventure = store.loadAdventure(started.sessionId);
+    const messages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-richness",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const systemPrompt = messages[0].content;
+    // 规则 21：剧情必须推进且 scene 应完整充实（充实≠重复的边界）
+    assert.match(systemPrompt, /21\. 剧情必须推进且 scene 应完整充实/);
+    assert.match(systemPrompt, /写足本轮场景的环境与氛围、在场人物的反应与互动、玩家回应的直接结果与后续发展/);
+    assert.match(systemPrompt, /12000/);
+    assert.match(systemPrompt, /不要只写两三句梗概/);
+    assert.match(systemPrompt, /充实以"本轮新发生的事实和进展"为边界/);
+    // 规则 32：承接顺序——先呈现玩家回应直接后果，再推进新信息
+    assert.match(systemPrompt, /32\. 承接顺序/);
+    assert.match(systemPrompt, /先完整呈现玩家回应的直接后果/);
+    assert.match(systemPrompt, /打断性新事件、新角色、新冲突或新选项/);
+    assert.match(systemPrompt, /作为玩家回应结果的延续自然展开/);
+    // 规则 33：候选选项实质差异——与最近 2-3 回合拉开差异
+    assert.match(systemPrompt, /33\. 候选选项实质差异/);
+    assert.match(systemPrompt, /最近 2-3 回合/);
+    assert.match(systemPrompt, /继续调查\/观望\/保持现状/);
+    assert.match(systemPrompt, /随剧情进展与玩家回应结果变化/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("选项差异警告：与最近回合选项高度相似时提醒且不拒绝回合", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-choice-diversity-warning-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "选项差异警告测试");
+    const adventure = store.loadAdventure(started.sessionId);
+
+    // 构造带历史回合的冒险：上一轮选项为「继续调查/暂且观望」。
+    const previousChoices = [
+      {
+        id: "prev-1",
+        label: "继续调查",
+        description:
+          "沿着走廊尽头的新线索继续追查，看看钟楼深处还藏着什么秘密。",
+        stance: "neutral",
+      },
+      {
+        id: "prev-2",
+        label: "暂且观望",
+        description: "先不急着行动，观察守钟人的神色和铜钟的动向，等局面更明朗。",
+        stance: "benevolent",
+      },
+    ];
+    const historyTurn = {
+      id: "turn-history-1",
+      sequence: 1,
+      generatedOutput: {
+        turn: {
+          scene: "旅人在黄昏来到钟楼，守钟人把钥匙压在掌心。",
+          events: [],
+          dialogue: [],
+        },
+        decision: {
+          context: "action_direction",
+          prompt: "接下来如何行动？",
+          choices: previousChoices,
+        },
+      },
+    };
+    const withHistory = {
+      ...adventure,
+      branchState: { ...adventure.branchState, recentTurns: [historyTurn] },
+    };
+    const repeatedChoices = (prefix) => [
+      {
+        id: `${prefix}-1`,
+        label: "继续调查",
+        description:
+          "沿着走廊尽头的新线索继续追查，看看钟楼深处还藏着什么秘密。",
+        stance: "neutral",
+      },
+      {
+        id: `${prefix}-2`,
+        label: "暂且观望",
+        description: "先不急着行动，观察守钟人的神色和铜钟的动向，等局面更明朗。",
+        stance: "benevolent",
+      },
+    ];
+
+    // 场景 A：本轮选项与上一轮高度相似 → 警告产生且校验通过（不拒绝回合）
+    const repeated = validateGeneratedTurn(
+      choiceDiversityTurn(
+        started,
+        "event-choice-a",
+        "旅人继续留在钟楼石室。",
+        repeatedChoices("a"),
+      ),
+      withHistory,
+      "turn-choice-a",
+    );
+    assert.ok(
+      repeated.warnings.some((warning) => warning.includes("选项高度相似")),
+      "高度相似选项应产生选项差异警告",
+    );
+    assert.ok(
+      repeated.warnings.some((warning) => warning.includes("第 1 回合")),
+      "警告应指明相似的历史回合编号",
+    );
+
+    // 场景 B：本轮选项与上一轮明显不同 → 无选项差异警告
+    const advanced = validateGeneratedTurn(
+      choiceDiversityTurn(
+        started,
+        "event-choice-b",
+        "旅人抓住铜钟的吊索向上攀爬。",
+        [
+          {
+            id: "b-1",
+            label: "爬上钟顶",
+            description: "抓住吊索攀上钟楼顶层，从窗缝查看外面积水的潮沟。",
+            stance: "neutral",
+          },
+          {
+            id: "b-2",
+            label: "撬开铜钟",
+            description: "用撬棍抵住钟沿，试图让铜钟停止逆流滴水。",
+            stance: "malicious",
+          },
+        ],
+      ),
+      withHistory,
+      "turn-choice-b",
+    );
+    assert.ok(
+      !advanced.warnings.some((warning) => warning.includes("选项高度相似")),
+      "明显不同的选项不应触发选项差异警告",
+    );
+
+    // 场景 C：无最近回合（第一轮）→ 无警告
+    const firstTurn = validateGeneratedTurn(
+      choiceDiversityTurn(
+        started,
+        "event-choice-c",
+        "旅人继续留在钟楼石室。",
+        repeatedChoices("c"),
+      ),
+      adventure,
+      "turn-choice-c",
+    );
+    assert.equal(firstTurn.warnings.length, 0, "无历史回合时不产生选项差异警告");
+
+    // 场景 D：阈值边界——基准文本追加 15/16 字不重复后缀，相似度分别落在 0.65 两侧，
+    // 警告行为必须与阈值一致（先用 sceneSimilarity 验证前提，避免脆断言）。
+    const baseLabel = "继续调查";
+    const baseDescription =
+      "沿着走廊尽头的新线索继续追查，看看钟楼深处还藏着什么秘密";
+    const boundarySequence = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
+    const withSuffix = (count) =>
+      choiceDiversityTurn(started, `event-choice-d-${count}`, "旅人继续留在钟楼石室。", [
+        {
+          id: `d-${count}-1`,
+          label: baseLabel,
+          description: `${baseDescription}，${boundarySequence.slice(0, count)}`,
+          stance: "neutral",
+        },
+        {
+          id: `d-${count}-2`,
+          label: "回去休息",
+          description: "今天先离开钟楼休息，明天一早再来查看潮沟。",
+          stance: "benevolent",
+        },
+      ]);
+    const prevText = `${previousChoices[0].label} ${previousChoices[0].description}`;
+    const boundarySim = (count) =>
+      sceneSimilarity(
+        `${baseLabel} ${baseDescription}，${boundarySequence.slice(0, count)}`,
+        prevText,
+      );
+    assert.ok(
+      boundarySim(15) >= 0.65,
+      `边界前提：追加 15 字后缀相似度应达到阈值（实际 ${boundarySim(15)}）`,
+    );
+    assert.ok(
+      boundarySim(16) < 0.65,
+      `边界前提：追加 16 字后缀相似度应低于阈值（实际 ${boundarySim(16)}）`,
+    );
+    const atThreshold = validateGeneratedTurn(
+      withSuffix(15),
+      withHistory,
+      "turn-choice-d-15",
+    );
+    const belowThreshold = validateGeneratedTurn(
+      withSuffix(16),
+      withHistory,
+      "turn-choice-d-16",
+    );
+    assert.ok(
+      atThreshold.warnings.some((warning) => warning.includes("选项高度相似")),
+      "相似度 ≥ 0.65 时应产生选项差异警告",
+    );
+    assert.ok(
+      !belowThreshold.warnings.some((warning) =>
+        warning.includes("选项高度相似"),
+      ),
+      "相似度 < 0.65 时不应产生选项差异警告",
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("选项差异警告随回合正常提交并写入生成输出，不阻断剧情", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-choice-diversity-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "选项差异端到端测试");
+
+    // 第一轮：正常提交，无历史回合 → 无选项差异警告（选项文本足够长，参与相似度比较）
+    const firstResult = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "choice-e2e-1",
+        customChoice: "继续调查",
+      }),
+      createTurnId: () => "turn-choice-e2e-1",
+      generate: async () => ({
+        content: choiceDiversityTurn(
+          started,
+          "event-choice-e2e-1",
+          "旅人沿走廊向前，铜钟的滴水声在身后拉长。",
+          [
+            {
+              id: "e2e-1-1",
+              label: "继续调查",
+              description:
+                "沿着走廊尽头的新线索继续追查，看看钟楼深处还藏着什么秘密。",
+              stance: "neutral",
+            },
+            {
+              id: "e2e-1-2",
+              label: "暂且观望",
+              description:
+                "先不急着行动，观察守钟人的神色和铜钟的动向，等局面更明朗。",
+              stance: "benevolent",
+            },
+          ],
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    assert.ok(firstResult.committedTurn, "第一轮应正常提交");
+    let savedAdventure = store.loadAdventure(started.sessionId);
+    let savedFirst = savedAdventure.branchState.recentTurns.find(
+      (turn) => turn.id === firstResult.committedTurn.id,
+    );
+    assert.equal((savedFirst.generatedOutput.warnings ?? []).length, 0);
+
+    // 第二轮：选项与第一轮几乎相同 → 选项差异警告产生且回合正常提交
+    const secondResult = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: firstResult.committedTurn.id,
+        idempotencyKey: "choice-e2e-2",
+        customChoice: "继续调查",
+      }),
+      createTurnId: () => "turn-choice-e2e-2",
+      generate: async () => ({
+        content: choiceDiversityTurn(
+          started,
+          "event-choice-e2e-2",
+          "旅人停下脚步，回头望向钟楼的石阶。",
+          [
+            {
+              id: "e2e-2-1",
+              label: "继续调查",
+              description:
+                "沿着走廊尽头的新线索继续追查，看看钟楼深处还藏着什么秘密。",
+              stance: "neutral",
+            },
+            {
+              id: "e2e-2-2",
+              label: "暂且观望",
+              description:
+                "先不急着行动，观察守钟人的神色和铜钟的动向，等局面更明朗。",
+              stance: "benevolent",
+            },
+          ],
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 900 },
+      }),
+    });
+    assert.ok(secondResult.committedTurn, "选项差异警告不拒绝回合，第二轮应正常提交");
+    savedAdventure = store.loadAdventure(started.sessionId);
+    const savedSecond = savedAdventure.branchState.recentTurns.find(
+      (turn) => turn.id === secondResult.committedTurn.id,
+    );
+    assert.ok(savedSecond, "第二轮回合应写入历史");
+    const warnings = savedSecond.generatedOutput.warnings ?? [];
+    assert.ok(
+      warnings.some((warning) => warning.includes("选项高度相似")),
+      "选项差异警告应随回合写入 generatedOutput",
+    );
+    assert.ok(
+      warnings.some((warning) => warning.includes("第 2 回合")),
+      "警告应指向上一轮回合编号（开局回合无候选项，第一轮提交为第 2 回合）",
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

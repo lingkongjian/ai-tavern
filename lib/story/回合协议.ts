@@ -9,6 +9,7 @@ import {
   isAttributeName,
   type AttributeName,
 } from "./判定服务.ts";
+import { sceneSimilarity } from "./重复检测.ts";
 
 export type RoleplayMode = "speech" | "action" | "mixed";
 
@@ -776,6 +777,90 @@ function collectTimePhraseConsistencyWarnings(input: {
   warnings.push(
     `正文出现时间流逝短语「${matchedPhrase}」但本轮游戏内日期未推进（sceneTransition 未提供 gameTimeDayNext 且 timeAdvance 为 moment/hours/缺省）。若剧情确实跨日（如"次日""数日后"），请通过 sceneTransition.gameTimeDayNext 显式声明本回合结束日期（整数，≥ 当前游戏内日期），或改用 timeAdvance 表示时间幅度；若只是同日内的时间描写，可忽略本提醒。`,
   );
+  return warnings;
+}
+
+/**
+ * 选项差异检测（警告级，不拒绝回合）：
+ * 本轮 decision.choices 与最近 2-3 回合（recentTurns 尾部窗口）的候选项做文本
+ * 相似度比较（label + description 拼接后复用 sceneSimilarity 的 n-gram Jaccard），
+ * 任一历史回合存在相似度 ≥ 阈值的选项对时，产生一条"选项高度相似"警告，提醒
+ * 模型提供有实质差异的选择。取用路径：adventure.branchState.recentTurns 每回合的
+ * generatedOutput.decision.choices（协议保存的原始候选项）。
+ * 误报控制（保守策略）：
+ * - 阈值 0.65 高于场景重复拦截的 0.55：对话轮次的选项常因同一情境自然接近，
+ *   过低阈值会在普通对话中频繁误报；0.65 只捕获近乎复读的选项，同时因警告
+ *   不拒绝回合，即使个别误报也不阻断剧情；
+ * - 文本过短（normalized 长度不满足 sceneSimilarity 的最低要求）视为无法判断，
+ *   相似度按 0 处理，不警告；
+ * - 每个历史回合最多产生一条警告（取该回合最高相似度的选项对），同一轮
+ *   至多 3 条，避免刷屏。
+ */
+const CHOICE_SIMILARITY_THRESHOLD = 0.65;
+const CHOICE_RECENT_WINDOW = 3;
+
+function trimChoiceSample(value: string, limit = 40) {
+  const text = value.trim();
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+function collectChoiceDiversityWarnings(input: {
+  choices: GeneratedChoice[];
+  adventure: LoadedAdventure;
+}) {
+  const { choices, adventure } = input;
+  const warnings: string[] = [];
+  const currentTexts = choices
+    .map((choice) => `${choice.label} ${choice.description}`.trim())
+    .filter((text) => text.length > 0);
+  if (currentTexts.length === 0) return warnings;
+
+  const recentTurns = adventure.branchState.recentTurns.slice(
+    -CHOICE_RECENT_WINDOW,
+  );
+  for (const recentTurn of recentTurns) {
+    const recentDecision = isObject(recentTurn.generatedOutput.decision)
+      ? recentTurn.generatedOutput.decision
+      : {};
+    const recentTexts = requiredArray(
+      recentDecision.choices,
+      "历史候选项",
+      [],
+    )
+      .filter(isObject)
+      .map((item) => {
+        const label = typeof item.label === "string" ? item.label : "";
+        const description =
+          typeof item.description === "string" ? item.description : "";
+        return `${label} ${description}`.trim();
+      })
+      .filter((text) => text.length > 0);
+    if (recentTexts.length === 0) continue;
+
+    let worstSimilarity = 0;
+    let currentSample = "";
+    let recentSample = "";
+    for (const currentText of currentTexts) {
+      for (const recentText of recentTexts) {
+        const similarity = sceneSimilarity(currentText, recentText);
+        if (similarity > worstSimilarity) {
+          worstSimilarity = similarity;
+          currentSample = currentText;
+          recentSample = recentText;
+        }
+      }
+    }
+    if (worstSimilarity < CHOICE_SIMILARITY_THRESHOLD) continue;
+    const sequence =
+      typeof recentTurn.sequence === "number" ? recentTurn.sequence : 0;
+    warnings.push(
+      `本轮选项与第 ${sequence} 回合的选项高度相似（相似度 ${Math.round(
+        worstSimilarity * 100,
+      )}%，如「${trimChoiceSample(
+        currentSample,
+      )}」与「${trimChoiceSample(recentSample)}」），请提供有实质差异的选择：选项应随剧情进展与玩家回应结果变化，避免连续多轮出现"继续调查/观望/保持现状"这类近似选项。`,
+    );
+  }
   return warnings;
 }
 
@@ -1944,6 +2029,15 @@ export function validateGeneratedTurn(
     })) {
       normalizationWarnings.push(warning);
     }
+  }
+
+  // 选项差异检测（警告级）：本轮 decision.choices 与最近 2-3 回合的候选项高度相似
+  // → 提醒提供有实质差异的选择，不拒绝回合。
+  for (const warning of collectChoiceDiversityWarnings({
+    choices,
+    adventure,
+  })) {
+    normalizationWarnings.push(warning);
   }
 
   const warnings = [
