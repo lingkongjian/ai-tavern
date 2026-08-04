@@ -30,9 +30,13 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const input = parseStartAdventureInput(body);
+    const warnings: string[] = [];
+    const input = parseStartAdventureInput(body, warnings);
     const adventure = new LocalStoryStore(getDb()).startAdventure(input);
-    return noStoreJson({ adventure }, { status: 201 });
+    return noStoreJson(
+      { adventure, ...(warnings.length > 0 ? { warnings } : {}) },
+      { status: 201 },
+    );
   } catch (error) {
     if (error instanceof AdventureInputError) {
       return noStoreJson(

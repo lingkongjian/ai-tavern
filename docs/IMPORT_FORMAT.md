@@ -56,8 +56,8 @@
 - `initialRelationships`：开局角色之间的初始关系基线（最多 100 条）。每项使用 `sourceCharacterName` 与 `targetCharacterName`（必须与角色姓名一致），`dimensions` 提供 `trust`、`affection`、`fear`、`hostility`、`respect`（-100 ~ 100，缺省为 0；`affinity` 作为好感维度的旧别名仍可导入，新内容一律写 `affection`），`summary` 概括关系性质（如“青梅竹马”“名义上的未婚夫妻”）。开局物化时自动建立双向记录（A→B 与 B→A 独立演化）；声明中已显式给出反向的以声明为准。
 - `locations`：剧本中可能出现的地点清单（最多 60 个）。每项包含 `name`、`description`，可选 `characters`（默认在该地点活动的角色姓名）与 `important`（重要地点，更高优先级进入上下文）。开局即预注册为地点实体，未进入前就被声明；与开场地点同名的声明会被跳过。
 - `foreshadowing`：跨章节伏笔清单（最多 30 条）。每项包含 `id`、`keywords`（稳定关键词，至少 1 个，相关时刻把伏笔带进上下文）、`seedCondition`（伏笔埋入剧情的出现条件）、`payoffCondition`（回收条件）与 `payoffSummary`（回收时应呈现的核心信息），可选 `characters`（密切相关的主要角色姓名）。开局物化为 `plot_thread` 实体；出现条件满足时模型报告 `seed` 埋入，回收条件满足时报告 `payoff` 并呈现概要。它与剧情任务互补，解决短上下文下跨章节伏笔真正目的丢失的问题。
-- `triggers`：偏离触发器清单（最多 30 条）。每项包含 `id`、`when`（触发条件描述）与 `consequence`（条件满足后必须显现的意外阻碍），可选 `stateEffects`（关系/属性/标志影响，由系统在触发后强制应用；`flags` 中的 `bad_end` 会置位结局警示横幅）与 `deadline`（期限，游戏内第几天前必须生效；剧情时间推进超过期限后系统强制触发并应用后果）。示例场景：主角弱小时强闯反派地盘 → 强大反派提前登场；已婚状态下与异性接触 → 正主怀疑、敌我关系大幅转变。
-- `initialStatuses`：人物开局状态词条（最多 60 个角色条目，每角色最多 20 条）。每项使用 `characterName`（必须与角色姓名一致）与 `statuses`（词条数组）：`id`（稳定短横线 ID，开局按“角色名-状态名”生成，无需手写）、`name`（状态名，如受伤、中毒、迅捷）、`kind`（`buff` 或 `debuff`）、可选 `hidden`（角色未察觉的状态，如暗伤、被下毒、血脉异常；开局物化后以导演级信息注入，角色通过剧情探索认识到后才解锁）、`description`（状态描述）、可选 `expiresAtDay`（游戏内到期日，到期自动移除）。开局物化为各角色 `character_state.statuses`，随剧情增减与到期失效。
+- `triggers`：偏离触发器清单（最多 30 条）。每项包含 `id`、`when`（触发条件描述）与 `consequence`（条件满足后必须显现的意外阻碍），可选 `stateEffects`（关系/属性/标志影响，由系统在触发后强制应用；`flags` 中的 `bad_end` 会置位结局警示横幅）与 `deadline`（期限，游戏内第几天前必须生效；剧情时间推进超过期限后系统强制触发并应用后果。仅 `null` 或省略表示无期限，`0`、小数、负数或非数字会被拒绝）。示例场景：主角弱小时强闯反派地盘 → 强大反派提前登场；已婚状态下与异性接触 → 正主怀疑、敌我关系大幅转变。
+- `initialStatuses`：人物开局状态词条（最多 60 个角色条目，每角色最多 20 条）。每项使用 `characterName`（必须与角色姓名一致）与 `statuses`（词条数组）：`id`（稳定短横线 ID，开局按“角色名-状态名”生成，无需手写）、`name`（状态名，如受伤、中毒、迅捷）、`kind`（`buff` 或 `debuff`）、可选 `hidden`（角色未察觉的状态，如暗伤、被下毒、血脉异常；开局物化后以导演级信息注入，角色通过剧情探索认识到后才解锁）、`description`（状态描述）、可选 `expiresAtDay`（游戏内到期日，到期自动移除）。开局物化为各角色 `character_state.statuses`，随剧情增减与到期失效；若词条携带 `sourceTurnId` 会产生导入警告并被忽略（开局状态不追溯来源回合）。
 
 `referenceDocuments` 中每项包含 `name`、`fileName` 与 `content`，并可设置：
 

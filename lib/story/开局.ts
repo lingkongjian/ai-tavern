@@ -29,6 +29,17 @@ const limits = {
   locationDescription: 4_000,
 } as const;
 
+/** 关系维度白名单（与 story-store 的 AdventureTriggerStateEffectRelation.dimension 保持一致）。 */
+const RELATION_DIMENSIONS = [
+  "trust",
+  "affection",
+  "fear",
+  "hostility",
+  "respect",
+] as const;
+/** 供 includes 检查使用的宽松版本（string 集合）。 */
+const RELATION_DIMENSION_NAMES: readonly string[] = RELATION_DIMENSIONS;
+
 export class AdventureInputError extends Error {
   public readonly issues: string[];
 
@@ -329,7 +340,10 @@ function readStoryModules(value: unknown, issues: string[]) {
   return modules;
 }
 
-export function parseStartAdventureInput(value: unknown): StartAdventureInput {
+export function parseStartAdventureInput(
+  value: unknown,
+  warnings?: string[],
+): StartAdventureInput {
   if (!isRecord(value)) {
     throw new AdventureInputError(["请求内容必须是 JSON 对象。"]);
   }
@@ -582,13 +596,7 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
           if (!isRecord(dimensionsSource)) {
             issues.push(`初始关系 ${index + 1} 的 dimensions 必须是对象。`);
           } else {
-            for (const dimension of [
-              "trust",
-              "affection",
-              "fear",
-              "hostility",
-              "respect",
-            ] as const) {
+            for (const dimension of RELATION_DIMENSIONS) {
               const raw = dimensionsSource[dimension];
               if (raw === undefined) continue;
               if (typeof raw !== "number" || !Number.isFinite(raw)) {
@@ -901,12 +909,10 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
                   );
                   if (
                     dimension &&
-                    !["trust", "affection", "fear", "hostility", "respect"].includes(
-                      dimension,
-                    )
+                    !RELATION_DIMENSION_NAMES.includes(dimension)
                   ) {
                     issues.push(
-                      `偏离触发器 ${index + 1} 的关系影响维度必须是 trust、affection、fear、hostility 或 respect。`,
+                      `偏离触发器 ${index + 1} 的关系影响维度必须是 ${RELATION_DIMENSIONS.join("、")}。`,
                     );
                   }
                   const rawDelta = relation.delta;
@@ -929,7 +935,7 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
                     relations.push({
                       sourceCharacterName,
                       targetCharacterName,
-                      dimension: dimension as "trust",
+                      dimension: dimension as (typeof RELATION_DIMENSIONS)[number],
                       delta: rawDelta,
                     });
                   }
@@ -1020,7 +1026,7 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
           }
         }
         let deadlineDay: number | undefined;
-        if (item.deadline !== undefined && item.deadline !== null && item.deadline !== 0) {
+        if (item.deadline !== undefined && item.deadline !== null) {
           if (
             typeof item.deadline !== "number" ||
             !Number.isInteger(item.deadline) ||
@@ -1093,6 +1099,13 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
         );
         issues.push(...statusIssues);
         if (characterName && validated && validated.length > 0) {
+          for (const status of validated) {
+            if (status.sourceTurnId !== undefined) {
+              warnings?.push(
+                `初始状态 ${index + 1} 词条“${status.name}”的 sourceTurnId 会被忽略，开局状态不追溯来源回合。`,
+              );
+            }
+          }
           initialStatuses.push({
             characterName,
             // 开局词条没有来源回合，去掉 sourceTurnId（不属于剧本包公开格式）。

@@ -256,7 +256,7 @@ export function parseAdventureBundleDocument(
       ...(Array.isArray(source.triggers) && source.triggers.length > 0
         ? { triggers: source.triggers }
         : {}),
-    });
+    }, warnings);
   } catch (error) {
     if (error instanceof AdventureInputError) {
       throw new ImportFileError(

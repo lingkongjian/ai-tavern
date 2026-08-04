@@ -94,6 +94,47 @@ test("rejects initial statuses referencing unknown characters", async () => {
   );
 });
 
+test("surfaces a warning but still imports bundle statuses carrying sourceTurnId", async () => {
+  const document = await readJson(
+    "../public/文件标准/剧本包标准示例.json",
+  );
+  const withSourceTurn = structuredClone(document);
+  withSourceTurn.adventure.initialStatuses[0].statuses[0].sourceTurnId =
+    "turn-9";
+  const parsed = parseAdventureBundleDocument(withSourceTurn);
+  assert.ok(
+    parsed.warnings.some((warning) =>
+      /词条“旧伤”的 sourceTurnId 会被忽略/.test(warning),
+    ),
+    "应当产生 sourceTurnId 被忽略的警告",
+  );
+  assert.equal(
+    parsed.adventure.initialStatuses[0].statuses[0].sourceTurnId,
+    undefined,
+  );
+
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-bundle-statuses-warning-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure(parsed.adventure);
+    const states = store.loadAdventure(started.sessionId).branchState.states;
+    const mainState = states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal(mainState.state.statuses[0].id, "linwu-old-wound");
+    assert.equal(mainState.state.statuses[0].sourceTurnId, undefined);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("materializes bundle initial statuses into character states", async () => {
   const document = await readJson(
     "../public/文件标准/剧本包标准示例.json",

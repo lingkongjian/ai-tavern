@@ -601,10 +601,10 @@
           "$ref": "#/$defs/triggerStateEffects"
         },
         "deadline": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 1,
           "maximum": 10000,
-          "description": "期限（游戏内第几天前必须生效）；超过后系统强制触发"
+          "description": "期限（游戏内第几天前必须生效）；超过后系统强制触发。省略或 null 表示无期限"
         }
       },
       "additionalProperties": false

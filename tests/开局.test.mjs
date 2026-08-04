@@ -309,6 +309,156 @@ test("validates and materializes initial statuses for each character", () => {
   );
 });
 
+test("rejects invalid trigger deadlines and accepts explicit no-deadline", () => {
+  const trigger = {
+    id: "trigger-deadline",
+    when: "主角在期限前仍未完成约定",
+    consequence: "约定落空，势力转向敌对。",
+  };
+  for (const deadline of [0, 1.5, -3, "abc"]) {
+    assert.throws(
+      () =>
+        parseStartAdventureInput({
+          ...validInput,
+          triggers: [{ ...trigger, deadline }],
+        }),
+      (error) =>
+        error instanceof AdventureInputError &&
+        error.issues.some((issue) =>
+          issue.includes("deadline 必须是 1 到 10000 之间的整数"),
+        ),
+      `deadline=${JSON.stringify(deadline)} 应当被拒绝`,
+    );
+  }
+
+  const without = parseStartAdventureInput({
+    ...validInput,
+    triggers: [trigger],
+  });
+  assert.equal(Object.hasOwn(without.triggers[0], "deadlineDay"), false);
+
+  const withNull = parseStartAdventureInput({
+    ...validInput,
+    triggers: [{ ...trigger, deadline: null }],
+  });
+  assert.equal(Object.hasOwn(withNull.triggers[0], "deadlineDay"), false);
+
+  const withDeadline = parseStartAdventureInput({
+    ...validInput,
+    triggers: [{ ...trigger, deadline: 5 }],
+  });
+  assert.equal(withDeadline.triggers[0].deadlineDay, 5);
+});
+
+test("validates trigger relation dimensions and materializes legal ones", () => {
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        triggers: [
+          {
+            id: "trigger-dimension",
+            when: "主角触怒旧日势力",
+            consequence: "关系恶化。",
+            stateEffects: {
+              relations: [
+                {
+                  sourceCharacterName: "伊芙琳",
+                  targetCharacterName: "沈砚",
+                  dimension: "aggression",
+                  delta: 20,
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("关系影响维度必须是")),
+  );
+
+  const parsed = parseStartAdventureInput({
+    ...validInput,
+    triggers: [
+      {
+        id: "trigger-dimension",
+        when: "主角触怒旧日势力",
+        consequence: "关系恶化。",
+        stateEffects: {
+          relations: [
+            {
+              sourceCharacterName: "伊芙琳",
+              targetCharacterName: "沈砚",
+              dimension: "fear",
+              delta: 20,
+            },
+          ],
+        },
+      },
+    ],
+  });
+  assert.deepEqual(parsed.triggers[0].stateEffects.relations, [
+    {
+      sourceCharacterName: "伊芙琳",
+      targetCharacterName: "沈砚",
+      dimension: "fear",
+      delta: 20,
+    },
+  ]);
+});
+
+test("warns but accepts initial statuses carrying sourceTurnId", () => {
+  const warnings = [];
+  const parsed = parseStartAdventureInput(
+    {
+      ...validInput,
+      initialStatuses: [
+        {
+          characterName: "沈砚",
+          statuses: [
+            {
+              id: "shenyan-possession",
+              name: "灯尘入体",
+              kind: "debuff",
+              description: "体内积有灯尘。",
+              sourceTurnId: "turn-9",
+            },
+          ],
+        },
+      ],
+    },
+    warnings,
+  );
+  assert.equal(parsed.initialStatuses[0].statuses[0].sourceTurnId, undefined);
+  assert.equal(parsed.initialStatuses[0].statuses[0].id, "shenyan-possession");
+  assert.deepEqual(warnings, [
+    "初始状态 1 词条“灯尘入体”的 sourceTurnId 会被忽略，开局状态不追溯来源回合。",
+  ]);
+
+  const noWarnings = [];
+  parseStartAdventureInput(
+    {
+      ...validInput,
+      initialStatuses: [
+        {
+          characterName: "沈砚",
+          statuses: [
+            {
+              id: "shenyan-brisk",
+              name: "海风提神",
+              kind: "buff",
+              description: "短时清醒。",
+            },
+          ],
+        },
+      ],
+    },
+    noWarnings,
+  );
+  assert.deepEqual(noWarnings, []);
+});
+
 test("creates an opening adventure with initial statuses materialized", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-statuses-"));
   const database = openLocalDatabase({
