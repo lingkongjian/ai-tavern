@@ -496,6 +496,16 @@ export interface CompleteAdventureArchive {
     algorithm: "sha256";
     checksum: string;
   };
+  /**
+   * 旧版（<1.9.0）存档缺少 is_main 概念，解析时按确定性规则派生恰好一个主线；
+   * 1.9.0 新档导出时已校验恰好一个主线，此字段为 null。
+   */
+  legacyMainDerivation: {
+    /** 根分支（parent_branch_id 为 NULL）候选数；0 表示存档没有根分支（病态数据兜底） */
+    rootCandidates: number;
+    /** 被选为主线的分支 id（派生后的值） */
+    selectedBranchId: string;
+  } | null;
 }
 
 export interface CompleteArchivePreview {
@@ -616,6 +626,7 @@ export function exportCompleteAdventure(
     summary: createSummary(data),
     data,
     integrity: { algorithm: "sha256", checksum: checksumData(data) },
+    legacyMainDerivation: null,
   };
   return archive;
 }
@@ -921,6 +932,13 @@ export function parseCompleteArchiveDocument(
   }
   if (issues.length > 0) throw new CompleteArchiveError(issues.slice(0, 50));
 
+  // 旧档主线派生：必须在完整性校验之后（校验和基于原始数据）、返回之前执行，
+  // 保证导入数据的 is_main 恰好一个为 1，避免部分唯一索引冲突或多主线错位。
+  const legacyMainDerivation =
+    schemaVersion === COMPLETE_ARCHIVE_SCHEMA_VERSION
+      ? null
+      : normalizeLegacyMainBranch(data);
+
   return {
     spec: COMPLETE_ARCHIVE_SPEC,
     schemaVersion: supportedVersion
@@ -931,6 +949,7 @@ export function parseCompleteArchiveDocument(
     summary: createSummary(data),
     data,
     integrity: { algorithm: "sha256", checksum: integrity.checksum as string },
+    legacyMainDerivation,
   };
 }
 
@@ -942,6 +961,45 @@ export function previewCompleteArchive(value: unknown): CompleteArchivePreview {
     schemaVersion: archive.schemaVersion,
     summary: archive.summary,
     verified: true,
+  };
+}
+
+function normalizeLegacyMainBranch(data: ArchiveData): {
+  rootCandidates: number;
+  selectedBranchId: string;
+} {
+  // 旧版（<1.9.0）存档没有 is_main 概念，存档内自带的 is_main 值不可信，
+  // 一律忽略后按确定性规则派生，保证恰好一个主线（与 1.9.0 部分唯一索引
+  // idx_branches_session_main 兼容）。旧版正常数据流只会在开局创建唯一根分支
+  // （parent_branch_id 为 NULL），多根只可能来自非常规/手工数据，此处兜底。
+  // 注意：浅拷贝行后再赋值，避免原地修改调用方传入的存档对象。
+  const rows = data.branches.map((row) => ({ ...row }));
+  for (const row of rows) {
+    row.is_main = 0;
+  }
+  const roots = rows.filter((row) => row.parent_branch_id === null);
+  // 无根（病态数据，如分支全部带 parent 形成环）时回退到全部分支候选。
+  const candidates = roots.length > 0 ? roots : rows;
+  // 开局主线没有分叉点（forked_from_turn_id 为空）；优先在无分叉点的根中
+  // 选择，多个候选按 createdAt 最早、id 字典序确定性选择，保证同一存档
+  // 反复导入结果一致。
+  const pristine = candidates.filter(
+    (row) => row.forked_from_turn_id === null || row.forked_from_turn_id === "",
+  );
+  const pool = pristine.length > 0 ? pristine : candidates;
+  const main = pool.slice().sort((left, right) => {
+    const leftCreatedAt = String(left.created_at ?? "");
+    const rightCreatedAt = String(right.created_at ?? "");
+    if (leftCreatedAt !== rightCreatedAt) {
+      return leftCreatedAt < rightCreatedAt ? -1 : 1;
+    }
+    return String(left.id).localeCompare(String(right.id));
+  })[0];
+  main.is_main = 1;
+  data.branches = rows;
+  return {
+    rootCandidates: roots.length,
+    selectedBranchId: String(main.id),
   };
 }
 
@@ -990,6 +1048,7 @@ function insertRows(
       ...(columns.map((column) => {
         if (row[column] !== undefined) return row[column];
         if (table === "source_documents" && column === "is_deleted") return 0;
+        // 防御性兜底：旧档 is_main 已在解析阶段按确定性规则派生（恰好一个为 1）。
         if (table === "branches" && column === "is_main") {
           return row.parent_branch_id === null ? 1 : 0;
         }
@@ -1072,5 +1131,10 @@ export function importCompleteAdventure(
     sessionId: importedData.sessions[0].id as string,
     campaignName: importedCampaignName,
     summary: createSummary(importedData),
+    // 旧档多根/无根时报告主线派生信息；单根（正常旧档）不附带，行为与之前一致。
+    ...(archive.legacyMainDerivation &&
+    archive.legacyMainDerivation.rootCandidates !== 1
+      ? { legacyMainDerivation: archive.legacyMainDerivation }
+      : {}),
   };
 }

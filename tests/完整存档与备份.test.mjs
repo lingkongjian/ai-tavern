@@ -465,6 +465,123 @@ test("完整存档可在同一数据库中导入为隔离副本", () => {
       store.listBranches(legacyImported.sessionId).filter((branch) => branch.isMain).length,
       1,
     );
+    // 单根旧档（正常旧版数据流）不附带主线派生报告，行为与之前一致
+    assert.equal(Object.hasOwn(previousImported, "legacyMainDerivation"), false);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("旧版完整存档多根分支导入时确定性派生恰好一个主线", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-legacy-roots-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startArchiveStory(store);
+    store.createBranch({
+      sessionId: started.sessionId,
+      name: "拒绝触碰镜子",
+      sourceTurnId: started.openingTurnId,
+    });
+    const archive = exportCompleteAdventure(database, started.sessionId);
+    const root = archive.data.branches.find((row) => row.parent_branch_id === null);
+    const openingTurnId = archive.data.turns[0].id;
+
+    function degradeTo18(versioned, { keepRootIsMain = false } = {}) {
+      const old = structuredClone(versioned);
+      old.schemaVersion = "1.8.0";
+      delete old.data.plot_thread_management_changes;
+      delete old.data.plot_trigger_management_changes;
+      for (const row of old.data.source_documents) delete row.is_deleted;
+      for (const row of old.data.branches) {
+        if (!(keepRootIsMain && row.id === root.id)) delete row.is_main;
+      }
+      for (const row of old.data.content_asset_management_changes) {
+        delete row.revision;
+        delete row.before_json;
+        delete row.after_json;
+        delete row.reverted_by_action_id;
+      }
+      old.integrity.checksum = createHash("sha256")
+        .update(canonicalJson(old.data))
+        .digest("hex");
+      return old;
+    }
+
+    // 场景 A：两个根分支都无分叉点，附加根 createdAt 更早 → 选为唯一主线；
+    // 同时原根自带 is_main=1（旧档该值不可信）→ 必须被忽略改派为 0。
+    const scenarioA = degradeTo18(archive, { keepRootIsMain: true });
+    scenarioA.data.branches.push({
+      id: "legacy-extra-root",
+      session_id: root.session_id,
+      name: "更早的隐藏支线",
+      is_main: 1,
+      parent_branch_id: null,
+      forked_from_turn_id: null,
+      head_turn_id: root.head_turn_id,
+      next_sequence: 2,
+      created_at: "2001-01-01T00:00:00.000Z",
+      updated_at: "2001-01-01T00:00:00.000Z",
+    });
+    scenarioA.integrity.checksum = createHash("sha256")
+      .update(canonicalJson(scenarioA.data))
+      .digest("hex");
+    assert.equal(parseCompleteArchiveDocument(scenarioA).schemaVersion, "1.8.0");
+    const importedA = importCompleteAdventure(database, scenarioA);
+    const branchesA = store.listBranches(importedA.sessionId);
+    assert.equal(branchesA.length, 3);
+    assert.equal(branchesA.filter((branch) => branch.isMain).length, 1);
+    const extraRootA = branchesA.find((branch) => branch.name === "更早的隐藏支线");
+    const originalRootA = branchesA.find((branch) => branch.name === "主线");
+    assert.equal(extraRootA.isMain, true);
+    assert.equal(originalRootA.isMain, false);
+    assert.equal(importedA.legacyMainDerivation.rootCandidates, 2);
+    // selectedBranchId 是存档内原始分支 id（remap 之前的派生决策依据）
+    assert.equal(importedA.legacyMainDerivation.selectedBranchId, "legacy-extra-root");
+
+    // 场景 B：附加根有分叉点且 createdAt 更早 → 无分叉点的原根仍优先成为主线
+    const scenarioB = degradeTo18(archive);
+    scenarioB.data.branches.push({
+      id: "legacy-forked-root",
+      session_id: root.session_id,
+      name: "更早的分叉根",
+      parent_branch_id: null,
+      forked_from_turn_id: openingTurnId,
+      head_turn_id: root.head_turn_id,
+      next_sequence: 2,
+      created_at: "2001-01-01T00:00:00.000Z",
+      updated_at: "2001-01-01T00:00:00.000Z",
+    });
+    scenarioB.integrity.checksum = createHash("sha256")
+      .update(canonicalJson(scenarioB.data))
+      .digest("hex");
+    const importedB = importCompleteAdventure(database, scenarioB);
+    const branchesB = store.listBranches(importedB.sessionId);
+    assert.equal(branchesB.filter((branch) => branch.isMain).length, 1);
+    assert.equal(branchesB.find((branch) => branch.name === "主线").isMain, true);
+    assert.equal(branchesB.find((branch) => branch.name === "更早的分叉根").isMain, false);
+    assert.equal(importedB.legacyMainDerivation.rootCandidates, 2);
+
+    // 场景 C：1.9.0 新档（is_main 可信且必填）多主线校验仍拒绝
+    const multiMain = structuredClone(archive);
+    multiMain.data.branches
+      .filter((row) => row.is_main !== 1)
+      .forEach((row) => {
+        row.is_main = 1;
+      });
+    multiMain.integrity.checksum = createHash("sha256")
+      .update(canonicalJson(multiMain.data))
+      .digest("hex");
+    assert.throws(
+      () => parseCompleteArchiveDocument(multiMain),
+      (error) =>
+        error instanceof CompleteArchiveError &&
+        error.issues.some((issue) => issue.includes("恰好有一个主线分支")),
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
