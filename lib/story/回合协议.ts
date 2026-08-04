@@ -628,6 +628,70 @@ function collectStatusSyncWarnings(input: {
   return warnings;
 }
 
+/**
+ * 地点一致性检测（警告级，不拒绝回合）：
+ * 仅当本轮场景确实发生移动（sceneTransition.locationId 与上一轮 currentLocationId 不同）时，
+ * 检查 scene 与 events[].summary 中是否出现与目标地点不同的已知地点名——若正文写的是另一个
+ * 已知地点而 locationId 落在别处（用户反馈的"正文移动场景但当前地点更新到不一致的地点"），
+ * 则产生一条"正文与 locationId 不一致"的警告。
+ * 误报控制（保守策略）：
+ * - 只匹配已知地点名全文（地点名 ≥2 字符），且只扫描 scene 与 events[].summary，不扫 dialogue；
+ * - 场景未移动（locationId 沿用上一轮）时不检查——对话/行动回合正文可能只是"提及"别处地点；
+ * - 新地点（locationId 不在已知集合）时仅当其 locationName 与正文提到的已知地点名不同才警告，
+ *   同名不警告（同名却新建 ID 的复用问题交给规则约束）。
+ */
+function collectLocationConsistencyWarnings(input: {
+  scene: string;
+  events: GeneratedEvent[];
+  sceneTransition: GeneratedSceneTransition | null;
+  adventure: LoadedAdventure;
+}) {
+  const { scene, events, sceneTransition, adventure } = input;
+  const warnings: string[] = [];
+  if (!sceneTransition) return warnings;
+  const narrativeText = [
+    scene,
+    ...events.map((event) => event.summary),
+  ].join("\n");
+  if (!narrativeText.trim()) return warnings;
+
+  const sessionState = adventure.branchState.states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  );
+  const previousLocationId =
+    typeof sessionState?.state.currentLocationId === "string"
+      ? sessionState.state.currentLocationId
+      : "";
+  // 场景未移动：本轮与上一轮同地点（含无历史地点的开局沿用），正文提及别处地点不构成冲突。
+  if (sceneTransition.locationId === previousLocationId) return warnings;
+
+  // 启用中的已知地点：名称 → locationId、locationId → 名称。
+  const nameToId = new Map<string, string>();
+  const idToName = new Map<string, string>();
+  for (const state of adventure.branchState.states) {
+    if (state.entityType !== "location" || !state.isActive) continue;
+    const name =
+      typeof state.state.name === "string" ? state.state.name.trim() : "";
+    if (name.length < 2) continue;
+    if (!nameToId.has(name)) nameToId.set(name, state.entityId);
+    idToName.set(state.entityId, name);
+  }
+  const targetName =
+    idToName.get(sceneTransition.locationId) ??
+    sceneTransition.locationName?.trim() ??
+    "";
+  for (const [name, locationId] of nameToId) {
+    if (locationId === sceneTransition.locationId) continue;
+    // 新地点但与正文提到的已知地点同名：名称一致不警告（ID 复用问题由规则约束）。
+    if (name === targetName) continue;
+    if (!narrativeText.includes(name)) continue;
+    warnings.push(
+      `正文提到地点「${name}」但本轮场景地点为「${targetName || sceneTransition.locationId}」，请检查 sceneTransition.locationId 是否与正文实际到达的地点一致（若正文确实到达该地点，应沿用其正确 ID）。`,
+    );
+  }
+  return warnings;
+}
+
 const cardPaths = [
   "identity.titles",
   "identity.affiliations",
@@ -1727,6 +1791,16 @@ export function validateGeneratedTurn(
     events,
     characterStates,
     characterStateChanges,
+  })) {
+    normalizationWarnings.push(warning);
+  }
+
+  // 地点一致性检测（警告级）：场景移动时正文提到的已知地点与 locationId 不一致 → 提醒，不拒绝回合。
+  for (const warning of collectLocationConsistencyWarnings({
+    scene,
+    events,
+    sceneTransition,
+    adventure,
   })) {
     normalizationWarnings.push(warning);
   }

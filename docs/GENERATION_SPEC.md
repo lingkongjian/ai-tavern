@@ -264,6 +264,8 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 后端根据上一轮状态和 `presentCharacterIds` 的差集自动生成人物加入、离场与位置变化。普通 `characterStateChanges.patch` 禁止包含 `present` 或 `locationId`，避免同一轮出现冲突的出场结论。玩家手工移动地点时使用地点的默认登场阵容；剧情生成可以根据实际事件覆盖本轮最终阵容，但不会改写地点的玩家设定。
 
+**地点一致性**：正文、事件描写的场景地点必须与 `sceneTransition` 一致——场景移动时 `locationId` 必须指向正文实际到达的地点（已有地点沿用其正确 ID，不得把正文地点填成另一已有地点的 ID；新地点 `locationName` 必须与正文地点名一致）；未发生场景移动的回合（对话、行动、决策）不得随意改动 `locationId`，沿用上一轮 ID。校验产生**地点一致性警告**（`normalizationWarning`，不拒绝回合、不触发修复重试）：仅当本轮 `locationId` 与上一轮不同（场景确在移动）且正文或事件摘要中出现与目标地点不同的已知地点名时触发，随回合警告入库并在页面"本轮变化-模型提示"展示；对话中单纯提及别处或场景未移动时不警告。
+
 ## 9.1 游戏内时间
 
 `session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。游戏内时间只由剧情推进驱动：`sceneTransition.timeAdvance` 缺省视为时间基本不变（相当于 `moment`），不推进天数；只有剧情中明确经过数小时、次日或数日后，模型才用 `timeAdvance` 显式声明时间流逝——`moment` 与 `hours` 不推进天数，`one_day` 推进一天，`several_days` 推进约数日。任务 `deadlineDay` 到期后，`expiredDeadlines` 作为导演级硬事实注入上下文，模型必须让期限后果在本轮显现；期限只会在剧情时间实际推进到该日之后到期。
