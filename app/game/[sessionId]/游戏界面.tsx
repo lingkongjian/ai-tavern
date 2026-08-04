@@ -2207,7 +2207,8 @@ export function GameInterface({
     if (
       !taskModule ||
       taskModule.status === "completed" ||
-      taskModule.status === "diverged"
+      taskModule.status === "diverged" ||
+      taskModule.status === "expired"
     ) {
       return;
     }
@@ -4193,6 +4194,7 @@ export function GameInterface({
                                 queued: "等待条件",
                                 completed: "已完成",
                                 diverged: "剧情已偏离",
+                                expired: "已过期",
                               }[module.status] ?? module.status)}
                         </small>
                       </div>
@@ -6965,7 +6967,9 @@ export function GameInterface({
             <div className="story-task-tree" aria-label="剧情任务依赖树">
               {storyModules.map((module) => {
                 const immutable =
-                  module.status === "completed" || module.status === "diverged";
+                  module.status === "completed" ||
+                  module.status === "diverged" ||
+                  module.status === "expired";
                 const prerequisiteNames = module.prerequisiteModuleIds
                   .map((moduleId) => storyModuleById.get(moduleId)?.title ?? moduleId)
                   .join("、");
@@ -6976,6 +6980,7 @@ export function GameInterface({
                       queued: "等待接续",
                       completed: "已完成",
                       diverged: "剧情已偏离",
+                      expired: "已过期",
                     }[module.status] ?? module.status);
                 return (
                   <article

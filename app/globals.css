@@ -4498,6 +4498,15 @@ a {
   opacity: 0.52;
 }
 
+.story-module-chain li.module-expired {
+  opacity: 0.58;
+}
+
+.story-module-chain li.module-expired > span {
+  border-color: #9a6f58;
+  background: #9a6f58;
+}
+
 .story-module-chain li.module-paused {
   opacity: 0.46;
 }

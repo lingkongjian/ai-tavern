@@ -5939,10 +5939,12 @@ export class LocalStoryStore {
         const currentStatus = readString(currentModule?.state.status);
         if (
           input.operation === "update" &&
-          (currentStatus === "completed" || currentStatus === "diverged")
+          (currentStatus === "completed" ||
+            currentStatus === "diverged" ||
+            currentStatus === "expired")
         ) {
           throw new StoryModuleManagementError(
-            "已完成或已偏离的任务属于剧情历史，不能再编辑。",
+            "已完成、已偏离或已过期的任务属于剧情历史，不能再编辑。",
           );
         }
 
@@ -6026,9 +6028,9 @@ export class LocalStoryStore {
             "当前进行中的任务不能暂停，请先完成或让剧情自然偏离该目标。",
           );
         }
-        if (status === "completed" || status === "diverged") {
+        if (status === "completed" || status === "diverged" || status === "expired") {
           throw new StoryModuleManagementError(
-            "已完成或已偏离的任务属于剧情历史，不能更改启用状态。",
+            "已完成、已偏离或已过期的任务属于剧情历史，不能更改启用状态。",
           );
         }
         mutations.push({

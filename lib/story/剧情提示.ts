@@ -354,7 +354,7 @@ export function createStoryGenerationPrompt(input: {
     .slice(0, 12);
   const expiredDeadlines = storyModules.filter(
       (module) =>
-        module.status === "active" &&
+        (module.status === "active" || module.status === "expired") &&
         module.deadlineDay !== null &&
         module.deadlineDay <= gameTimeDay,
     )

@@ -268,6 +268,8 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 `session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。游戏内时间只由剧情推进驱动：`sceneTransition.timeAdvance` 缺省视为时间基本不变（相当于 `moment`），不推进天数；只有剧情中明确经过数小时、次日或数日后，模型才用 `timeAdvance` 显式声明时间流逝——`moment` 与 `hours` 不推进天数，`one_day` 推进一天，`several_days` 推进约数日。任务 `deadlineDay` 到期后，`expiredDeadlines` 作为导演级硬事实注入上下文，模型必须让期限后果在本轮显现；期限只会在剧情时间实际推进到该日之后到期。
 
+任务期限有系统确定性兜底：`deadlineDay` 到达当天仍 active/queued 未完成的任务，在回合提交时由系统标记为 `expired` 终态（记录 `expiredAtTurnId` 与 `expiryReason`），退出活动任务集合——不再作为当前任务注入、不再作为接续/推荐对象，剧情任务管理中不可再编辑或切换；`expiredDeadlines` 提示注入保留，剧情后果仍由模型在硬事实提示下显现，不自动编造。与偏离触发器 `deadline` 的强制 fire（系统应用后果）不同，任务兜底只做状态确定性标记；本轮剧情实际完成任务时以完成状态为准，不重复标记。
+
 ## 10. 角色当前状态变更
 
 每项角色状态变更必须包含：

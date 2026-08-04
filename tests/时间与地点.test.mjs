@@ -435,3 +435,255 @@ test("start adventure input accepts declared locations and deadlines", () => {
   assert.equal(parsed.locations[0].name, "码头");
   assert.equal(parsed.storyModules[0].deadlineDay, 3);
 });
+
+function turnWithEvaluation(started, scene, options = {}) {
+  const content = turnContent(started, scene, {
+    eventId: options.eventId,
+    evidenceId: options.evidenceId,
+    sceneTransition: options.sceneTransition,
+  });
+  if (options.evaluation !== undefined) {
+    content.stateCommit.storyDirectionEvaluation = options.evaluation;
+  }
+  return content;
+}
+
+async function advanceOneTurn(store, started, options) {
+  const before = store.loadAdventure(started.sessionId);
+  await advanceAdventureTurn({
+    store,
+    sessionId: started.sessionId,
+    input: parsePlayerTurnRequest({
+      expectedHeadTurnId: before.branchState.branch.headTurnId,
+      idempotencyKey: options.idempotencyKey,
+      customChoice: options.choice,
+    }),
+    createTurnId: () => options.turnId,
+    generate: async () => ({
+      content: turnWithEvaluation(started, options.scene, {
+        eventId: options.eventId,
+        evidenceId: options.eventId,
+        sceneTransition: options.sceneTransition,
+        evaluation: options.evaluation,
+      }),
+      model: "deepseek-v4-flash",
+      usage: {},
+    }),
+  });
+  return store.loadAdventure(started.sessionId);
+}
+
+function findStoryModule(adventure, moduleId) {
+  return adventure.branchState.states.find(
+    (state) =>
+      state.entityType === "story_module" && state.state.moduleId === moduleId,
+  );
+}
+
+test("deadlineDay 到期（含当天）时任务被系统确定性标记 expired，未到期不受影响", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    // 第 2 天：deadlineDay 3 未到，任务仍 active
+    let after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-expiry-d2",
+      turnId: "turn-expiry-d2",
+      eventId: "event-expiry-d2",
+      scene: "次日清晨，旅人继续在钟楼附近打听解药。",
+      choice: "次日继续调查。",
+      sceneTransition: { timeAdvance: "one_day" },
+    });
+    assert.equal(findStoryModule(after, "cure-poison").state.status, "active");
+
+    // 第 3 天（期限最后一天，含当天到期）：任务未完成 → expired + 审计字段
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-expiry-d3",
+      turnId: "turn-expiry-d3",
+      eventId: "event-expiry-d3",
+      scene: "第三天，解药仍无下落。",
+      choice: "继续寻找解药。",
+      sceneTransition: { timeAdvance: "one_day" },
+    });
+    const expired = findStoryModule(after, "cure-poison").state;
+    assert.equal(expired.status, "expired");
+    assert.equal(expired.expiredAtTurnId, "turn-expiry-d3");
+    assert.match(expired.expiryReason, /期限/);
+
+    // 过期状态稳定：后续回合不会被复活回 active，也不会被重复改写
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-expiry-d4",
+      turnId: "turn-expiry-d4",
+      eventId: "event-expiry-d4",
+      scene: "第四天，城里下起了雨。",
+      choice: "在钟楼避雨。",
+      sceneTransition: { timeAdvance: "one_day" },
+    });
+    assert.equal(findStoryModule(after, "cure-poison").state.status, "expired");
+
+    // expired 任务仍出现在 expiredDeadlines 导演级硬事实中（剧情后果由模型显现）
+    const prompt = createStoryGenerationPrompt({
+      adventure: after,
+      turnId: "turn-expiry-prompt",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人在钟楼避雨。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    assert.match(prompt.messages[1].content, /expiredDeadlines/);
+    assert.match(prompt.messages[1].content, /cure-poison/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("到期任务不再作为接续/推荐对象，且完成当轮不被重复标记过期", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store, {
+      storyModules: [
+        {
+          id: "cure-poison",
+          title: "解毒",
+          objective: "在三日内找到解药。",
+          completionCriteria: ["取得解药并解毒"],
+          prerequisiteModuleIds: [],
+          deadlineDay: 3,
+        },
+        {
+          id: "rescue-herb",
+          title: "采摘药草",
+          objective: "在第五日前取回城外药草。",
+          completionCriteria: ["药草交给守钟人"],
+          prerequisiteModuleIds: ["cure-poison"],
+          deadlineDay: 5,
+        },
+      ],
+      initialStoryModuleId: "cure-poison",
+      initialStoryDirection: "找到解药。",
+    });
+
+    // 第 2 天：cure-poison 未到期
+    let after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-chain-d2",
+      turnId: "turn-chain-d2",
+      eventId: "event-chain-d2",
+      scene: "次日，旅人继续查访解药。",
+      choice: "继续查访。",
+      sceneTransition: { timeAdvance: "one_day" },
+    });
+    assert.equal(findStoryModule(after, "cure-poison").state.status, "active");
+
+    // 第 3 天（cure-poison 期限当天）完成该任务：走完成路径 → completed 而非 expired
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-chain-d3",
+      turnId: "turn-chain-d3",
+      eventId: "event-chain-d3",
+      scene: "旅人在城外找到了解药并完成解毒。",
+      choice: "把解药交给守钟人。",
+      sceneTransition: { timeAdvance: "one_day" },
+      evaluation: {
+        status: "completed",
+        reason: "已经取得解药并解毒。",
+        evidence: ["event-chain-d3"],
+        continuity: "aligned",
+        continuityReason: "解毒完成，后续药草线索自然衔接。",
+        recommendedModuleId: null,
+        suggestedNextDirection: {
+          title: "追查药草",
+          content: "追查城外药草的来源。",
+          reason: "解毒完成后，药草成为新的线索。",
+        },
+      },
+    });
+    const completed = findStoryModule(after, "cure-poison").state;
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.expiredAtTurnId, undefined);
+    const queuedRescue = findStoryModule(after, "rescue-herb").state;
+    assert.equal(queuedRescue.status, "queued");
+
+    // 推进到第 6 天（rescue-herb 期限 5 已过）且模型同轮推荐该任务：
+    // 兜底先标记 expired，推荐被系统拒绝 → 不会激活过期任务
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-chain-d6",
+      turnId: "turn-chain-d6",
+      eventId: "event-chain-d6",
+      scene: "数日后，药草线索在城外中断。",
+      choice: "赶往城外。",
+      sceneTransition: { timeAdvance: "several_days" },
+      evaluation: {
+        status: "completed",
+        reason: "追查药草的目标已经走到尽头。",
+        evidence: ["event-chain-d6"],
+        continuity: "aligned",
+        continuityReason: "线索指向城外的药草田。",
+        recommendedModuleId: "rescue-herb",
+        suggestedNextDirection: null,
+      },
+    });
+    const rescueState = findStoryModule(after, "rescue-herb").state;
+    assert.equal(rescueState.status, "expired");
+    assert.match(rescueState.expiryReason, /采摘药草/);
+    const activeDirection = after.branchState.states.find(
+      (state) => state.entityType === "story_direction" && state.isActive,
+    );
+    assert.equal(activeDirection, undefined);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("expired 任务在剧情任务管理中属于终态：不可编辑、不可切换启用状态", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    // 一次性推进数日跨过期限（deadlineDay 3）
+    let after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-expiry-manage",
+      turnId: "turn-expiry-manage",
+      eventId: "event-expiry-manage",
+      scene: "数日后，解药线索彻底断绝。",
+      choice: "在钟楼整理线索。",
+      sceneTransition: { timeAdvance: "several_days" },
+    });
+    assert.equal(findStoryModule(after, "cure-poison").state.status, "expired");
+
+    assert.throws(
+      () =>
+        store.manageStoryModule({
+          actionId: "update-expired-task",
+          sessionId: started.sessionId,
+          operation: "update",
+          moduleId: "cure-poison",
+          module: {
+            id: "cure-poison",
+            title: "解毒（改）",
+            objective: "在城内找解药。",
+            completionCriteria: ["拿到解药"],
+            activationConditions: [],
+            prerequisiteModuleIds: [],
+            continuityNotes: "",
+            autoContinue: true,
+          },
+        }),
+      /已过期/,
+    );
+    assert.throws(
+      () =>
+        store.manageStoryModule({
+          actionId: "toggle-expired-task",
+          sessionId: started.sessionId,
+          operation: "set_active",
+          moduleId: "cure-poison",
+          active: false,
+        }),
+      /已过期/,
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -398,14 +398,20 @@ export function collectDivergenceSignals(
       const title = readText(state.state.title);
       if (!state.isActive && status !== "completed") {
         broken.push(`被停用的任务《${title}》尚未完成，原剧本路径已被跳过。`);
-      } else if (state.isActive && status === "active") {
+      } else if (
+        state.isActive &&
+        (status === "active" || status === "expired")
+      ) {
         const deadlineDay =
           typeof state.state.deadlineDay === "number"
             ? state.state.deadlineDay
             : null;
-        if (deadlineDay !== null && deadlineDay <= gameTimeDay) {
+        if (
+          status === "expired" ||
+          (deadlineDay !== null && deadlineDay <= gameTimeDay)
+        ) {
           broken.push(
-            `任务《${title}》已超过期限（第 ${deadlineDay} 天），原方案的时机窗口已经错过。`,
+            `任务《${title}》已超过期限${deadlineDay !== null ? `（第 ${deadlineDay} 天）` : ""}，原方案的时机窗口已经错过。`,
           );
         } else {
           recoverable.push(
@@ -1167,6 +1173,46 @@ function createStateMutations(input: {
     }
   }
 
+  // 剧情任务期限兜底：deadlineDay 已到（含当天）且仍未完成的预埋任务，由系统在
+  // 回合提交时确定性标记为 expired，退出“活动任务”集合——不再作为当前任务注入
+  // 上下文，也不作为接续/推荐候选（后续完成判定可忽略，或由剧情完成后覆盖）。
+  // 与偏离触发器 deadline 的强制 fire 不同：这里不自动编造剧情后果（任务没有
+  // 可确定应用的 consequence 字段），期限后果仍由模型在 expiredDeadlines 导演级
+  // 硬事实（规则 22）提示下于剧情中显现；本兜底只解决任务状态确定性，防止过期
+  // 任务永久悬挂在 active。
+  const evaluation = generated.stateCommit.storyDirectionEvaluation;
+  const directionCompletedThisTurn = Boolean(
+    resolvedStoryDirection && evaluation?.status === "completed",
+  );
+  const expiredModuleIds = new Set<string>();
+  for (const moduleState of adventure.branchState.states) {
+    if (moduleState.entityType !== "story_module" || !moduleState.isActive) continue;
+    const moduleStatus = readText(moduleState.state.status);
+    if (moduleStatus !== "active" && moduleStatus !== "queued") continue;
+    const deadlineDay =
+      typeof moduleState.state.deadlineDay === "number"
+        ? moduleState.state.deadlineDay
+        : null;
+    if (deadlineDay === null || deadlineDay > currentDayAfterTurn) continue;
+    const moduleId = readText(moduleState.state.moduleId);
+    // 本轮剧情已实际完成该任务（完成评估）时，由完成路径决定最终状态，不重复标记过期。
+    if (directionCompletedThisTurn && moduleId === activeStoryModuleId) continue;
+    expiredModuleIds.add(moduleId);
+    const moduleTitle = readText(moduleState.state.title);
+    mutations.push({
+      entityType: "story_module",
+      entityId: moduleState.entityId,
+      operation: "merge",
+      value: {
+        status: "expired",
+        expiredAtTurnId: turnId,
+        expiryReason: `任务《${moduleTitle}》的期限（第 ${deadlineDay} 天）已至且尚未完成，任务时机窗口结束`,
+      },
+      reason: `任务《${moduleTitle}》的期限已至，任务窗口结束`,
+      evidence: [firstEvidenceId ?? turnId],
+    });
+  }
+
   if (
     playerInput.storyDirection !== undefined &&
     playerInput.storyDirection !== previousStoryDirection
@@ -1220,7 +1266,6 @@ function createStateMutations(input: {
     }
   }
 
-  const evaluation = generated.stateCommit.storyDirectionEvaluation;
   if (!resolvedStoryDirection && evaluation) {
     throw new GeneratedTurnValidationError([
       "没有生效中的剧情走向，模型不应返回完成评估。",
@@ -1262,15 +1307,21 @@ function createStateMutations(input: {
       });
     }
 
-    const recommendedModule = evaluation.recommendedModuleId
+    const recommendedModuleId = evaluation.recommendedModuleId;
+    const recommendedModule = recommendedModuleId
       ? adventure.branchState.states.find(
           (state) =>
             state.entityType === "story_module" &&
             state.isActive &&
-            state.state.moduleId === evaluation.recommendedModuleId,
+            readText(state.state.status) === "queued" &&
+            state.state.moduleId === recommendedModuleId,
         )
       : undefined;
-    if (recommendedModule) {
+    if (
+      recommendedModule &&
+      recommendedModuleId &&
+      !expiredModuleIds.has(recommendedModuleId)
+    ) {
       const moduleTitle =
         typeof recommendedModule.state.title === "string"
           ? recommendedModule.state.title

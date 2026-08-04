@@ -212,7 +212,9 @@ DeepSeek 每轮返回 `sceneTransition`，其中包含回合结束时的地点�
 
 `session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。游戏内时间只由剧情推进驱动：`sceneTransition.timeAdvance` 缺省视为时间基本不变（相当于 `moment`），不推进天数；`hours` 不推进天数、`one_day` 推进一天、`several_days` 推进约数日。时间推进与回合状态变化在同一事务内提交，历史回合通过其 `stateChanges` 可还原当时的日期。
 
-剧情任务可声明 `deadlineDay`（游戏内期限）。每回合组装提示词时，活动且已到期的任务作为 `expiredDeadlines` 硬事实注入上下文，模型必须让期限后果在本轮显现；该机制与回合生成共用同一套校验与提交路径，不单独写库。
+剧情任务可声明 `deadlineDay`（游戏内期限）。每回合组装提示词时，已到期的任务作为 `expiredDeadlines` 硬事实注入上下文，模型必须让期限后果在本轮显现；该机制与回合生成共用同一套校验与提交路径，不单独写库。
+
+`story_module` 任务有 `expired` 终态：`deadlineDay` 到达当天仍 active/queued 未完成的任务，在回合提交事务内由系统标记为 `expired`（记录 `expiredAtTurnId`、`expiryReason`），退出活动任务集合，不再作为接续/推荐对象；剧情任务管理对 expired 任务禁止编辑与切换。本轮剧情完成任务时以 `completed` 为准，不重复标记。与偏离触发器 `deadline` 到期后的强制 fire（系统应用状态影响）不同，任务兜底只做状态确定性标记，剧情后果仍由模型在 `expiredDeadlines` 提示下显现。
 
 ## 初始关系
 
