@@ -321,6 +321,10 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 - **隐藏状态**：`hidden: true` 的词条以导演级"未察觉状态"（`hiddenCharacterStatuses`）注入，角色未察觉前模型不得在叙述、对话或思考中点破；角色通过剧情行动（检查伤口、求医、观察症状、探索）实际认识到后，在同一回合把该词条 `hidden` 置 `false`，之后作为正常可见状态。
 - **到期移除**：`expiresAtDay` 不超过当前游戏内日期时，系统在回合提交事务内自动移除该词条并写入状态变化记录（剧情驱动的到期/恶化语义由模型在剧情中体现并更新词条）。
 - **剧情联动与行为倾向**：debuff 随时间或剧情恶化或恢复，并体现在叙述与词条内容中；角色身上存在 debuff 且有可行解决方案时，角色行动与候选选项应倾向解决（求医、解毒、治疗、休息等）；属性判定应结合词条判断合理性（不修改判定公式）。
+- **状态一致性**：正文、事件、对话中出现的任何状态变化（恶化、恢复、新增、解除、症状显现）必须同步写入本轮 `patch.statuses`（更新 description、调整 `expiresAtDay`、移除或新增词条），不得只在叙述中暗示；未变化的词条保持原 id 与原内容。
+- **跨日状态演化**（规则 29）：`timeAdvance` 为 `one_day` 或 `several_days` 时，必须逐角色检查所有进行中的词条——debuff 按剧情演化并更新 description 与 `expiresAtDay`（延长、提前、解除后移除），buff 判断消退或延续；时间推进后必须演化词条，不能沿用旧内容。
+- **剩余天数对照**：上下文角色词条每项附带计算字段 `daysRemaining = expiresAtDay − gameTimeDay`（负数表示已到期、提交时由系统移除），并统一注入 `currentGameTimeDay`——纯上下文计算，不落库、不改协议。
+- **一致性警告**：若本轮 `scene` 或 `events` 文本出现某角色可见词条的名称或描述关键词，而该角色本轮 `patch.statuses` 未更新该词条 id（且未显式清除全部），校验产生一条 `normalizationWarning`（不拒绝回合），随回合警告入库并在页面"本轮变化"区域展示"模型提示"。
 - 剧本包可通过 `adventure.initialStatuses` 声明人物开局状态词条（`characterName` + `statuses`，字段与本节一致，可含 `hidden`），开局物化为各角色 `character_state.statuses`，隐藏词条沿用上述导演级注入与探索解锁语义。
 
 ### 10.4 关系变化（relationshipChanges）

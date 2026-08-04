@@ -1031,6 +1031,7 @@ export function GameInterface({
       : "next_chapter_director_only";
   const displayedStateChanges = displayedTurn?.stateChanges ?? [];
   const displayedBlockedStateChanges = displayedTurn?.blockedStateChanges ?? [];
+  const turnWarnings = strings(displayedTurn?.generatedOutput.warnings);
   const generation = displayedTurn?.generation;
   const contextCharacterCoverage = records(
     turnContext?.diagnostics.characterCoverage,
@@ -3465,6 +3466,14 @@ export function GameInterface({
                       查看实际上下文
                     </button>
                   </div>
+                ) : null}
+
+                {turnWarnings.length > 0 ? (
+                  <ul className="turn-warning-list">
+                    {turnWarnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
                 ) : null}
 
                 {displayedStateChanges.length > 0 ? (

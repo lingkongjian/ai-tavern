@@ -554,6 +554,80 @@ function collectExistingEvidence(adventure: LoadedAdventure) {
   return evidence;
 }
 
+/**
+ * 状态一致性检测（警告级，不拒绝回合）：
+ * 对每个有可见词条（hidden=false）的角色，若本轮 scene/events 正文中提到该词条的
+ * 提示关键词（词条 name 全文 + description 中的中文短语与英文词），而该角色本轮
+ * patch.statuses 未更新该词条 id，则产生一条"正文暗示但词条未同步"的警告。
+ * 关键词提取保守：中文短语取 2~8 字的连续汉字段，英文词取 3 个以上字母的连续段；
+ * 只对 scene/events 拼接文本匹配，避免把对话台词等造成大量误报。
+ */
+function statusSyncHintKeywords(name: string, description: string) {
+  const keywords: string[] = [];
+  const trimmedName = name.trim();
+  if (trimmedName.length >= 2) keywords.push(trimmedName);
+  for (const run of description.match(/[\u3400-\u9fff]{2,8}/g) ?? []) {
+    keywords.push(run);
+  }
+  for (const run of description.match(/[A-Za-z]{3,}/g) ?? []) {
+    keywords.push(run);
+  }
+  return keywords;
+}
+
+function collectStatusSyncWarnings(input: {
+  scene: string;
+  events: GeneratedEvent[];
+  characterStates: Map<string, JsonObject>;
+  characterStateChanges: GeneratedCharacterStateChange[];
+}) {
+  const { scene, events, characterStates, characterStateChanges } = input;
+  const warnings: string[] = [];
+  const narrativeText = [scene, ...events.map((event) => event.summary)].join("\n");
+  if (!narrativeText.trim()) return warnings;
+
+  // 每个角色本轮 patch.statuses 覆盖到的词条 id；null（清除全部）视为显式处理。
+  const updatedStatusIdsByCharacter = new Map<string, Set<string>>();
+  for (const change of characterStateChanges) {
+    const statuses = change.patch.statuses;
+    if (statuses === null) {
+      updatedStatusIdsByCharacter.set(change.characterId, new Set(["*all*"]));
+    } else if (Array.isArray(statuses)) {
+      const ids = new Set<string>();
+      for (const item of statuses) {
+        if (isObject(item) && typeof item.id === "string" && item.id) {
+          ids.add(item.id);
+        }
+      }
+      updatedStatusIdsByCharacter.set(change.characterId, ids);
+    }
+  }
+
+  for (const [characterId, state] of characterStates) {
+    const updatedIds = updatedStatusIdsByCharacter.get(characterId);
+    if (updatedIds?.has("*all*")) continue;
+    if (!Array.isArray(state.statuses)) continue;
+    const characterName =
+      typeof state.name === "string" && state.name.trim()
+        ? state.name
+        : characterId;
+    for (const item of state.statuses) {
+      if (!isObject(item) || item.hidden === true) continue;
+      if (typeof item.id !== "string" || !item.id) continue;
+      const name = typeof item.name === "string" ? item.name : "";
+      const description = typeof item.description === "string" ? item.description : "";
+      if (updatedIds?.has(item.id)) continue;
+      const keywords = statusSyncHintKeywords(name, description);
+      if (keywords.length === 0) continue;
+      if (!keywords.some((keyword) => narrativeText.includes(keyword))) continue;
+      warnings.push(
+        `角色「${characterName}」本轮正文提到状态「${name}」但词条未同步更新，请检查是否需要在 characterStateChanges.patch.statuses 中更新该词条（description、expiresAtDay）或按剧情移除/新增。`,
+      );
+    }
+  }
+  return warnings;
+}
+
 const cardPaths = [
   "identity.titles",
   "identity.affiliations",
@@ -1645,6 +1719,16 @@ export function validateGeneratedTurn(
       suggestedNextDirection,
       ...(divergenceState !== undefined ? { divergenceState } : {}),
     };
+  }
+
+  // 状态一致性检测（警告级）：正文提到词条但本轮 patch.statuses 未同步 → 提醒，不拒绝回合。
+  for (const warning of collectStatusSyncWarnings({
+    scene,
+    events,
+    characterStates,
+    characterStateChanges,
+  })) {
+    normalizationWarnings.push(warning);
   }
 
   const warnings = [

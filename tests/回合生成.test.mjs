@@ -2649,3 +2649,304 @@ test("到期状态词条在回合提交时自动移除，未到期保留并写�
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+test("跨日状态演化规则文本与词条剩余天数注入上下文", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-status-days-remaining-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "剩余天数注入测试");
+    const characterId = started.mainCharacterId;
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "days-remaining-set",
+          operation: "set_statuses",
+          characterId,
+          statuses: [
+            {
+              id: "poison-1",
+              name: "中毒",
+              kind: "debuff",
+              description: "毒性潜伏，左臂发麻",
+              expiresAtDay: 5,
+            },
+            { id: "buff-1", name: "迅捷", kind: "buff", description: "步伐轻盈" },
+          ],
+        },
+      }),
+    );
+    const adventure = store.loadAdventure(started.sessionId);
+    const messages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-days",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const systemPrompt = messages[0].content;
+    // 规则 29：跨日强制演化规则（含"时间推进后必须演化词条"表述与示例）
+    assert.match(systemPrompt, /29\. 跨日状态演化/);
+    assert.match(systemPrompt, /时间推进后必须演化词条/);
+    assert.match(systemPrompt, /one_day 或 several_days/);
+    // 规则 26 追加的状态一致性强制
+    assert.match(systemPrompt, /状态一致性强制/);
+
+    const context = parseStoryContext(messages[1].content);
+    assert.equal(context.currentGameTimeDay, 1);
+    const entry = context.characterDirectory.find(
+      (character) => character.id === characterId,
+    );
+    const poison = entry.statuses.find((status) => status.id === "poison-1");
+    const buff = entry.statuses.find((status) => status.id === "buff-1");
+    assert.equal(poison.expiresAtDay, 5);
+    // 第 1 日、expiresAtDay=5 → 剩余 4 天
+    assert.equal(poison.daysRemaining, 4);
+    // 未设置 expiresAtDay 的词条不输出 daysRemaining
+    assert.equal("daysRemaining" in buff, false);
+
+    // 推进到第 7 日：到期词条的 daysRemaining 为负数
+    const laterAdventure = {
+      ...adventure,
+      branchState: {
+        ...adventure.branchState,
+        states: adventure.branchState.states.map((state) =>
+          state.entityType === "session_state" && state.entityId === "core"
+            ? { ...state, state: { ...state.state, gameTimeDay: 7 } }
+            : state,
+        ),
+      },
+    };
+    const laterMessages = createStoryGenerationMessages({
+      adventure: laterAdventure,
+      turnId: "next-turn-days-2",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const laterContext = parseStoryContext(laterMessages[1].content);
+    assert.equal(laterContext.currentGameTimeDay, 7);
+    const laterEntry = laterContext.characterDirectory.find(
+      (character) => character.id === characterId,
+    );
+    const laterPoison = laterEntry.statuses.find((status) => status.id === "poison-1");
+    assert.equal(laterPoison.daysRemaining, -2);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("状态一致性警告：正文提到词条但未同步时提醒且不拒绝回合", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-status-sync-warning-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "状态一致性警告测试");
+    const characterId = started.mainCharacterId;
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "sync-warning-set",
+          operation: "set_statuses",
+          characterId,
+          statuses: [
+            {
+              id: "poison-1",
+              name: "中毒",
+              kind: "debuff",
+              description: "毒性潜伏，左臂发麻",
+              expiresAtDay: 5,
+            },
+            {
+              id: "hidden-1",
+              name: "蛊咒",
+              kind: "debuff",
+              hidden: true,
+              description: "未察觉的蛊咒",
+            },
+          ],
+        },
+      }),
+    );
+    const adventure = store.loadAdventure(started.sessionId);
+
+    // 场景 A：正文提到「中毒」但 patch.statuses 未同步 → 警告产生且校验通过
+    const mentioned = validateGeneratedTurn(
+      statusesTestTurn(started, "event-sync-a", "守钟人身上的中毒开始发作。"),
+      adventure,
+      "turn-sync-a",
+    );
+    assert.ok(
+      mentioned.warnings.some((warning) => warning.includes("提到状态「中毒」")),
+    );
+    // 隐藏词条不参与一致性检测
+    assert.ok(
+      !mentioned.warnings.some((warning) => warning.includes("蛊咒")),
+    );
+
+    // 场景 B：正文提到且 patch.statuses 已更新该词条 id → 无警告
+    const synced = validateGeneratedTurn(
+      {
+        ...statusesTestTurn(started, "event-sync-b", "守钟人身上的中毒开始发作。", {
+          characterStateChanges: [
+            {
+              characterId,
+              patch: {
+                statuses: [
+                  {
+                    id: "poison-1",
+                    name: "中毒",
+                    kind: "debuff",
+                    description: "毒势发作",
+                    expiresAtDay: 6,
+                  },
+                ],
+              },
+              duration: "until_changed",
+              reason: "中毒加深",
+              evidence: ["event-sync-b"],
+            },
+          ],
+        }),
+      },
+      adventure,
+      "turn-sync-b",
+    );
+    assert.ok(
+      !synced.warnings.some((warning) => warning.includes("提到状态「中毒」")),
+    );
+
+    // 场景 C：正文未提及词条 → 无警告
+    const silent = validateGeneratedTurn(
+      statusesTestTurn(started, "event-sync-c", "守钟人继续巡查钟楼。"),
+      adventure,
+      "turn-sync-c",
+    );
+    assert.equal(silent.warnings.length, 0);
+
+    // 场景 D：正文提到但 patch.statuses=null 显式清除全部 → 视为已处理，不警告
+    const cleared = validateGeneratedTurn(
+      {
+        ...statusesTestTurn(started, "event-sync-d", "守钟人身上的中毒已经解除。", {
+          characterStateChanges: [
+            {
+              characterId,
+              patch: { statuses: null },
+              duration: "until_changed",
+              reason: "解毒成功",
+              evidence: ["event-sync-d"],
+            },
+          ],
+        }),
+      },
+      adventure,
+      "turn-sync-d",
+    );
+    assert.ok(
+      !cleared.warnings.some((warning) => warning.includes("提到状态「中毒」")),
+    );
+
+    // 场景 E：正文只出现 description 关键词（左臂发麻）而未同步 → 警告
+    const keywordMentioned = validateGeneratedTurn(
+      statusesTestTurn(started, "event-sync-e", "守钟人只觉得左臂发麻得厉害。"),
+      adventure,
+      "turn-sync-e",
+    );
+    assert.ok(
+      keywordMentioned.warnings.some((warning) => warning.includes("提到状态「中毒」")),
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("状态一致性警告随回合正常提交并写入生成输出，不阻断剧情", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-status-sync-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "状态一致性端到端测试");
+    const characterId = started.mainCharacterId;
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "sync-e2e-set",
+          operation: "set_statuses",
+          characterId,
+          statuses: [
+            {
+              id: "poison-1",
+              name: "中毒",
+              kind: "debuff",
+              description: "毒性潜伏，左臂发麻",
+              expiresAtDay: 5,
+            },
+          ],
+        },
+      }),
+    );
+
+    // 正文提到「中毒」但未同步词条：回合必须正常提交，警告进入 generatedOutput
+    const result = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "sync-e2e-1",
+        customChoice: "继续调查",
+      }),
+      createTurnId: () => "turn-sync-e2e",
+      generate: async () => ({
+        content: statusesTestTurn(
+          started,
+          "event-sync-e2e",
+          "守钟人身上的中毒开始发作。",
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    assert.ok(result.committedTurn, "回合应正常提交，一致性检测不拒绝回合");
+    const committedAdventure = store.loadAdventure(started.sessionId);
+    const savedTurn = committedAdventure.branchState.recentTurns.find(
+      (turn) => turn.id === result.committedTurn.id,
+    );
+    assert.ok(savedTurn, "提交的回合应写入历史");
+    const warnings = savedTurn.generatedOutput.warnings ?? [];
+    assert.ok(
+      warnings.some((warning) => warning.includes("提到状态「中毒」")),
+    );
+    // 词条未被检测逻辑误改
+    const adventure = store.loadAdventure(started.sessionId);
+    const state = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" && state.entityId === characterId,
+    );
+    assert.equal(state.state.statuses.length, 1);
+    assert.equal(state.state.statuses[0].id, "poison-1");
+    assert.equal(state.state.statuses[0].description, "毒性潜伏，左臂发麻");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
