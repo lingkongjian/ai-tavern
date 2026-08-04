@@ -730,6 +730,12 @@ export function GameInterface({
   const [characterForm, setCharacterForm] = useState(emptyCharacterForm);
   const [characterManagerError, setCharacterManagerError] = useState("");
   const [savingCharacter, setSavingCharacter] = useState(false);
+  const [restrictionEditorCharacterId, setRestrictionEditorCharacterId] =
+    useState<string | null>(null);
+  const [restrictionForm, setRestrictionForm] = useState({
+    kind: "imprisoned",
+    summary: "",
+  });
   const locationManagerOpen = storyWorkbenchTab === "locations";
   const setLocationManagerOpen = (open: boolean) =>
     setStoryWorkbenchTab(open ? "locations" : null);
@@ -1054,6 +1060,9 @@ export function GameInterface({
   const characterNames = characterCards.map((card) => {
     const data = isObject(card.state.data) ? card.state.data : {};
     const currentState = characterStatesById.get(card.entityId);
+    const restriction = isObject(currentState?.state.restriction)
+      ? currentState.state.restriction
+      : null;
     return {
       id: card.entityId,
       name: text(data.name, "未命名角色"),
@@ -1063,6 +1072,7 @@ export function GameInterface({
       cardRole: text(card.state.role),
       isActive: card.isActive,
       present: currentState?.state.present !== false,
+      restriction: restriction as { kind: string; summary: string } | null,
     };
   });
   const characterNameById = new Map(
@@ -1998,6 +2008,38 @@ export function GameInterface({
       characterId,
       active,
     });
+  }
+
+  const restrictionKindLabels: Record<string, string> = {
+    dead: "已死亡",
+    imprisoned: "被关押",
+    controlled: "被控制",
+    bound: "被束缚",
+    other: "其他受限",
+  };
+
+  async function setCharacterRestriction(
+    characterId: string,
+    restriction: { kind: string; summary: string } | null,
+  ) {
+    const saved = await runCharacterOperation({
+      operation: "set_restriction",
+      characterId,
+      restriction,
+    });
+    if (saved) setRestrictionEditorCharacterId(null);
+  }
+
+  function startRestrictionEditor(characterId: string) {
+    const character = manageableCharacters.find(
+      (candidate) => candidate.id === characterId,
+    );
+    setRestrictionEditorCharacterId(characterId);
+    setRestrictionForm({
+      kind: character?.restriction?.kind ?? "imprisoned",
+      summary: character?.restriction?.summary ?? "",
+    });
+    setCharacterManagerError("");
   }
 
   function startAddingLocation() {
@@ -3895,6 +3937,14 @@ export function GameInterface({
                     <strong>{character.name}</strong>
                     <p>{character.description}</p>
                     {!character.present ? <small>暂时离场</small> : null}
+                    {character.restriction ? (
+                      <small className="cast-restriction">
+                        行动受限：
+                        {restrictionKindLabels[character.restriction.kind] ??
+                          character.restriction.kind}
+                        ，{character.restriction.summary}
+                      </small>
+                    ) : null}
                   </div>
                 </article>
               ))}
@@ -6387,11 +6437,77 @@ export function GameInterface({
                             : character.present
                               ? "当前在场"
                               : "暂时离场"}
+                          {character.restriction
+                            ? ` · 行动受限（${
+                                restrictionKindLabels[character.restriction.kind] ??
+                                character.restriction.kind
+                              }）`
+                            : ""}
                         </small>
                       </div>
                       <p>{character.description}</p>
+                      {character.restriction ? (
+                        <p className="managed-character-restriction">
+                          受限原因：{character.restriction.summary}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
+                  {restrictionEditorCharacterId === character.id ? (
+                    <div className="managed-character-restriction-editor">
+                      <select
+                        value={restrictionForm.kind}
+                        disabled={savingCharacter}
+                        onChange={(event) =>
+                          setRestrictionForm((current) => ({
+                            ...current,
+                            kind: event.target.value,
+                          }))
+                        }
+                      >
+                        {Object.entries(restrictionKindLabels).map(
+                          ([kind, label]) => (
+                            <option key={kind} value={kind}>
+                              {label}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                      <input
+                        maxLength={200}
+                        value={restrictionForm.summary}
+                        disabled={savingCharacter}
+                        placeholder="受限原因（如：被囚禁在地牢、已被杀死）"
+                        onChange={(event) =>
+                          setRestrictionForm((current) => ({
+                            ...current,
+                            summary: event.target.value,
+                          }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        disabled={
+                          savingCharacter || !restrictionForm.summary.trim()
+                        }
+                        onClick={() =>
+                          void setCharacterRestriction(character.id, {
+                            kind: restrictionForm.kind,
+                            summary: restrictionForm.summary.trim(),
+                          })
+                        }
+                      >
+                        保存受限
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingCharacter}
+                        onClick={() => setRestrictionEditorCharacterId(null)}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="managed-character-actions">
                     <button
                       type="button"
@@ -6408,6 +6524,17 @@ export function GameInterface({
                       }
                     >
                       {character.present ? "暂时离场" : "重新登场"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingCharacter || !character.isActive}
+                      onClick={() =>
+                        character.restriction
+                          ? void setCharacterRestriction(character.id, null)
+                          : startRestrictionEditor(character.id)
+                      }
+                    >
+                      {character.restriction ? "解除受限" : "设置受限"}
                     </button>
                     <button
                       className={character.isActive ? "deactivate" : "reactivate"}

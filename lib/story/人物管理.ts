@@ -1,7 +1,9 @@
 import type {
   AdventureCharacterInput,
   CharacterManagementInput,
+  CharacterRestriction,
 } from "@/lib/storage/story-store";
+import { RESTRICTION_KINDS } from "./回合协议.ts";
 
 const limits = {
   id: 120,
@@ -101,7 +103,8 @@ export function parseCharacterManagementInput(input: {
     operation !== "create" &&
     operation !== "update" &&
     operation !== "set_presence" &&
-    operation !== "set_active"
+    operation !== "set_active" &&
+    operation !== "set_restriction"
   ) {
     issues.push("人物管理操作无效。");
   }
@@ -158,6 +161,40 @@ export function parseCharacterManagementInput(input: {
       operation,
       characterId,
       active: input.value.active as boolean,
+    };
+  }
+  if (operation === "set_restriction") {
+    let restriction: CharacterRestriction | null = null;
+    if (input.value.restriction !== null && input.value.restriction !== undefined) {
+      if (!isRecord(input.value.restriction)) {
+        issues.push("行动受限状态必须是对象或 null。");
+      } else {
+        const kind = input.value.restriction.kind;
+        if (
+          typeof kind !== "string" ||
+          !RESTRICTION_KINDS.includes(kind as (typeof RESTRICTION_KINDS)[number])
+        ) {
+          issues.push(`受限类型必须是 ${RESTRICTION_KINDS.join("、")} 之一。`);
+        }
+        const summary = requiredText(
+          input.value.restriction.summary,
+          "受限原因",
+          200,
+          issues,
+        );
+        restriction = {
+          kind: (kind as CharacterRestriction["kind"]) ?? "other",
+          summary,
+        };
+      }
+    }
+    if (issues.length > 0) throw new CharacterManagementInputError(issues);
+    return {
+      actionId,
+      sessionId: input.sessionId,
+      operation,
+      characterId,
+      restriction,
     };
   }
 

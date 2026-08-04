@@ -4280,6 +4280,10 @@ a {
   font-size: 0.57rem;
 }
 
+.cast-list article small.cast-restriction {
+  color: #a97b76;
+}
+
 .cast-monogram {
   display: grid;
   width: 35px;
@@ -5654,6 +5658,25 @@ a {
   border-radius: 999px;
   color: #806f66;
   font-size: 0.54rem;
+}
+
+.managed-character-restriction {
+  border: 1px solid rgb(171 78 85 / 25%) !important;
+  color: #a97b76 !important;
+  white-space: normal;
+}
+
+.managed-character-restriction-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.managed-character-restriction-editor select,
+.managed-character-restriction-editor input {
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .managed-character-actions {

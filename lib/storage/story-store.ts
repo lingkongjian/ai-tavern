@@ -328,6 +328,13 @@ export interface AdventureCharacterInput {
   initiallyPresent?: boolean;
 }
 
+/** 行动受限状态：剧情中角色死亡、被关押、被控制等"行动受限"因素。 */
+export interface CharacterRestriction {
+  kind: "dead" | "imprisoned" | "controlled" | "bound" | "other";
+  summary: string;
+  sinceTurnId?: string;
+}
+
 export interface AdventureWorldBookEntryInput {
   sourceId?: string;
   sourceBookName?: string;
@@ -421,6 +428,13 @@ export type CharacterManagementInput =
       operation: "set_active";
       characterId: string;
       active: boolean;
+    }
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "set_restriction";
+      characterId: string;
+      restriction: CharacterRestriction | null;
     };
 
 export interface ManagedCharacterResult {
@@ -4988,6 +5002,29 @@ export class LocalStoryStore {
           reason: input.present
             ? "玩家让角色重新进入当前剧情"
             : "玩家让角色暂时离开当前剧情",
+          evidence: [],
+        });
+      } else if (input.operation === "set_restriction") {
+        if (!currentCard?.isActive) {
+          throw new CharacterManagementError("停用角色不能修改行动受限状态，请先重新启用。");
+        }
+        mutations.push({
+          entityType: "character_state",
+          entityId: requestedCharacterId,
+          operation: "merge",
+          value:
+            input.restriction === null
+              ? { restriction: null }
+              : {
+                  restriction: {
+                    ...input.restriction,
+                    sinceTurnId: branch.head_turn_id,
+                  },
+                },
+          reason:
+            input.restriction === null
+              ? "玩家解除了角色的行动受限状态"
+              : `玩家设置角色行动受限：${input.restriction.kind}（${input.restriction.summary}）`,
           evidence: [],
         });
       } else {

@@ -200,7 +200,7 @@ macOS 桌面版由桌面入口强制设置绝对数据目录：`AI酒馆/用户�
 
 ## 地点与自动出场
 
-地点使用 `location` 物化状态保存名称、描述和默认登场人物。当前位置写入 `session_state.currentLocationId`；各角色以 `character_state.present` 和 `character_state.locationId` 表达是否处于当前场景及最后所在地点。
+地点使用 `location` 物化状态保存名称、描述和默认登场人物。当前位置写入 `session_state.currentLocationId`；各角色以 `character_state.present` 和 `character_state.locationId` 表达是否处于当前场景及最后所在地点。`character_state.restriction`（可选）表达行动受限（死亡/被关押/被控制/被束缚等，含 kind、summary 与 sinceTurnId），模型回合与人物管理均可设置/解除（null 解除），受限角色在解除前不能发言、登场、移动或发起属性判定。
 
 DeepSeek 每轮返回 `sceneTransition`，其中包含回合结束时的地点和完整在场角色 ID。后端校验角色、地点与本轮证据后，在同一次回合事务中自动创建剧情发现的新地点、切换当前位置，并同步人物加入和离场。普通角色状态补丁不得直接修改 `present` 或 `locationId`，避免两个来源互相覆盖。
 

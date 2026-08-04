@@ -11,6 +11,23 @@ import {
 
 export type RoleplayMode = "speech" | "action" | "mixed";
 
+/** 行动受限状态类型白名单：剧情中角色死亡、被关押、被控制等"行动受限"因素。 */
+export const RESTRICTION_KINDS = [
+  "dead",
+  "imprisoned",
+  "controlled",
+  "bound",
+  "other",
+] as const;
+
+export type RestrictionKind = (typeof RESTRICTION_KINDS)[number];
+
+export interface CharacterRestriction {
+  kind: RestrictionKind;
+  summary: string;
+  sinceTurnId?: string;
+}
+
 export interface PlayerTurnRequest {
   expectedHeadTurnId: string | null;
   idempotencyKey: string;
@@ -489,6 +506,20 @@ export function validateGeneratedTurn(
   )?.entityId;
   const existingEvidenceIds = collectExistingEvidence(adventure);
 
+  // 当前角色状态与行动受限标记（回合开始时的快照，用于硬拦截校验）。
+  const characterStates = new Map(
+    adventure.branchState.states
+      .filter((state) => state.entityType === "character_state" && state.isActive)
+      .map((state) => [state.entityId, state.state] as const),
+  );
+  const characterRestrictions = new Map<string, JsonObject | null>();
+  for (const [characterId, state] of characterStates) {
+    characterRestrictions.set(
+      characterId,
+      isObject(state.restriction) ? state.restriction : null,
+    );
+  }
+
   const turn = requiredObject(value.turn, "turn", issues);
   const scene = requiredText(turn.scene, "turn.scene", issues);
   const eventIds = new Set<string>();
@@ -885,6 +916,43 @@ export function validateGeneratedTurn(
       issues.push(
         "人物进出场和所在地点必须写入 sceneTransition，不能写入普通角色状态补丁。",
       );
+    }
+    if (patch.restriction !== undefined) {
+      if (patch.restriction === null) {
+        // null 表示解除行动受限（JSON Merge Patch 删除语义）。
+      } else if (isObject(patch.restriction)) {
+        const restriction = patch.restriction;
+        if (
+          typeof restriction.kind !== "string" ||
+          !RESTRICTION_KINDS.includes(restriction.kind as RestrictionKind)
+        ) {
+          issues.push(
+            `角色状态补丁的 restriction.kind 必须是 ${RESTRICTION_KINDS.join("、")} 之一。`,
+          );
+        }
+        if (
+          typeof restriction.summary !== "string" ||
+          !restriction.summary.trim() ||
+          restriction.summary.trim().length > 200
+        ) {
+          issues.push(
+            "角色状态补丁的 restriction.summary 必须是 1 到 200 个字符的受限原因。",
+          );
+        }
+        if (
+          restriction.sinceTurnId !== undefined &&
+          (typeof restriction.sinceTurnId !== "string" ||
+            !restriction.sinceTurnId.trim())
+        ) {
+          issues.push(
+            "角色状态补丁的 restriction.sinceTurnId 必须是回合 ID 文本。",
+          );
+        }
+      } else {
+        issues.push(
+          "角色状态补丁的 restriction 必须是对象（设置受限）或 null（解除受限）。",
+        );
+      }
     }
     if (patch.attributes !== undefined) {
       if (!isObject(patch.attributes)) {
@@ -1491,6 +1559,52 @@ export function validateGeneratedTurn(
       : "";
   if (typeof stateCommit.summaryPatch !== "string") {
     issues.push("stateCommit.summaryPatch 必须是字符串。");
+  }
+
+  // 行动受限硬拦截：发言/登场/离场移动/属性判定的角色，本轮必须已解除受限
+  // 或本来就没有 restriction。解除的唯一确定性信号：本轮 characterStateChanges
+  // 中该角色的 patch.restriction 为 null（同一轮事件描写复活、越狱、挣脱控制等）。
+  const clearedRestrictionIds = new Set(
+    characterStateChanges
+      .filter((change) => change.patch.restriction === null)
+      .map((change) => change.characterId),
+  );
+  const isRestrictedAndUncleared = (characterId: string) =>
+    characterRestrictions.has(characterId) &&
+    characterRestrictions.get(characterId) !== null &&
+    !clearedRestrictionIds.has(characterId);
+  for (const line of dialogue) {
+    if (isRestrictedAndUncleared(line.speakerId)) {
+      issues.push(
+        `行动受限角色 ${line.speakerId} 不能自由发言；必须在本轮 characterStateChanges 中把该角色的 patch.restriction 设为 null 解除限制（并写入对应解除事件），或让该角色保持沉默。`,
+      );
+    }
+  }
+  if (sceneTransition) {
+    for (const characterId of sceneTransition.presentCharacterIds) {
+      if (!isRestrictedAndUncleared(characterId)) continue;
+      const wasPresent =
+        characterStates.get(characterId)?.present !== false;
+      if (!wasPresent) {
+        issues.push(
+          `行动受限角色 ${characterId} 不能在本轮重新登场；必须在同一回合通过 characterStateChanges 的 patch.restriction=null 解除限制（复活、越狱、挣脱控制等），并写入对应事件。`,
+        );
+      }
+    }
+    for (const update of sceneTransition.offstageUpdates ?? []) {
+      if (isRestrictedAndUncleared(update.characterId)) {
+        issues.push(
+          `行动受限角色 ${update.characterId} 不能发生离场移动；必须先在 characterStateChanges 中解除其行动限制。`,
+        );
+      }
+    }
+  }
+  for (const check of attributeChecks) {
+    if (isRestrictedAndUncleared(check.characterId)) {
+      issues.push(
+        `行动受限角色 ${check.characterId} 不能参与属性判定；必须先在 characterStateChanges 中解除其行动限制。`,
+      );
+    }
   }
 
   if (issues.length > 0) throw new GeneratedTurnValidationError(issues);

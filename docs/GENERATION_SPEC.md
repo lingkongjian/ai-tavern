@@ -295,6 +295,19 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 如果角色死亡或失去行动能力，必须同步更新其状态。人物加入、离场和地点变化统一通过 `sceneTransition` 提交。
 
+### 10.2 行动受限（restriction）
+
+`character_state.restriction` 表达角色因死亡、被关押、被控制、被束缚等"行动受限"因素无法自由行动：`{ kind: "dead" | "imprisoned" | "controlled" | "bound" | "other"; summary: string; sinceTurnId?: string }`。模型通过 `characterStateChanges.patch.restriction` 设置（对象）或解除（`null`），后端校验 kind 白名单、summary 长度与结构。
+
+行动受限角色在解除前受到**硬拦截**（整轮校验拒绝并走修复重试）：
+
+- 不能出现在 `turn.dialogue.speakerId`（不得替其发声）；
+- 此前不在场的受限角色不能被加入 `sceneTransition.presentCharacterIds`（已在场的保留在阵容中放行，如遗体留在现场）；
+- 不能出现在 `sceneTransition.offstageUpdates`（不得自由移动）；
+- 不能出现在 `attributeChecks`（不得发起属性判定）。
+
+解除必须伴随真实剧情事件（复活、越狱、挣脱控制、释放等）写入 `turn.events`，并在**同一回合**通过 `characterStateChanges` 把该角色 `patch.restriction` 置为 `null`；未同轮解除的发言/登场/移动/判定全部拒绝。玩家可在人物管理中设置或解除行动受限，设置的 `sinceTurnId` 记录当时分支头回合。
+
 ### 10.1 角色属性（attributes）
 
 `character_state.attributes` 保存角色属性（0-100），白名单为：力量、敏捷、感知、意志、魅力、智力、体质。事件驱动的属性变化通过 `characterStateChanges` 的 `attributes` 对象写入最终数值（0-100）；后端校验白名单与范围，越界值会被拒绝或钳制。属性未设定时按 50 计。

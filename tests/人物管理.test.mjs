@@ -313,3 +313,180 @@ test("manages existing-story characters without creating story turns", () => {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+test("行动受限状态可设置、解除、进入审计并随存档往返", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restriction-"));
+  const databasePath = join(temporaryDirectory, "story.sqlite");
+  let database = openLocalDatabase({ filePath: databasePath, migrationsDir });
+
+  try {
+    let store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "行动受限测试",
+      world: { name: "镜城", premise: "镜面会记录公开说出的承诺。" },
+      player: { name: "访客", description: "寻找一份旧誓言的旅行者。" },
+      mainCharacter: {
+        name: "守镜人",
+        role: "镜城档案馆看守",
+        personality: "冷静、严谨，不替陌生人保守未经交换的秘密。",
+        firstMessage: "镜子记得你说过的每一个字。",
+      },
+      openingScene: "访客进入堆满银镜的档案馆。",
+    });
+
+    // 非法 kind 拒绝
+    assert.throws(
+      () =>
+        managementInput(started.sessionId, {
+          actionId: "restrict-bad-kind",
+          operation: "set_restriction",
+          characterId: started.mainCharacterId,
+          restriction: { kind: "asleep", summary: "睡着了" },
+        }),
+      CharacterManagementInputError,
+    );
+    // 缺少受限原因拒绝
+    assert.throws(
+      () =>
+        managementInput(started.sessionId, {
+          actionId: "restrict-no-summary",
+          operation: "set_restriction",
+          characterId: started.mainCharacterId,
+          restriction: { kind: "imprisoned" },
+        }),
+      CharacterManagementInputError,
+    );
+    // 受限状态必须是对象或 null
+    assert.throws(
+      () =>
+        managementInput(started.sessionId, {
+          actionId: "restrict-not-object",
+          operation: "set_restriction",
+          characterId: started.mainCharacterId,
+          restriction: "被关押",
+        }),
+      CharacterManagementInputError,
+    );
+
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "restrict-set",
+        operation: "set_restriction",
+        characterId: started.mainCharacterId,
+        restriction: { kind: "imprisoned", summary: "被城主关押在地牢" },
+      }),
+    );
+    let adventure = store.loadAdventure(started.sessionId);
+    const characterState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal(characterState.state.restriction.kind, "imprisoned");
+    assert.equal(characterState.state.restriction.summary, "被城主关押在地牢");
+    assert.equal(characterState.state.restriction.sinceTurnId, started.openingTurnId);
+
+    // 幂等 actionId 复用
+    const retried = store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "restrict-set",
+        operation: "set_restriction",
+        characterId: started.mainCharacterId,
+        restriction: { kind: "imprisoned", summary: "被城主关押在地牢" },
+      }),
+    );
+    assert.equal(retried.reused, true);
+
+    // 上下文：人物目录携带 restriction，规则文本包含行动受限约束
+    const restrictedMessages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-restriction-test",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    assert.match(restrictedMessages[0].content, /行动受限/);
+    assert.match(restrictedMessages[0].content, /patch\.restriction=null/);
+    assert.match(restrictedMessages[1].content, /被城主关押在地牢/);
+
+    // 状态审计记录人物管理来源的动作
+    const audit = store.loadStateAudit(started.sessionId);
+    assert.equal(
+      audit.actions.some(
+        (action) =>
+          action.source === "character_management" &&
+          action.title.includes("人物管理"),
+      ),
+      true,
+    );
+
+    // 解除：restriction 字段被删除
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "restrict-clear",
+        operation: "set_restriction",
+        characterId: started.mainCharacterId,
+        restriction: null,
+      }),
+    );
+    adventure = store.loadAdventure(started.sessionId);
+    const clearedState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal("restriction" in clearedState.state, false);
+    const clearedMessages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-restriction-cleared-test",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    assert.doesNotMatch(clearedMessages[1].content, /被城主关押在地牢/);
+
+    // 玩家角色不能在人物管理中设置行动受限
+    assert.throws(
+      () =>
+        store.manageCharacter(
+          managementInput(started.sessionId, {
+            actionId: "restrict-player-blocked",
+            operation: "set_restriction",
+            characterId: started.playerCharacterId,
+            restriction: { kind: "bound", summary: "测试" },
+          }),
+        ),
+      CharacterManagementError,
+    );
+
+    // 存档往返：重新设置后关闭重开，restriction 仍保留
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "restrict-roundtrip",
+        operation: "set_restriction",
+        characterId: started.mainCharacterId,
+        restriction: { kind: "bound", summary: "被铁链束缚在柱上" },
+      }),
+    );
+    database.close();
+    database = openLocalDatabase({ filePath: databasePath, migrationsDir });
+    store = new LocalStoryStore(database);
+    adventure = store.loadAdventure(started.sessionId);
+    const roundtripState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal(roundtripState.state.restriction.kind, "bound");
+    assert.equal(roundtripState.state.restriction.summary, "被铁链束缚在柱上");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});

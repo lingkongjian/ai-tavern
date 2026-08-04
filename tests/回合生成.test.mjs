@@ -16,6 +16,7 @@ import {
   advanceAdventureTurn,
   collectDivergenceSignals,
 } from "../lib/story/回合服务.ts";
+import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 
@@ -1325,6 +1326,476 @@ test("collectDivergenceSignals 把超期任务列入 broken 分组", async () =>
       signals.recoverable.some((item) => item.includes("仍在进行")),
       false,
       "已超期任务不应同时进入 recoverable 分组",
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+function restrictionTurn(started, eventId, extra = {}) {
+  return {
+    schemaVersion: "1.0.0",
+    turn: {
+      scene: extra.scene ?? "烛城更楼里的对话继续。",
+      events: [
+        {
+          id: eventId,
+          type: "plot_progress",
+          summary: extra.scene ?? "烛城更楼里的对话继续。",
+          characterIds: [started.playerCharacterId, started.mainCharacterId],
+          locationId: "clock-tower",
+        },
+      ],
+      dialogue: extra.dialogue ?? [],
+    },
+    attributeChecks: extra.attributeChecks ?? [],
+    decision: {
+      context: "action_direction",
+      prompt: "旅人接下来准备做什么？",
+      choices: [
+        {
+          id: "choice-1",
+          label: "继续行动",
+          description: "采取下一步行动。",
+          stance: "neutral",
+        },
+        {
+          id: "choice-2",
+          label: "先观察",
+          description: "再观察一段时间。",
+          stance: "benevolent",
+        },
+      ],
+    },
+    stateCommit: {
+      sceneTransition: {
+        locationId: "clock-tower",
+        locationName: "逆流钟楼",
+        locationDescription: "铜钟悬在潮湿的石室中央。",
+        presentCharacterIds:
+          extra.presentCharacterIds ??
+          [started.playerCharacterId, started.mainCharacterId],
+        offstageUpdates: extra.offstageUpdates ?? [],
+        reason: "对话结束时两人仍留在钟楼。",
+        evidence: [eventId],
+      },
+      characterStateChanges: extra.characterStateChanges ?? [],
+      relationshipChanges: [],
+      characterCardChanges: [],
+      worldBookChanges: [],
+      plotThreadUpdates: [],
+      plotTriggerUpdates: [],
+      storyDirectionEvaluation:
+        extra.storyDirectionEvaluation === undefined
+          ? {
+              status: "active",
+              reason: "调查仍在继续。",
+              evidence: [],
+              continuity: "uncertain",
+              continuityReason: "当前没有预埋剧本任务可供比较。",
+              recommendedModuleId: null,
+              suggestedNextDirection: null,
+            }
+          : extra.storyDirectionEvaluation,
+      summaryPatch: "更楼里的对话继续。",
+    },
+    warnings: [],
+  };
+}
+
+test("行动受限角色硬拦截：发言、重新登场、离场移动、属性判定必须同轮解除", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restriction-turn-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "行动受限回合测试",
+      world: { name: "烛城", premise: "灯火与影子相生。" },
+      player: { name: "旅人", description: "夜行客。" },
+      mainCharacter: {
+        name: "守夜人",
+        role: "更夫",
+        personality: "机敏。",
+        firstMessage: "夜深了。",
+      },
+      additionalCharacters: [
+        {
+          name: "囚犯",
+          role: "被关押的疑犯",
+          personality: "沉默。",
+          initiallyPresent: false,
+        },
+      ],
+      openingScene: "旅人在烛城更楼下落脚。",
+    });
+    const adventure = store.loadAdventure(started.sessionId);
+    const prisonerId = started.additionalCharacterIds[0];
+    const clearingChange = (characterId, eventId) => [
+      {
+        characterId,
+        patch: { restriction: null },
+        duration: "until_changed",
+        reason: "囚犯越狱获释",
+        evidence: [eventId],
+      },
+    ];
+    const clearingPatchIssue = (error, keyword) =>
+      error instanceof GeneratedTurnValidationError &&
+      error.issues.some((issue) => issue.includes(keyword));
+
+    // 1. 未受限角色发言正常通过
+    const plainTurn = restrictionTurn(started, "event-restriction-plain", {
+      dialogue: [
+        {
+          id: "dialogue-restriction-plain",
+          speakerId: started.mainCharacterId,
+          content: "更楼里一切如常。",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+    });
+    assert.equal(
+      validateGeneratedTurn(plainTurn, adventure, "turn-restriction-plain")
+        .turn.dialogue.length,
+      1,
+    );
+
+    // 2. 设置受限（玩家管理面板）后，该角色发言被拒
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "restrict-turn-set",
+          operation: "set_restriction",
+          characterId: prisonerId,
+          restriction: { kind: "imprisoned", summary: "被城主关押在地牢" },
+        },
+      }),
+    );
+    const restrictedAdventure = store.loadAdventure(started.sessionId);
+    const speakTurn = restrictionTurn(started, "event-restriction-speak", {
+      dialogue: [
+        {
+          id: "dialogue-restriction-speak",
+          speakerId: prisonerId,
+          content: "放我出去！",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(speakTurn, restrictedAdventure, "turn-restriction-speak"),
+      (error) => clearingPatchIssue(error, "行动受限角色"),
+    );
+
+    // 3. 同轮 patch.restriction=null 解除后，发言放行
+    const speakTurnCleared = restrictionTurn(started, "event-restriction-speak-clear", {
+      dialogue: [
+        {
+          id: "dialogue-restriction-speak-clear",
+          speakerId: prisonerId,
+          content: "我越狱出来了！",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+      characterStateChanges: clearingChange(prisonerId, "event-restriction-speak-clear"),
+    });
+    assert.equal(
+      validateGeneratedTurn(speakTurnCleared, restrictedAdventure, "turn-restriction-speak-clear")
+        .turn.dialogue.length,
+      1,
+    );
+
+    // 4. 此前不在场的受限角色被加入 presentCharacterIds → 拒；同轮解除后放行
+    const arriveTurn = restrictionTurn(started, "event-restriction-arrive", {
+      presentCharacterIds: [
+        started.playerCharacterId,
+        started.mainCharacterId,
+        prisonerId,
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(arriveTurn, restrictedAdventure, "turn-restriction-arrive"),
+      (error) => clearingPatchIssue(error, "重新登场"),
+    );
+    const arriveTurnCleared = restrictionTurn(started, "event-restriction-arrive-clear", {
+      presentCharacterIds: [
+        started.playerCharacterId,
+        started.mainCharacterId,
+        prisonerId,
+      ],
+      characterStateChanges: clearingChange(prisonerId, "event-restriction-arrive-clear"),
+    });
+    assert.equal(
+      validateGeneratedTurn(arriveTurnCleared, restrictedAdventure, "turn-restriction-arrive-clear")
+        .stateCommit.sceneTransition.presentCharacterIds.includes(prisonerId),
+      true,
+    );
+
+    // 5. 受限角色发生离场移动 → 拒
+    const moveTurn = restrictionTurn(started, "event-restriction-move", {
+      offstageUpdates: [
+        {
+          characterId: prisonerId,
+          locationId: "city-prison",
+          locationName: "城主地牢",
+          reason: "囚犯被转移",
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(moveTurn, restrictedAdventure, "turn-restriction-move"),
+      (error) => clearingPatchIssue(error, "离场移动"),
+    );
+    const moveTurnCleared = restrictionTurn(started, "event-restriction-move-clear", {
+      offstageUpdates: [
+        {
+          characterId: prisonerId,
+          locationId: "city-prison",
+          locationName: "城主地牢",
+          reason: "囚犯被转移",
+        },
+      ],
+      characterStateChanges: clearingChange(prisonerId, "event-restriction-move-clear"),
+    });
+    assert.equal(
+      validateGeneratedTurn(moveTurnCleared, restrictedAdventure, "turn-restriction-move-clear")
+        .stateCommit.sceneTransition.offstageUpdates.length,
+      1,
+    );
+
+    // 6. 受限角色不出现于 attributeChecks
+    const checkTurn = restrictionTurn(started, "event-restriction-check", {
+      attributeChecks: [
+        {
+          id: "check-restriction",
+          characterId: prisonerId,
+          attribute: "力量",
+          difficulty: 70,
+          context: "囚犯试图挣脱铁链",
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(checkTurn, restrictedAdventure, "turn-restriction-check"),
+      (error) => clearingPatchIssue(error, "不能参与属性判定"),
+    );
+
+    // 7. patch.restriction 结构校验
+    const badKind = restrictionTurn(started, "event-restriction-bad-kind", {
+      characterStateChanges: [
+        {
+          characterId: started.mainCharacterId,
+          patch: { restriction: { kind: "sleeping", summary: "睡着了" } },
+          duration: "until_changed",
+          reason: "测试",
+          evidence: ["event-restriction-bad-kind"],
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(badKind, restrictedAdventure, "turn-restriction-bad-kind"),
+      (error) => clearingPatchIssue(error, "restriction.kind"),
+    );
+    const missingSummary = restrictionTurn(started, "event-restriction-no-summary", {
+      characterStateChanges: [
+        {
+          characterId: started.mainCharacterId,
+          patch: { restriction: { kind: "imprisoned" } },
+          duration: "until_changed",
+          reason: "测试",
+          evidence: ["event-restriction-no-summary"],
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(missingSummary, restrictedAdventure, "turn-restriction-no-summary"),
+      (error) => clearingPatchIssue(error, "restriction.summary"),
+    );
+    const longSummary = restrictionTurn(started, "event-restriction-long-summary", {
+      characterStateChanges: [
+        {
+          characterId: started.mainCharacterId,
+          patch: { restriction: { kind: "imprisoned", summary: "长".repeat(201) } },
+          duration: "until_changed",
+          reason: "测试",
+          evidence: ["event-restriction-long-summary"],
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(longSummary, restrictedAdventure, "turn-restriction-long-summary"),
+      (error) => clearingPatchIssue(error, "restriction.summary"),
+    );
+    const notObject = restrictionTurn(started, "event-restriction-not-object", {
+      characterStateChanges: [
+        {
+          characterId: started.mainCharacterId,
+          patch: { restriction: "被关押" },
+          duration: "until_changed",
+          reason: "测试",
+          evidence: ["event-restriction-not-object"],
+        },
+      ],
+    });
+    assert.throws(
+      () =>
+        validateGeneratedTurn(notObject, restrictedAdventure, "turn-restriction-not-object"),
+      (error) => clearingPatchIssue(error, "restriction 必须是对象"),
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("AI 回合设置行动受限后生效，且下一回合受限角色发言触发修复重试", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restriction-flow-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "行动受限流转测试",
+      world: { name: "烛城", premise: "灯火与影子相生。" },
+      player: { name: "旅人", description: "夜行客。" },
+      mainCharacter: {
+        name: "守夜人",
+        role: "更夫",
+        personality: "机敏。",
+        firstMessage: "夜深了。",
+      },
+      additionalCharacters: [
+        {
+          name: "囚犯",
+          role: "被关押的疑犯",
+          personality: "沉默。",
+          initiallyPresent: false,
+        },
+      ],
+      openingScene: "旅人在烛城更楼下落脚。",
+    });
+    const prisonerId = started.additionalCharacterIds[0];
+
+    // 第一轮：模型通过 characterStateChanges 设置行动受限
+    const setRestrictionTurn = restrictionTurn(started, "event-flow-set", {
+      dialogue: [
+        {
+          id: "dialogue-flow-set",
+          speakerId: started.mainCharacterId,
+          content: "城主已下令把囚犯关进地牢。",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+      characterStateChanges: [
+        {
+          characterId: prisonerId,
+          patch: { restriction: { kind: "imprisoned", summary: "被城主关进地牢" } },
+          duration: "until_changed",
+          reason: "城主下令关押囚犯",
+          evidence: ["event-flow-set"],
+        },
+      ],
+      storyDirectionEvaluation: null,
+    });
+    const firstTurn = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "restriction-flow-1",
+        selectedChoiceId: "opening-neutral",
+      }),
+      createTurnId: () => "turn-flow-1",
+      generate: async () => ({
+        content: setRestrictionTurn,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    assert.equal(firstTurn.committedTurn.sequence, 2);
+    let adventure = store.loadAdventure(started.sessionId);
+    const prisonerState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === prisonerId,
+    );
+    assert.equal(prisonerState.state.restriction.kind, "imprisoned");
+    assert.equal(prisonerState.state.restriction.summary, "被城主关进地牢");
+
+    // 第二轮：模型让受限角色发言 → 首轮生成被拒，修复后保持沉默并提交
+    let calls = 0;
+    const invalidSpeakTurn = restrictionTurn(started, "event-flow-speak", {
+      scene: "地牢里传来囚犯的喊叫。",
+      dialogue: [
+        {
+          id: "dialogue-flow-speak",
+          speakerId: prisonerId,
+          content: "放我出去！",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+      storyDirectionEvaluation: null,
+    });
+    const repairedTurn = restrictionTurn(started, "event-flow-speak", {
+      scene: "旅人守夜时查看地牢方向，没有动静。",
+      dialogue: [
+        {
+          id: "dialogue-flow-speak",
+          speakerId: started.mainCharacterId,
+          content: "地牢里没有动静。",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+      storyDirectionEvaluation: null,
+    });
+    const secondTurn = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: "turn-flow-1",
+        idempotencyKey: "restriction-flow-2",
+        selectedChoiceId: "choice-1",
+      }),
+      createTurnId: () => "turn-flow-2",
+      generate: async () => {
+        calls += 1;
+        return {
+          content: calls === 1 ? invalidSpeakTurn : repairedTurn,
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 800 },
+        };
+      },
+    });
+    assert.equal(calls, 2);
+    assert.equal(secondTurn.committedTurn.sequence, 3);
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(
+      adventure.branchState.recentTurns
+        .at(-1)
+        .generatedOutput.turn.dialogue[0].speakerId,
+      started.mainCharacterId,
+    );
+    assert.equal(
+      adventure.branchState.states.find(
+        (state) =>
+          state.entityType === "character_state" &&
+          state.entityId === prisonerId,
+      ).state.restriction.kind,
+      "imprisoned",
     );
   } finally {
     database.close();

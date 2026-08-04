@@ -33,7 +33,7 @@
 
 | `domain` | 支持的 `operation` | 主要内容 |
 | --- | --- | --- |
-| `characters` | `create`、`update`、`set_presence`、`set_active` | 人物卡、角色当前状态与在场状态 |
+| `characters` | `create`、`update`、`set_presence`、`set_active`、`set_restriction` | 人物卡、角色当前状态、在场状态与行动受限 |
 | `locations` | `create`、`update`、`set_current`、`set_active` | 地点资料、当前位置与默认登场人物 |
 | `story_modules` | `create`、`update`、`set_active` | 任务目标、完成条件、前置关系与启停 |
 | `foreshadowing` | `create`、`update`、`delete` | 伏笔（关键词、出现/回收条件、回收概要） |
