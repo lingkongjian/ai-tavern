@@ -226,6 +226,14 @@ test("generates, validates and atomically commits a DeepSeek story turn", async 
     assert.match(receivedMessages[0].content, /不要仅因内容亲密而回避/);
     assert.match(receivedMessages[0].content, /成年角色双方当前自愿/);
     assert.match(receivedMessages[0].content, /不得替玩家角色同意/);
+    // 成人内容调整：重要信息不得因题材回避而删改；防御性表述简化为身份不明确底线
+    assert.match(receivedMessages[0].content, /重要信息传递/);
+    assert.match(receivedMessages[0].content, /重要信息可能隐藏在包括亲密场景在内的任何场景中/);
+    assert.match(receivedMessages[0].content, /身份不明确的角色不得参与亲密内容/);
+    assert.match(receivedMessages[0].content, /任何参与者拒绝或撤回同意时/);
+    // 防兜圈子规则 30
+    assert.match(receivedMessages[0].content, /30\. 长剧情防兜圈子/);
+    assert.match(receivedMessages[0].content, /不是可以重复表演的内容/);
     assert.match(receivedMessages[0].content, /longTermMemory/);
     assert.match(receivedMessages[1].content, /opening-neutral/);
     assert.match(receivedMessages[1].content, /守钟人没有立刻相信旅人/);
@@ -2696,6 +2704,10 @@ test("跨日状态演化规则文本与词条剩余天数注入上下文", async
     assert.match(systemPrompt, /29\. 跨日状态演化/);
     assert.match(systemPrompt, /时间推进后必须演化词条/);
     assert.match(systemPrompt, /one_day 或 several_days/);
+    // 规则 30：长剧情防兜圈子（多回合重复拦截与推进要求）
+    assert.match(systemPrompt, /30\. 长剧情防兜圈子/);
+    assert.match(systemPrompt, /最近数回合内出现过的高相似场景会被后端判定为重复/);
+    assert.match(systemPrompt, /chapterSummaries 和 longTermMemory 是旧信息的参考来源/);
     // 规则 26 追加的状态一致性强制
     assert.match(systemPrompt, /状态一致性强制/);
 

@@ -55,8 +55,27 @@ export function detectSceneRepetition(
   };
 }
 
+/**
+ * 与最近若干回合的 scene 逐一比较（含上一回合），任一相似度达到阈值即判定重复。
+ * 用于拦截"隔几回合后语义重复"的多回合兜圈子：只要最近窗口内出现过高度相似
+ * 的场景，就要求重写推进。返回窗口内最高相似度，供错误提示展示。
+ */
+export function detectSceneRepetitionAgainstRecent(
+  currentScene: string,
+  recentScenes: string[],
+  threshold: number = DEFAULT_THRESHOLD,
+): SceneRepetitionResult {
+  let worst: SceneRepetitionResult = { repeated: false, similarity: 0 };
+  for (const scene of recentScenes) {
+    const result = detectSceneRepetition(currentScene, scene, threshold);
+    if (result.repeated) return result;
+    if (result.similarity > worst.similarity) worst = result;
+  }
+  return worst;
+}
+
 export function repetitionFixInstruction(similarity: number) {
-  return `上一个 JSON 的剧情与上一回合高度重复（相似度 ${Math.round(
+  return `上一个 JSON 的剧情与最近几回合高度重复（相似度 ${Math.round(
     similarity * 100,
-  )}%）。只保留本轮需要的新发展，重写 scene、events 与 dialogue 以推进剧情，不要复述已经展示过的内容，并重新返回完整 JSON。`;
+  )}%）。只保留本轮需要的新发展，重写 scene、events 与 dialogue 以推进剧情，不要复述已经展示过的内容或重复近期已出现的桥段与结论，并重新返回完整 JSON。`;
 }

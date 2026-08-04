@@ -8,6 +8,7 @@ import { openLocalDatabase } from "../db/index.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
 import {
   detectSceneRepetition,
+  detectSceneRepetitionAgainstRecent,
   sceneSimilarity,
 } from "../lib/story/重复检测.ts";
 import { parsePlayerTurnRequest } from "../lib/story/回合协议.ts";
@@ -108,6 +109,90 @@ test("scene similarity distinguishes repeated and advancing scenes", () => {
 
   assert.ok(sceneSimilarity("", opening) === 0);
   assert.ok(sceneSimilarity(opening, "") === 0);
+});
+
+test("跨回合重复矩阵：相邻相似回归仍拒、隔 2-4 回合相似新拒、窗口内无相似通过", () => {
+  const opening =
+    "旅人在黄昏来到钟楼。守钟人把钥匙压在掌心，平静地等着旅人开口。";
+  const repeated =
+    "旅人在黄昏来到钟楼。守钟人把钥匙压在掌心，平静地等着旅人开口。这一次，她向前迈了一步。";
+  const advanced =
+    "守钟人侧身让开，旅人看见石室中央的铜钟正逆流滴水，水珠沿钟身向上攀爬。";
+  const archives =
+    "旅人在钟楼底层翻检旧档案，找到一张泛黄的潮汐表，日期停在三年前。";
+  const rooftop =
+    "两人登上钟楼顶层，塔钟的指针倒转一圈，潮水从西岸退回河道。";
+
+  // 回归：与上一回合高度相似仍拒（窗口只含上一回合）
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(repeated, [opening]).repeated,
+    true,
+  );
+  // 回归：相邻相似仍拒（最近 4 回合窗口含上一回合，即隔 0 回合）
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(
+      `${rooftop}。她伸手接住一枚坠落的铜钉。`,
+      [opening, advanced, archives, rooftop],
+    ).repeated,
+    true,
+  );
+
+  // 新拦截：与隔 1 回合（窗口倒数第 3 条）的场景相似 → 拒
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(
+      `${archives}。她再次核对那串退潮标记。`,
+      [opening, advanced, archives, rooftop],
+    ).repeated,
+    true,
+  );
+  // 新拦截：与隔 2 回合（窗口倒数第 4 条）的场景相似 → 拒
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(
+      `${advanced}。她伸手碰了一下钟身。`,
+      [opening, advanced, archives, rooftop],
+    ).repeated,
+    true,
+  );
+  // 新拦截：与隔 3 回合（窗口倒数第 5 条以外已超出窗口，此处为窗口首条）的场景相似 → 拒
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(repeated, [
+      opening,
+      advanced,
+      archives,
+      rooftop,
+    ]).repeated,
+    true,
+  );
+  // 新拦截：与上一回合相同的开篇句加新进展（回归兜底）→ 拒
+  const repeatedResult = detectSceneRepetitionAgainstRecent(repeated, [
+    opening,
+    advanced,
+    archives,
+    rooftop,
+  ]);
+  assert.equal(repeatedResult.repeated, true);
+  assert.ok(repeatedResult.similarity >= 0.55);
+
+  // 通过：最近 4 回合窗口内无相似场景
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(rooftop, [
+      opening,
+      advanced,
+      repeated,
+      archives,
+    ]).repeated,
+    false,
+  );
+  // 通过：窗口内出现短场景（不足最小长度）不误伤
+  assert.equal(
+    detectSceneRepetitionAgainstRecent(advanced, [
+      "短场景。",
+      opening,
+      archives,
+      rooftop,
+    ]).repeated,
+    false,
+  );
 });
 
 test("repeated scene triggers one advancement repair and commits the fixed turn", async () => {
@@ -219,6 +304,142 @@ test("persistently repeated scenes fail the turn without committing", async () =
 
     const adventure = store.loadAdventure(started.sessionId);
     assert.equal(adventure.branchState.branch.headTurnId, started.openingTurnId);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("与数回合前场景重复（非相邻）同样触发一次推进修复并提交", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const opening =
+      "旅人在黄昏来到钟楼。守钟人把钥匙压在掌心，平静地等着旅人开口。";
+    const started = store.startAdventure({
+      campaignName: "跨回合重复检测测试",
+      world: { name: "潮汐城", premise: "钟声改变潮水。" },
+      player: { name: "旅人", description: "测绘师。" },
+      mainCharacter: {
+        name: "守钟人",
+        role: "钟楼看守",
+        personality: "警觉但守信。",
+      },
+      openingScene: opening,
+      storyModules: [],
+    });
+
+    // 先直接落库 3 个互不重复的回合，使最近 4 回合窗口 = [开局, 2, 3, 4]
+    let headTurnId = started.openingTurnId;
+    const committedScenes = [
+      "守钟人侧身让开，旅人看见石室中央的铜钟正逆流滴水，水珠沿钟身向上攀爬。",
+      "旅人在钟楼底层翻检旧档案，找到一张泛黄的潮汐表，日期停在三年前。",
+      "两人登上钟楼顶层，塔钟的指针倒转一圈，潮水从西岸退回河道。",
+    ];
+    for (const [index, scene] of committedScenes.entries()) {
+      const committed = store.commitTurn({
+        sessionId: started.sessionId,
+        branchId: started.branchId,
+        expectedHeadTurnId: headTurnId,
+        idempotencyKey: `gap-turn-${index + 2}`,
+        playerInput: {
+          roleplay: { mode: "action", content: `推进第 ${index + 2} 段调查` },
+        },
+        generatedOutput: {
+          schemaVersion: "1.0.0",
+          turn: {
+            scene,
+            events: [
+              {
+                id: `gap-event-${index + 2}`,
+                type: "scene_advance",
+                summary: "剧情推进。",
+                characterIds: [
+                  started.playerCharacterId,
+                  started.mainCharacterId,
+                ],
+                locationId: "clock-tower",
+              },
+            ],
+            dialogue: [],
+          },
+          stateCommit: {
+            sceneTransition: {
+              locationId: "clock-tower",
+              locationName: "逆流钟楼",
+              locationDescription: "铜钟悬在石室中央。",
+              presentCharacterIds: [
+                started.playerCharacterId,
+                started.mainCharacterId,
+              ],
+              reason: "仍在钟楼。",
+              evidence: [`gap-event-${index + 2}`],
+            },
+            characterStateChanges: [],
+            relationshipChanges: [],
+            characterCardChanges: [],
+            worldBookChanges: [],
+            storyDirectionEvaluation: null,
+            summaryPatch: scene,
+          },
+          warnings: [],
+        },
+        summaryPatch: scene,
+        events: [
+          {
+            id: `gap-event-${index + 2}`,
+            eventType: "scene_advance",
+            summary: "剧情推进。",
+          },
+        ],
+      });
+      headTurnId = committed.id;
+    }
+
+    const repeatedOpening =
+      "旅人在黄昏来到钟楼。守钟人把钥匙压在掌心，平静地等着旅人开口。这一次，她向前迈了一步。";
+    const trulyAdvanced =
+      "潮水退尽后，钟楼底层露出一道暗门，旅人听见门后传来规律的敲击声。";
+    const turnId = "turn-gap-repetition";
+    let generationCalls = 0;
+    const repairMessages = [];
+    const result = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: headTurnId,
+        idempotencyKey: "request-gap-repetition",
+        customChoice: "继续调查钟楼内部。",
+      }),
+      createTurnId: () => turnId,
+      generate: async (messages) => {
+        generationCalls += 1;
+        if (generationCalls === 1) {
+          return {
+            content: validTurnContent(started, repeatedOpening),
+            model: "deepseek-v4-flash",
+            usage: { totalTokens: 800 },
+          };
+        }
+        repairMessages.push(messages.at(-1).content);
+        return {
+          content: validTurnContent(started, trulyAdvanced),
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 900 },
+        };
+      },
+    });
+
+    // 与开局场景（3 个回合之前）高度相似，仍需一次推进修复
+    assert.equal(generationCalls, 2);
+    assert.match(repairMessages[0], /最近几回合/);
+    assert.match(repairMessages[0], /高度重复/);
+    assert.match(repairMessages[0], /推进剧情/);
+    assert.equal(result.committedTurn.sequence, 5);
+    assert.equal(
+      result.adventure.branchState.recentTurns.at(-1).generatedOutput.turn
+        .scene,
+      trulyAdvanced,
+    );
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

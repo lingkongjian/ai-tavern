@@ -14,7 +14,7 @@ import {
 } from "../ai/活动配置.ts";
 import { listProfileRecords } from "../ai/模型配置文件.ts";
 import {
-  detectSceneRepetition,
+  detectSceneRepetitionAgainstRecent,
   repetitionFixInstruction,
 } from "./重复检测.ts";
 import {
@@ -663,7 +663,7 @@ async function generateValidatedTurn(input: {
   adventure: ReturnType<LocalStoryStore["loadAdventure"]>;
   turnId: string;
   generate: StoryJsonGenerator;
-  previousScene?: string;
+  recentScenes?: string[];
 }) {
   let generation = await input.generate(input.messages);
   generation = {
@@ -681,12 +681,15 @@ async function generateValidatedTurn(input: {
 
   let repetitionSimilarity: number | undefined;
   function checkRepetition(scene: string) {
-    if (!input.previousScene) return;
-    const repetition = detectSceneRepetition(scene, input.previousScene);
+    if (!input.recentScenes || input.recentScenes.length === 0) return;
+    const repetition = detectSceneRepetitionAgainstRecent(
+      scene,
+      input.recentScenes,
+    );
     if (repetition.repeated) {
       repetitionSimilarity = repetition.similarity;
       throw new GeneratedTurnValidationError([
-        `本轮场景与上一回合高度重复（相似度 ${Math.round(
+        `本轮场景与最近 ${input.recentScenes.length} 回合中的场景高度重复（相似度 ${Math.round(
           repetition.similarity * 100,
         )}%），剧情无法推进。`,
       ]);
@@ -1506,17 +1509,22 @@ export async function advanceAdventureTurn(
   const generate =
     options.generate ??
     defaultStoryGenerator(options.onStreamDelta, options.onFailover);
-  const previousTurn = adventure.branchState.recentTurns.at(-1);
-  const previousOutput = isJsonObject(previousTurn?.generatedOutput)
-    ? previousTurn.generatedOutput
-    : undefined;
-  const previousTurnObject = isJsonObject(previousOutput?.turn)
-    ? previousOutput.turn
-    : undefined;
-  const previousScene =
-    typeof previousTurnObject?.scene === "string"
-      ? previousTurnObject.scene
-      : undefined;
+  // 跨回合防兜圈子：取最近 4 回合（含上一回合）的 scene 逐一比较，
+  // 任一高度相似即触发修复重试，拦截隔几回合后语义重复的绕圈。
+  const recentScenes = adventure.branchState.recentTurns
+    .slice(-4)
+    .map((recentTurn) => {
+      const recentOutput = isJsonObject(recentTurn.generatedOutput)
+        ? recentTurn.generatedOutput
+        : undefined;
+      const recentTurnObject = isJsonObject(recentOutput?.turn)
+        ? recentOutput.turn
+        : undefined;
+      return typeof recentTurnObject?.scene === "string"
+        ? recentTurnObject.scene
+        : undefined;
+    })
+    .filter((scene): scene is string => scene !== undefined);
   const {
     generation,
     billedUsage,
@@ -1530,7 +1538,7 @@ export async function advanceAdventureTurn(
     adventure,
     turnId,
     generate,
-    ...(previousScene !== undefined ? { previousScene } : {}),
+    ...(recentScenes.length > 0 ? { recentScenes } : {}),
   });
   const stateMutations = createStateMutations({
     adventure,
@@ -1773,8 +1781,9 @@ export async function regenerateLatestAdventureTurn(
     adventure: prepared.adventureBeforeTurn,
     turnId: prepared.currentTurn.id,
     generate,
+    // 重生成只需保证新版本不再与待替换旧版回合重复。
     ...(previousRegenerateScene !== undefined
-      ? { previousScene: previousRegenerateScene }
+      ? { recentScenes: [previousRegenerateScene] }
       : {}),
   });
   const stateMutations = createStateMutations({

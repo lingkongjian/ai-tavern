@@ -367,6 +367,139 @@ function extractTurnEntries(turn: StoryMemoryTurn): ExtractedEntry[] {
   return result.slice(0, 12);
 }
 
+/** 章节摘要结构化组合（纯本地数据，不调模型）：
+ * 按重要事件（每回合前 2 条，总量 ≤2400 字符）、剧情走向（storyDirectionEvaluation
+ * 的 active/completed 变化）、状态变化（characterStateChanges 的属性/词条/限制）、
+ * 关系变化（角色对 + delta）、地点移动（sceneTransition，去重）组合；summaryPatch
+ * 作为补充，结构化内容少时回退到原有逐回合拼接。总长度限制 3200 字符。 */
+function buildChapterSummary(group: StoryMemoryTurn[], first: StoryMemoryTurn, last: StoryMemoryTurn) {
+  const eventLines: string[] = [];
+  const directionLines: string[] = [];
+  const stateLines: string[] = [];
+  const relationshipLines: string[] = [];
+  const locationLines: string[] = [];
+  const seenDirections = new Set<string>();
+  const seenStateKeys = new Set<string>();
+  const seenLocations = new Set<string>();
+  let eventCharacters = 0;
+
+  for (const turn of group) {
+    const output = turn.generatedOutput;
+    const generatedTurn = isObject(output.turn) ? output.turn : {};
+    const stateCommit = isObject(output.stateCommit) ? output.stateCommit : {};
+
+    for (const event of objects(generatedTurn.events).slice(0, 2)) {
+      const summary = text(event.summary);
+      if (!summary) continue;
+      const line = `- [${text(event.type) || "剧情事件"}] ${summary}`;
+      if (eventCharacters + line.length > 2400) break;
+      eventCharacters += line.length;
+      eventLines.push(line);
+    }
+
+    const evaluation = isObject(stateCommit.storyDirectionEvaluation)
+      ? stateCommit.storyDirectionEvaluation
+      : {};
+    const directionStatus = text(evaluation.status);
+    const directionReason = text(evaluation.reason);
+    if (
+      (directionStatus === "active" || directionStatus === "completed") &&
+      directionReason
+    ) {
+      const key = `${directionStatus}:${directionReason}`;
+      if (!seenDirections.has(key)) {
+        seenDirections.add(key);
+        directionLines.push(
+          `- ${directionStatus === "completed" ? "已完成" : "进行中"}：${directionReason}`,
+        );
+      }
+    }
+
+    for (const change of objects(stateCommit.characterStateChanges)) {
+      const characterId = text(change.characterId);
+      if (!characterId) continue;
+      const patch = isObject(change.patch) ? change.patch : {};
+      const details: string[] = [];
+      if (isObject(patch.attributes)) {
+        details.push(`属性变化：${Object.keys(patch.attributes).join("、")}`);
+      }
+      if (patch.restriction === null) {
+        details.push("解除限制");
+      } else if (isObject(patch.restriction)) {
+        const restriction = patch.restriction;
+        details.push(
+          `设置限制：${text(restriction.summary) || text(restriction.kind) || "受限"}`,
+        );
+      }
+      if (Array.isArray(patch.statuses)) {
+        const names = patch.statuses
+          .map((item) => text(isObject(item) ? item.name : undefined))
+          .filter(Boolean)
+          .join("、");
+        details.push(names ? `状态词条：${names}` : "更新状态词条");
+      } else if (patch.statuses === null) {
+        details.push("清除全部状态词条");
+      }
+      const reason = text(change.reason);
+      const line = `- ${characterId}：${details.join("；") || reason || "状态变化"}${reason && details.length > 0 ? `（${reason}）` : ""}`;
+      const key = `${characterId}:${reason}`;
+      if (!seenStateKeys.has(key)) {
+        seenStateKeys.add(key);
+        stateLines.push(line);
+      }
+    }
+
+    for (const change of objects(stateCommit.relationshipChanges)) {
+      const source = text(change.sourceCharacterId);
+      const target = text(change.targetCharacterId);
+      if (!source || !target) continue;
+      const dimension = text(change.dimension) || "关系";
+      const delta = typeof change.delta === "number" ? change.delta : 0;
+      const reason = text(change.reason);
+      // 同一角色对的多次关系变化都保留（delta 不同则信息不同）
+      relationshipLines.push(
+        `- ${source} → ${target}：${dimension} ${delta >= 0 ? "+" : ""}${delta}${reason ? `（${reason}）` : ""}`,
+      );
+    }
+
+    const transition = isObject(stateCommit.sceneTransition)
+      ? stateCommit.sceneTransition
+      : {};
+    const locationId = text(transition.locationId);
+    if (locationId && !seenLocations.has(locationId)) {
+      seenLocations.add(locationId);
+      const locationName = text(transition.locationName);
+      locationLines.push(`- ${locationName || locationId}（${locationId}）`);
+    }
+  }
+
+  const sections: Array<[string, string[]]> = [];
+  if (eventLines.length > 0) sections.push(["重要事件", eventLines]);
+  if (directionLines.length > 0) sections.push(["剧情走向", directionLines]);
+  if (stateLines.length > 0) sections.push(["状态变化", stateLines]);
+  if (relationshipLines.length > 0) sections.push(["关系变化", relationshipLines]);
+  if (locationLines.length > 0) sections.push(["地点移动", locationLines]);
+  const structured = sections
+    .map(([title, lines]) => `${title}：\n${lines.join("\n")}`)
+    .join("\n");
+
+  const fallbackLines = group.flatMap((turn) => {
+    const line = turn.summaryPatch.trim();
+    return line ? [`第 ${turn.sequence} 回合：${line}`] : [];
+  });
+  const fallback = fallbackLines.join("\n").slice(0, 3200);
+
+  // 结构化内容过少（不足 100 字符）时回退原有逐回合拼接，避免摘要过空；
+  // 否则结构化优先，summaryPatch 作为补充，总长度限制在 3200 字符内。
+  if (structured.length < 100) {
+    return fallback.trim() || `第 ${first.sequence} 至 ${last.sequence} 回合。`;
+  }
+  return (
+    [structured, fallback].filter(Boolean).join("\n").slice(0, 3200) ||
+    `第 ${first.sequence} 至 ${last.sequence} 回合。`
+  );
+}
+
 export function rebuildStoryMemory(input: {
   database: DatabaseSync;
   sessionId: string;
@@ -440,13 +573,7 @@ export function rebuildStoryMemory(input: {
     if (group.length === 0) continue;
     const first = group[0];
     const last = group.at(-1)!;
-    const summary = group
-      .flatMap((turn) => {
-        const line = turn.summaryPatch.trim();
-        return line ? [`第 ${turn.sequence} 回合：${line}`] : [];
-      })
-      .join("\n")
-      .slice(0, 3200) || `第 ${first.sequence} 至 ${last.sequence} 回合。`;
+    const summary = buildChapterSummary(group, first, last);
     const characterIds = new Set<string>();
     const locationIds = new Set<string>();
     for (const turn of group) {
