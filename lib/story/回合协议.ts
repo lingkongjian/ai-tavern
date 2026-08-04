@@ -12,6 +12,34 @@ import {
 
 export type RoleplayMode = "speech" | "action" | "mixed";
 
+/**
+ * 游戏内时间模式：
+ * - "story"：剧情驱动（缺省，兼容旧会话）——gameTimeDay 由
+ *   sceneTransition.timeAdvance / gameTimeDayNext 显式声明推进；
+ * - "turn_based"：五回合一天——每回合自动推进一个时段
+ *   （早上→上午→中午→下午→晚上），每 5 回合进入下一天，
+ *   模型的 timeAdvance / gameTimeDayNext 声明被忽略。
+ */
+export type TimeMode = "story" | "turn_based";
+
+/** 五回合一天模式的五个时段（按顺序每回合推进一个）。 */
+export const DAY_PHASES = ["早上", "上午", "中午", "下午", "晚上"] as const;
+
+export type DayPhase = (typeof DAY_PHASES)[number];
+
+/**
+ * 由 phaseOffset（从切换时刻起累计的时段序号，从 0 开始，每回合 +1）推导时段：
+ * DAY_PHASES[phaseOffset % 5]。phaseOffset 为负时按 5 取模回绕（历史回合还原
+ * 用 phaseOffset − 1 反推该回合所处时段）。缺省/无效值按 0（早上）处理。
+ */
+export function dayPhaseOf(phaseOffset: number | undefined): DayPhase {
+  const offset =
+    typeof phaseOffset === "number" && Number.isFinite(phaseOffset)
+      ? phaseOffset
+      : 0;
+  return DAY_PHASES[((offset % DAY_PHASES.length) + DAY_PHASES.length) % DAY_PHASES.length];
+}
+
 /** 行动受限状态类型白名单：剧情中角色死亡、被关押、被控制等"行动受限"因素。 */
 export const RESTRICTION_KINDS = [
   "dead",
@@ -768,6 +796,7 @@ export function validateGeneratedTurn(
   value: JsonObject,
   adventure: LoadedAdventure,
   turnId: string,
+  options: { timeMode?: TimeMode } = {},
 ): ValidatedGeneratedTurn {
   const issues: string[] = [];
   const normalizationWarnings: string[] = [];
@@ -1906,12 +1935,15 @@ export function validateGeneratedTurn(
   }
 
   // 时间短语一致性检测（警告级）：正文暗示跨日/跨夜但本轮未声明日期推进 → 提醒，不拒绝回合。
-  for (const warning of collectTimePhraseConsistencyWarnings({
-    scene,
-    events,
-    sceneTransition,
-  })) {
-    normalizationWarnings.push(warning);
+  // 五回合一天模式下日期由系统按回合推导（模型声明会被忽略），该警告没有意义，不触发。
+  if (options.timeMode !== "turn_based") {
+    for (const warning of collectTimePhraseConsistencyWarnings({
+      scene,
+      events,
+      sceneTransition,
+    })) {
+      normalizationWarnings.push(warning);
+    }
   }
 
   const warnings = [

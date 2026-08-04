@@ -5349,6 +5349,57 @@ a {
   gap: 10px;
 }
 
+.time-mode-settings {
+  display: grid;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--line);
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.time-mode-settings label {
+  display: grid;
+  gap: 6px;
+}
+
+.time-mode-settings label span {
+  color: #796c63;
+  font-size: 0.58rem;
+}
+
+.time-mode-settings label small {
+  color: #8d7f73;
+  font-size: 0.54rem;
+  line-height: 1.55;
+}
+
+.time-mode-settings select {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 3px;
+  color: #c1afa1;
+  background: rgb(11 9 10 / 48%);
+  font: inherit;
+}
+
+.time-mode-settings button {
+  min-height: 35px;
+  padding: 8px 11px;
+  border: 1px solid rgb(212 124 69 / 22%);
+  border-radius: 3px;
+  color: #aa7c66;
+  background: rgb(50 31 31 / 52%);
+  cursor: pointer;
+  font-size: 0.59rem;
+}
+
+.time-mode-settings button:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
 .memory-settings label,
 .memory-entry-list form label {
   display: grid;
@@ -5535,6 +5586,10 @@ a {
 
 @media (max-width: 720px) {
   .memory-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .time-mode-settings {
     grid-template-columns: 1fr;
   }
 

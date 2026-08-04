@@ -32,11 +32,14 @@ import {
   TurnRegenerationError,
 } from "../storage/story-store.ts";
 import {
+  DAY_PHASES,
   GeneratedTurnValidationError,
+  dayPhaseOf,
   normalizeGeneratedTurnVersion,
   type GeneratedSceneTransition,
   type PlayerTurnRequest,
   type SceneTimeAdvance,
+  type TimeMode,
   validateGeneratedTurn,
 } from "./回合协议.ts";
 import {
@@ -158,6 +161,21 @@ function asNumber(value: JsonValue | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/** 读取 session_state.core 的游戏内时间模式（缺省 story，旧会话/旧存档兼容）。 */
+function readTimeMode(state: JsonObject | undefined): TimeMode {
+  return state?.timeMode === "turn_based" ? "turn_based" : "story";
+}
+
+/** 从已加载冒险读取当前时间模式（供回合校验等阶段使用）。 */
+function readSessionTimeMode(
+  adventure: ReturnType<LocalStoryStore["loadAdventure"]>,
+): TimeMode {
+  const sessionState = adventure.branchState.states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  );
+  return readTimeMode(sessionState?.state);
+}
+
 // 游戏内时间只由剧情推进驱动：timeAdvance 缺省视为时间基本不变（相当于 moment），
 // 只有剧情显式声明 hours/one_day/several_days 时才对天数产生影响（hours 不跨天）。
 function timeAdvanceDayDelta(
@@ -166,13 +184,26 @@ function timeAdvanceDayDelta(
   return timeAdvance === "several_days" ? 3 : timeAdvance === "one_day" ? 1 : 0;
 }
 
-// 本回合结束时的游戏内日期（确定性）：gameTimeDayNext 显式声明时以其为准
-// （两者都提供时 gameTimeDayNext 优先，timeAdvance 仅表示时间幅度）；
-// 否则沿用 timeAdvance 的推进语义。
+/**
+ * 本回合结束时的游戏内日期（确定性）：
+ * - story 模式：gameTimeDayNext 显式声明时以其为准（两者都提供时 gameTimeDayNext
+ *   优先，timeAdvance 仅表示时间幅度），否则沿用 timeAdvance 的推进语义；
+ * - turn_based 模式（五回合一天）：固定推导——phaseOffset 每回合 +1，
+ *   跨 5 的倍数（phaseOffset+1 为 5 的倍数）时 gameTimeDay +1；
+ *   timeAdvance / gameTimeDayNext 一律忽略。
+ */
 function resolvedDayAfterTurn(
   currentDay: number,
   transition: GeneratedSceneTransition | null,
+  timeMode: TimeMode,
+  phaseOffset: number,
 ): number {
+  if (timeMode === "turn_based") {
+    const nextPhase = phaseOffset + 1;
+    return nextPhase % DAY_PHASES.length === 0
+      ? currentDay + 1
+      : currentDay;
+  }
   if (transition?.gameTimeDayNext !== undefined) {
     return transition.gameTimeDayNext;
   }
@@ -697,11 +728,13 @@ async function generateValidatedTurn(input: {
   }
 
   let validated: ReturnType<typeof validateGeneratedTurn>;
+  const validationTimeMode = readSessionTimeMode(input.adventure);
   try {
     validated = validateGeneratedTurn(
       generation.content,
       input.adventure,
       input.turnId,
+      { timeMode: validationTimeMode },
     );
     checkRepetition(validated.turn.scene);
   } catch (error) {
@@ -736,6 +769,7 @@ async function generateValidatedTurn(input: {
       generation.content,
       input.adventure,
       input.turnId,
+      { timeMode: validationTimeMode },
     );
     checkRepetition(validated.turn.scene);
   }
@@ -876,12 +910,38 @@ function createStateMutations(input: {
     );
 
     const timeAdvance = transition.timeAdvance ?? "moment";
+    const timeMode = readTimeMode(sessionState?.state);
     const currentDay =
       typeof sessionState?.state.gameTimeDay === "number"
         ? sessionState.state.gameTimeDay
         : 1;
-    const dayAfterTurn = resolvedDayAfterTurn(currentDay, transition);
-    if (dayAfterTurn !== currentDay) {
+    const phaseOffset = asNumber(sessionState?.state.phaseOffset);
+    const dayAfterTurn = resolvedDayAfterTurn(
+      currentDay,
+      transition,
+      timeMode,
+      phaseOffset,
+    );
+    if (timeMode === "turn_based") {
+      // 五回合一天：每回合推进一个时段（phaseOffset + 1），跨 5 的倍数时进入下一天；
+      // 模型的 timeAdvance / gameTimeDayNext 声明被忽略，日期只由回合推导。
+      const nextPhase = phaseOffset + 1;
+      const nextDayPhase = dayPhaseOf(nextPhase);
+      mutations.push({
+        entityType: "session_state",
+        entityId: "core",
+        operation: "merge",
+        value: {
+          phaseOffset: nextPhase,
+          ...(dayAfterTurn !== currentDay ? { gameTimeDay: dayAfterTurn } : {}),
+        },
+        reason:
+          dayAfterTurn !== currentDay
+            ? `回合制时间推进：每回合推进一个时段，进入第 ${dayAfterTurn} 天的「${nextDayPhase}」时段`
+            : `回合制时间推进：进入「${nextDayPhase}」时段（第 ${dayAfterTurn} 天）`,
+        evidence: transition.evidence,
+      });
+    } else if (dayAfterTurn !== currentDay) {
       mutations.push({
         entityType: "session_state",
         entityId: "core",
@@ -1150,6 +1210,8 @@ function createStateMutations(input: {
   const currentDayAfterTurn = resolvedDayAfterTurn(
     currentDayBeforeTurn,
     generated.stateCommit.sceneTransition,
+    readTimeMode(sessionStateForDay?.state),
+    asNumber(sessionStateForDay?.state.phaseOffset),
   );
   const armedTriggers = adventure.branchState.states.filter(
     (state) =>

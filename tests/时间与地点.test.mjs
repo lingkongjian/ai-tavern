@@ -7,6 +7,7 @@ import test from "node:test";
 import { openLocalDatabase } from "../db/index.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
 import {
+  dayPhaseOf,
   normalizeGeneratedTurnVersion,
   parsePlayerTurnRequest,
   validateGeneratedTurn,
@@ -876,8 +877,7 @@ test("时间短语一致性警告：正文暗示跨日但未声明日期推进�
   }
 });
 
-test("gameTimeDayNext 驱动的期限到期回归：任务 deadlineDay、触发器 deadline、词条 expiresAtDay 自动受益", async () => {
-  const { directory, database, store } = temporaryDatabase();
+test("gameTimeDayNext 驱动的期限到期回归：任务 deadlineDay、触发器 deadline、词条 expiresAtDay 自动受益", async () => {  const { directory, database, store } = temporaryDatabase();
   try {
     const started = startP1Adventure(store, {
       triggers: [
@@ -969,6 +969,481 @@ test("gameTimeDayNext 驱动的期限到期回归：任务 deadlineDay、触发�
       0,
       "expiresAtDay ≤ 当前日期的词条随日期推进自动移除",
     );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function findCore(adventure) {
+  return adventure.branchState.states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  );
+}
+
+test("五回合一天：切换后每回合推进一个时段、每 5 回合进入下一天，时段由 phaseOffset 推导", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    // story → turn_based：日期保留、phaseOffset 置 0
+    const switched = store.updateTimeMode(started.sessionId, "turn_based");
+    assert.equal(switched.timeMode, "turn_based");
+    assert.equal(switched.phaseOffset, 0);
+    assert.equal(switched.gameTimeDay, 1, "切换不改变当前游戏内日期");
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(findCore(adventure).state.timeMode, "turn_based");
+    assert.equal(findCore(adventure).state.phaseOffset, 0);
+
+    // 连续 6 回合：每回合开始时时段依次为
+    // 早上→上午→中午→下午→晚上→早上；第 5 回合结束进入第 2 天
+    const expectedPhases = ["早上", "上午", "中午", "下午", "晚上", "早上"];
+    for (const [index, expectedPhase] of expectedPhases.entries()) {
+      const turnNumber = index + 1;
+      const before = store.loadAdventure(started.sessionId);
+      const coreBefore = findCore(before).state;
+      assert.equal(
+        dayPhaseOf(coreBefore.phaseOffset),
+        expectedPhase,
+        `第 ${turnNumber} 回合开始时应处于「${expectedPhase}」时段`,
+      );
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: `request-tb-${turnNumber}`,
+          customChoice: `第 ${turnNumber} 回合继续调查。`,
+        }),
+        createTurnId: () => `turn-tb-${turnNumber}`,
+        generate: async () => ({
+          content: turnContent(started, `旅人继续在钟楼调查（回合 ${turnNumber}）。`, {
+            eventId: `event-tb-${turnNumber}`,
+            evidenceId: `event-tb-${turnNumber}`,
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+      adventure = store.loadAdventure(started.sessionId);
+      const core = findCore(adventure).state;
+      assert.equal(
+        core.phaseOffset,
+        turnNumber,
+        `第 ${turnNumber} 回合提交后 phaseOffset 应为 ${turnNumber}`,
+      );
+      assert.equal(
+        core.gameTimeDay,
+        turnNumber >= 5 ? 2 : 1,
+        `第 ${turnNumber} 回合提交后游戏内日期`,
+      );
+      // 历史回看还原：提交后 phaseOffset 快照反推本回合时段
+      const savedTurn = adventure.branchState.recentTurns.find(
+        (turn) => turn.id === `turn-tb-${turnNumber}`,
+      );
+      const phaseChange = savedTurn.stateChanges.find(
+        (change) =>
+          change.entityType === "session_state" &&
+          change.entityId === "core" &&
+          typeof change.payload.phaseOffset === "number",
+      );
+      assert.ok(phaseChange, "回合提交应记录 phaseOffset 状态变更快照");
+      assert.equal(
+        dayPhaseOf(phaseChange.payload.phaseOffset - 1),
+        expectedPhase,
+        `第 ${turnNumber} 回合历史回看时段应还原为「${expectedPhase}」`,
+      );
+    }
+    assert.equal(findCore(adventure).state.gameTimeDay, 2);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("五回合一天：模型输出的 timeAdvance / gameTimeDayNext 被忽略，日期仍按回合推导", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    store.updateTimeMode(started.sessionId, "turn_based");
+
+    const before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-tb-ignored",
+        customChoice: "继续调查。",
+      }),
+      createTurnId: () => "turn-tb-ignored",
+      generate: async () => ({
+        content: turnContent(started, "旅人连日赶路，数日后抵达城外。", {
+          eventId: "event-tb-ignored",
+          evidenceId: "event-tb-ignored",
+          sceneTransition: { timeAdvance: "several_days", gameTimeDayNext: 99 },
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    const core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.phaseOffset, 1, "模型声明不改变 phaseOffset 推进");
+    assert.equal(
+      core.gameTimeDay,
+      1,
+      "turn_based 下 timeAdvance/gameTimeDayNext 被忽略，日期只由回合推导",
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("时间模式切换：turn_based → story 恢复剧情驱动推进，切回 turn_based 重新置 0", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    store.updateTimeMode(started.sessionId, "turn_based");
+
+    // 推进 6 回合：第 2 天、phaseOffset 6
+    for (const index of [1, 2, 3, 4, 5, 6]) {
+      const before = store.loadAdventure(started.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: `request-tb-switch-${index}`,
+          customChoice: "继续调查。",
+        }),
+        createTurnId: () => `turn-tb-switch-${index}`,
+        generate: async () => ({
+          content: turnContent(started, "旅人在钟楼调查。", {
+            eventId: `event-tb-switch-${index}`,
+            evidenceId: `event-tb-switch-${index}`,
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+    }
+    let core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.gameTimeDay, 2);
+    assert.equal(core.phaseOffset, 6);
+
+    // 切回 story：phaseOffset 不再维护，恢复模型驱动
+    const switched = store.updateTimeMode(started.sessionId, "story");
+    assert.equal(switched.timeMode, "story");
+    core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.gameTimeDay, 2, "切回 story 保持当前日期");
+
+    // 缺省回合（无 timeAdvance）：日期不再自动推进
+    let before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-story-default",
+        customChoice: "在钟楼整理线索。",
+      }),
+      createTurnId: () => "turn-story-default",
+      generate: async () => ({
+        content: turnContent(started, "旅人在钟楼整理线索。", {
+          eventId: "event-story-default",
+          evidenceId: "event-story-default",
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.gameTimeDay, 2, "story 模式缺省回合不推进日期");
+
+    // 剧情显式推进一天：one_day 生效
+    before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-story-oneday",
+        customChoice: "等到第二天再调查。",
+      }),
+      createTurnId: () => "turn-story-oneday",
+      generate: async () => ({
+        content: turnContent(started, "次日清晨，旅人再次来到钟楼。", {
+          eventId: "event-story-oneday",
+          evidenceId: "event-story-oneday",
+          sceneTransition: { timeAdvance: "one_day" },
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.gameTimeDay, 3, "story 模式下 timeAdvance 恢复生效");
+
+    // 再次切回 turn_based：日期保留、phaseOffset 重新置 0
+    const switchedBack = store.updateTimeMode(started.sessionId, "turn_based");
+    assert.equal(switchedBack.phaseOffset, 0);
+    assert.equal(switchedBack.gameTimeDay, 3);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("五回合一天：任务 deadlineDay 与触发器 deadline 按天到期（第 6 回合 = 第 2 天）", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store, {
+      storyModules: [
+        {
+          id: "two-day-task",
+          title: "两日内完成任务",
+          objective: "在两天内找到解药。",
+          completionCriteria: ["取得解药"],
+          prerequisiteModuleIds: [],
+          deadlineDay: 2,
+        },
+      ],
+      initialStoryModuleId: "two-day-task",
+      initialStoryDirection: "找到解药。",
+      triggers: [
+        {
+          id: "two-day-flood",
+          when: "玩家在第 2 天前完成堤坝加固",
+          consequence: "山洪冲垮旧堤。",
+          deadlineDay: 2,
+          stateEffects: { flags: ["bad_end"] },
+        },
+      ],
+    });
+    store.updateTimeMode(started.sessionId, "turn_based");
+
+    // 前 4 回合（第 1 天）：期限未到，任务 active、触发器 armed
+    for (const index of [1, 2, 3, 4]) {
+      await advanceOneTurn(store, started, {
+        idempotencyKey: `request-tb-deadline-before-${index}`,
+        turnId: `turn-tb-deadline-before-${index}`,
+        eventId: `event-tb-deadline-before-${index}`,
+        scene: "旅人继续在钟楼附近打听。",
+        choice: "继续调查。",
+      });
+    }
+    let after = store.loadAdventure(started.sessionId);
+    assert.equal(findStoryModule(after, "two-day-task").state.status, "active");
+    assert.equal(
+      after.branchState.states.find(
+        (state) =>
+          state.entityType === "plot_trigger" &&
+          state.state.triggerId === "two-day-flood",
+      ).state.status,
+      "armed",
+    );
+
+    // 第 5 回合结束进入第 2 天（deadlineDay=2 当天）：任务 expired、触发器强制 fire
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-tb-deadline-day2",
+      turnId: "turn-tb-deadline-day2",
+      eventId: "event-tb-deadline-day2",
+      scene: "第二天，解药仍无下落。",
+      choice: "继续寻找解药。",
+    });
+    const core = findCore(after).state;
+    assert.equal(core.gameTimeDay, 2, "第 5 回合结束应进入第 2 天");
+    assert.equal(
+      findStoryModule(after, "two-day-task").state.status,
+      "expired",
+      "deadlineDay=2 在第 2 天（第 5 回合）到期",
+    );
+    const trigger = after.branchState.states.find(
+      (state) =>
+        state.entityType === "plot_trigger" &&
+        state.state.triggerId === "two-day-flood",
+    );
+    assert.equal(trigger.state.status, "fired", "触发器 deadline 到期强制 fire");
+    assert.match(trigger.state.fireReason, /期限/);
+    assert.equal(core.badEnd, true, "触发器 stateEffects 随到期 fire 强制应用");
+
+    // 第 6 回合（仍在第 2 天）：过期状态稳定，不重复改写
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-tb-deadline-day2b",
+      turnId: "turn-tb-deadline-day2b",
+      eventId: "event-tb-deadline-day2b",
+      scene: "雨下个不停。",
+      choice: "在钟楼避雨。",
+    });
+    assert.equal(findCore(after).state.gameTimeDay, 2);
+    assert.equal(findStoryModule(after, "two-day-task").state.status, "expired");
+    assert.equal(
+      after.branchState.states.find(
+        (state) =>
+          state.entityType === "plot_trigger" &&
+          state.state.triggerId === "two-day-flood",
+      ).state.status,
+      "fired",
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("五回合一天：正文出现跨日短语不触发时间短语一致性警告（日期由回合驱动）", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    store.updateTimeMode(started.sessionId, "turn_based");
+
+    // e2e：正文"次日"但未声明任何日期推进 → turn_based 下不产生警告，回合正常提交
+    const before = store.loadAdventure(started.sessionId);
+    const turn = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-tb-phrase",
+        customChoice: "继续调查。",
+      }),
+      createTurnId: () => "turn-tb-phrase",
+      generate: async () => ({
+        content: turnContent(started, "次日清晨，旅人再次来到钟楼前。", {
+          eventId: "event-tb-phrase",
+          evidenceId: "event-tb-phrase",
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    assert.ok(turn.committedTurn, "回合正常提交");
+    const savedTurn = turn.adventure.branchState.recentTurns.find(
+      (item) => item.id === "turn-tb-phrase",
+    );
+    assert.ok(
+      !(savedTurn.generatedOutput.warnings ?? []).some((warning) =>
+        warning.includes("时间流逝短语"),
+      ),
+      "turn_based 下正文跨日短语不应触发时间短语一致性警告",
+    );
+
+    // 直接校验：story 模式下同样的正文会警告（对比，确认分流生效）
+    const adventure = store.loadAdventure(started.sessionId);
+    const storyAdventure = {
+      ...adventure,
+      branchState: {
+        ...adventure.branchState,
+        states: adventure.branchState.states.map((state) =>
+          state.entityType === "session_state" && state.entityId === "core"
+            ? { ...state, state: { ...state.state, timeMode: "story" } }
+            : state,
+        ),
+      },
+    };
+    const storyValidated = validateGeneratedTurn(
+      normalizeGeneratedTurnVersion(
+        turnContent(started, "次日清晨，旅人再次来到钟楼前。", {
+          eventId: "event-story-phrase",
+          evidenceId: "event-story-phrase",
+        }),
+      ),
+      storyAdventure,
+      "turn-story-phrase",
+      { timeMode: "story" },
+    );
+    assert.ok(
+      storyValidated.warnings.some((warning) =>
+        warning.includes("时间流逝短语"),
+      ),
+      "story 模式下同样的正文应触发时间短语一致性警告",
+    );
+
+    // turn_based 校验路径：同正文不警告
+    const turnBasedValidated = validateGeneratedTurn(
+      normalizeGeneratedTurnVersion(
+        turnContent(started, "次日清晨，旅人再次来到钟楼前。", {
+          eventId: "event-tb-phrase-direct",
+          evidenceId: "event-tb-phrase-direct",
+        }),
+      ),
+      adventure,
+      "turn-tb-phrase-direct",
+      { timeMode: "turn_based" },
+    );
+    assert.ok(
+      !turnBasedValidated.warnings.some((warning) =>
+        warning.includes("时间流逝短语"),
+      ),
+      "validateGeneratedTurn 传入 turn_based 时不产生时间短语警告",
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("旧会话兼容：缺失 timeMode/phaseOffset 字段按 story 模式处理", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    // 模拟旧存档：去掉 timeMode / phaseOffset 字段
+    database.exec(`
+      UPDATE materialized_states
+      SET state_json = json_remove(state_json, '$.timeMode', '$.phaseOffset')
+      WHERE session_id = '${started.sessionId}'
+        AND entity_type = 'session_state' AND entity_id = 'core'
+    `);
+    let core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.timeMode, undefined);
+    assert.equal(core.phaseOffset, undefined);
+
+    // 缺省回合：日期不推进（story 语义），不写 phaseOffset
+    const before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-legacy-default",
+        customChoice: "继续调查钟楼。",
+      }),
+      createTurnId: () => "turn-legacy-default",
+      generate: async () => ({
+        content: turnContent(started, "旅人记录下铜钟的逆流规律。", {
+          eventId: "event-legacy-default",
+          evidenceId: "event-legacy-default",
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.gameTimeDay, 1, "旧会话缺省回合不推进日期");
+    assert.equal(core.phaseOffset, undefined, "story 模式不写 phaseOffset");
+
+    // 校验层缺省：不带 timeMode 参数时按 story 处理（跨日短语警告仍触发）
+    const adventure = store.loadAdventure(started.sessionId);
+    const validated = validateGeneratedTurn(
+      normalizeGeneratedTurnVersion(
+        turnContent(started, "次日清晨，旅人再次来到钟楼。", {
+          eventId: "event-legacy-phrase",
+          evidenceId: "event-legacy-phrase",
+        }),
+      ),
+      adventure,
+      "turn-legacy-phrase",
+    );
+    assert.ok(
+      validated.warnings.some((warning) => warning.includes("时间流逝短语")),
+      "缺失 timeMode 时校验按 story 模式处理，跨日短语警告保留",
+    );
+
+    // 旧档仍可正常切换为 turn_based：日期保留、phaseOffset 0
+    const switched = store.updateTimeMode(started.sessionId, "turn_based");
+    assert.equal(switched.phaseOffset, 0);
+    assert.equal(switched.gameTimeDay, 1);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
