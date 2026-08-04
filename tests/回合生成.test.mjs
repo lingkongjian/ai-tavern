@@ -16,7 +16,7 @@ import {
   advanceAdventureTurn,
   collectDivergenceSignals,
 } from "../lib/story/回合服务.ts";
-import { createStoryGenerationMessages } from "../lib/story/剧情提示.ts";
+import { createStoryGenerationMessages, createStoryGenerationPrompt } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
@@ -3118,6 +3118,174 @@ test("规则 14 更新：提示词要求跨日剧情用 gameTimeDayNext 显式�
     assert.match(systemPrompt, /不得正文写"次日"却不声明日期/);
     // sceneTransition 示例同样包含新字段说明
     assert.match(systemPrompt, /gameTimeDayNext.*跨日剧情必填/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("规则 31：玩家言行最高优先级——最新言行高亮分区与历史言行模式标注", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-roleplay-weight-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "角色言行权重测试");
+
+    // 回合 1：玩家以动作言行推进，历史回合写入 playerInput.roleplay
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "roleplay-weight-1",
+        selectedChoiceId: "opening-neutral",
+        roleplay: { mode: "action", content: "旅人推开门，仔细查看铜钟的纹路。" },
+      }),
+      createTurnId: () => "turn-roleplay-1",
+      generate: async () => ({
+        content: statusesTestTurn(
+          started,
+          "event-roleplay-1",
+          "旅人查看铜钟的纹路，发现刻痕与失踪者名单一致。",
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+
+    const adventure = store.loadAdventure(started.sessionId);
+    const mixedRoleplay = {
+      mode: "mixed",
+      content: "旅人按住铜钟说道：“告诉我，是谁的名字刻在上面？”",
+    };
+    // 回合 2：mixed 言行 → latestPlayerRoleplay 高亮分区 + 规则 31
+    const mixedMessages = createStoryGenerationMessages({
+      adventure,
+      turnId: "turn-roleplay-2",
+      resolvedPlayerTurn: {
+        playerInput: {
+          selectedChoice: null,
+          customChoice: null,
+          roleplay: mixedRoleplay,
+          storyDirection: null,
+          effectiveStoryDirection: null,
+        },
+        displayMessage: `言行：${mixedRoleplay.content}`,
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const systemPrompt = mixedMessages[0].content;
+    assert.match(systemPrompt, /31\. 玩家角色言行/);
+    assert.match(systemPrompt, /最高优先级的故事事实/);
+    assert.match(systemPrompt, /严格承接玩家角色言行/);
+    assert.match(systemPrompt, /必须回应其说的话/);
+    assert.match(systemPrompt, /呈现该动作的结果/);
+    assert.match(systemPrompt, /不得忽略、淡化或改写玩家角色言行/);
+    assert.match(systemPrompt, /不得让剧情走向或后续剧本锚点覆盖玩家角色明确表达的行为/);
+    assert.match(systemPrompt, /历史言行仍是角色关系、局势与人物记忆的依据/);
+    assert.match(systemPrompt, /不得与已表达的行为前后矛盾/);
+
+    const context = parseStoryContext(mixedMessages[1].content);
+    // latestPlayerRoleplay 位于 context 顶部（第一个键）且与 playerInput.roleplay 一致
+    assert.deepEqual(context.latestPlayerRoleplay, mixedRoleplay);
+    assert.deepEqual(context.playerInput.roleplay, mixedRoleplay);
+    assert.equal(Object.keys(context)[0], "latestPlayerRoleplay");
+    // 历史回合言行 mode 标注：动作言行回合带 mode=action；开局无言行回合无 mode
+    const actionTurnInput = context.recentTurns.find(
+      (turn) => turn.sequence === 2,
+    ).playerInput;
+    assert.equal(actionTurnInput.mode, "action");
+    assert.deepEqual(actionTurnInput.roleplay, {
+      mode: "action",
+      content: "旅人推开门，仔细查看铜钟的纹路。",
+    });
+    const openingTurnInput = context.recentTurns.find(
+      (turn) => turn.sequence === 1,
+    ).playerInput;
+    assert.equal("mode" in openingTurnInput, false);
+    // 诊断 sections 增加“最新玩家言行”条目
+    const snapshot = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-roleplay-2",
+      resolvedPlayerTurn: {
+        playerInput: {
+          selectedChoice: null,
+          customChoice: null,
+          roleplay: mixedRoleplay,
+          storyDirection: null,
+          effectiveStoryDirection: null,
+        },
+        displayMessage: `言行：${mixedRoleplay.content}`,
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    }).snapshot;
+    const roleplaySection = snapshot.diagnostics.sections.find(
+      (section) => section.name === "最新玩家言行",
+    );
+    assert.equal(roleplaySection.itemCount, 1);
+    assert.ok(roleplaySection.estimatedTokens > 0);
+
+    // speech 言行
+    const speechRoleplay = {
+      mode: "speech",
+      content: "旅人问守钟人：“钟为什么在逆流？”",
+    };
+    const speechContext = parseStoryContext(
+      createStoryGenerationMessages({
+        adventure,
+        turnId: "turn-roleplay-speech",
+        resolvedPlayerTurn: {
+          playerInput: {
+            selectedChoice: null,
+            customChoice: null,
+            roleplay: speechRoleplay,
+            storyDirection: null,
+            effectiveStoryDirection: null,
+          },
+          displayMessage: `说话：${speechRoleplay.content}`,
+          effectiveStoryDirection: "",
+          previousStoryDirection: "",
+        },
+      })[1].content,
+    );
+    assert.deepEqual(speechContext.latestPlayerRoleplay, speechRoleplay);
+    assert.deepEqual(speechContext.playerInput.roleplay, speechRoleplay);
+
+    // 无言行：latestPlayerRoleplay 字段省略，且诊断无对应条目
+    const noRoleplayMessages = createStoryGenerationMessages({
+      adventure,
+      turnId: "turn-roleplay-none",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const noRoleplayContext = parseStoryContext(noRoleplayMessages[1].content);
+    assert.equal("latestPlayerRoleplay" in noRoleplayContext, false);
+    const noRoleplaySnapshot = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-roleplay-none",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    }).snapshot;
+    assert.equal(
+      noRoleplaySnapshot.diagnostics.sections.some(
+        (section) => section.name === "最新玩家言行",
+      ),
+      false,
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

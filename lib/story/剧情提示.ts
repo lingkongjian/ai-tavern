@@ -187,10 +187,28 @@ function compactRecentTurns(adventure: LoadedAdventure, count: number) {
     const decision = isObject(recentTurn.generatedOutput.decision)
       ? recentTurn.generatedOutput.decision
       : {};
+    // 历史言行模式标注：从该回合 playerInput.roleplay.mode 读取
+    // （speech/action/mixed），无言行则不输出；原 playerInput 内容完整保留。
+    const rawPlayerInput = isObject(recentTurn.playerInput)
+      ? recentTurn.playerInput
+      : {};
+    const roleplay = isObject(rawPlayerInput.roleplay)
+      ? rawPlayerInput.roleplay
+      : null;
+    const roleplayMode = readText(roleplay?.mode);
+    const roleplayContent = readText(roleplay?.content);
     return {
       turnId: recentTurn.id,
       sequence: recentTurn.sequence,
-      playerInput: recentTurn.playerInput,
+      playerInput: {
+        ...rawPlayerInput,
+        ...(roleplayContent &&
+        (roleplayMode === "speech" ||
+          roleplayMode === "action" ||
+          roleplayMode === "mixed")
+          ? { mode: roleplayMode }
+          : {}),
+      },
       scene: readText(turn.scene),
       dialogue: readArray(turn.dialogue),
       events: readArray(turn.events),
@@ -230,6 +248,21 @@ export function createStoryGenerationPrompt(input: {
   const sourceProgressInfo = input.sourceProgressInfo ?? [];
   const divergenceSignals = input.divergenceSignals ?? null;
   const memoryContext = input.memoryContext;
+  // 最新玩家言行高亮分区：精简自 playerInput.roleplay（mode + content），
+  // 置于 context 顶部显眼位置；roleplay 为 null/未提供时省略该字段，
+  // playerInput 完整字段仍保留供既有消费方兼容。
+  const roleplayInput = isObject(resolvedPlayerTurn.playerInput.roleplay)
+    ? resolvedPlayerTurn.playerInput.roleplay
+    : null;
+  const roleplayMode = readText(roleplayInput?.mode);
+  const roleplayContent = readText(roleplayInput?.content);
+  const latestPlayerRoleplay =
+    roleplayContent &&
+    (roleplayMode === "speech" ||
+      roleplayMode === "action" ||
+      roleplayMode === "mixed")
+      ? { mode: roleplayMode, content: roleplayContent }
+      : null;
   const activeStateRecords = adventure.branchState.states.filter(
     (state) => state.isActive,
   );
@@ -615,6 +648,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 28. 剧情发展与行为倾向：剧情发展必须与角色身上的状态相关——debuff 随时间或剧情恶化或恢复（中毒加深、伤势恶化或好转、增益消退或延续），并体现在叙述、状态词条内容更新与候选选项之中。角色身上存在 debuff 且存在可行解决方案（求医、解毒、治疗、休息、移除诅咒等）时，角色行动与候选选项应倾向解决该 debuff；若当前没有可行方案，也应体现状态对行动的制约（行动吃力、体力下降、反应迟钝等）。进行属性判定时应结合角色当前状态词条判断判定合理性（如重伤角色攀爬难度提高、中毒角色体力判定更严、迅捷状态闪避更从容），但判定仍由系统按属性与难度确定性结算。
 29. 跨日状态演化：当 sceneTransition.timeAdvance 为 one_day 或 several_days（时间跨过一天或多天）时，必须逐角色检查上下文中所有进行中的词条并让它们随时间演化：debuff 按剧情恶化或好转（中毒加深、伤势恶化、治疗恢复、毒发解除等），更新对应词条的 description 并相应调整 expiresAtDay（延长、提前），剧情中已解除的状态必须从 patch.statuses 中移除；buff 判断消退或延续，消退的移除、延续的保留。时间推进后必须演化词条，不得继续沿用与现状不符的旧词条内容，叙述与候选选项同样体现该演化。示例：角色第 2 日有词条「中毒：毒性潜伏，expiresAtDay=3」，第 4 日剧情写成毒势加重，则 patch.statuses 必须把该词条 description 更新为“毒势发作”并调整 expiresAtDay，或按剧情移除该词条并新增更严重的症状词条；若剧情写成解毒成功，则必须从 patch.statuses 中移除该词条。
 30. 长剧情防兜圈子：不得重复此前剧情已经出现过的方案、桥段、对话模式与场景结论——不仅限于上一回合，最近数回合内出现过的高相似场景会被后端判定为重复并要求重写。连续多回合没有新事件、新信息或状态变化时，必须推进剧情而不是原地重述：安排新的进展（发现、冲突、对话转折、地点或时间变化），或至少让本轮产生可感知的新结果。chapterSummaries 和 longTermMemory 是旧信息的参考来源，不是可以重复表演的内容：引用旧信息时应作为背景或对比，不能把已经展示过的场景、台词或结论再演一遍。
+31. 玩家角色言行（说话/动作/言行输入）是当前回合最高优先级的故事事实：本轮剧情必须严格承接玩家角色言行——玩家角色说话时，在场 AI 角色必须回应其说的话（对话、反应、态度），玩家角色行动时，必须呈现该动作的结果（事件、状态变化、世界反应）。玩家角色言行优先于 AI 候选选项与剧情走向：不得忽略、淡化或改写玩家角色言行，不得让剧情走向或后续剧本锚点覆盖玩家角色明确表达的行为。与规则 19 的边界：剧情走向仍是导演目标，但只能在承接玩家言行之后推进，不能替代对玩家言行的回应。近期回合中玩家角色言行保持延续：历史言行仍是角色关系、局势与人物记忆的依据，不得与已表达的行为前后矛盾。
 
 返回结构必须完整：
 {
@@ -654,6 +688,7 @@ worldBookChanges 按需使用以下结构之一：
 没有某类变化时必须返回空数组。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
 
   const context: JsonObject = {
+    ...(latestPlayerRoleplay ? { latestPlayerRoleplay } : {}),
     nextTurnId: turnId,
     campaign: adventure.campaign,
     session: adventure.session,
@@ -790,6 +825,9 @@ worldBookChanges 按需使用以下结构之一：
         : "后续剧本锚点",
       context.upcomingScriptGuidance,
     ],
+    ...(latestPlayerRoleplay
+      ? [["最新玩家言行", context.latestPlayerRoleplay] as const]
+      : []),
     ["玩家输入", context.playerInput],
     ...(divergenceSignals
       ? [["偏离状态清单", divergenceSignals] as const]
