@@ -279,6 +279,11 @@
         },
         "timeAdvance": {
           "enum": ["moment", "hours", "one_day", "several_days"]
+        },
+        "gameTimeDayNext": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "本回合结束时的游戏内日期（整数，不得小于当前 gameTimeDay，不得回退；当前日在系统上下文中给出）。跨日剧情（正文出现次日/数日后等时间流逝）必须显式声明；与 timeAdvance 同时提供时以此字段为准，日期不回退、不重叠推进。未跨日时省略。"
         }
       }
     },

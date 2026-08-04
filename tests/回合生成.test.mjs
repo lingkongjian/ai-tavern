@@ -2950,3 +2950,164 @@ test("状态一致性警告随回合正常提交并写入生成输出，不阻�
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+test("gameTimeDayNext 协议校验：合法推进、回退拒绝、非法值拒绝、与 timeAdvance 冲突警告", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-daynext-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "日期协议测试");
+    const adventure = store.loadAdventure(started.sessionId);
+
+    function dayNextTurn(scene, sceneTransition) {
+      return {
+        ...statusesTestTurn(started, "event-daynext", scene),
+        stateCommit: {
+          ...statusesTestTurn(started, "event-daynext", scene).stateCommit,
+          sceneTransition: {
+            ...statusesTestTurn(started, "event-daynext", scene).stateCommit
+              .sceneTransition,
+            ...sceneTransition,
+          },
+        },
+      };
+    }
+
+    // 场景 A：第 1 日 + gameTimeDayNext=5 → 通过且保留字段
+    const valid = validateGeneratedTurn(
+      dayNextTurn("旅人踏上了远路。", { gameTimeDayNext: 5 }),
+      adventure,
+      "daynext-valid",
+    );
+    assert.equal(valid.stateCommit.sceneTransition.gameTimeDayNext, 5);
+
+    // 场景 B：gameTimeDayNext=3 + timeAdvance=one_day（推进 1 天）→ 冲突警告但通过
+    const conflicted = validateGeneratedTurn(
+      dayNextTurn("旅人继续赶路。", { gameTimeDayNext: 3, timeAdvance: "one_day" }),
+      adventure,
+      "daynext-conflict",
+    );
+    assert.ok(
+      conflicted.warnings.some(
+        (warning) =>
+          warning.includes("gameTimeDayNext") && warning.includes("timeAdvance"),
+      ),
+      "gameTimeDayNext 与 timeAdvance 语义冲突必须产生 normalizationWarning",
+    );
+    assert.equal(conflicted.stateCommit.sceneTransition.gameTimeDayNext, 3);
+
+    // 场景 C：gameTimeDayNext=2 + timeAdvance=one_day（语义一致）→ 无冲突警告
+    const consistent = validateGeneratedTurn(
+      dayNextTurn("旅人修整了一天。", { gameTimeDayNext: 2, timeAdvance: "one_day" }),
+      adventure,
+      "daynext-consistent",
+    );
+    assert.ok(
+      !consistent.warnings.some(
+        (warning) =>
+          warning.includes("gameTimeDayNext") && warning.includes("timeAdvance"),
+      ),
+    );
+    assert.equal(consistent.stateCommit.sceneTransition.gameTimeDayNext, 2);
+
+    // 场景 D：gameTimeDayNext=5 + timeAdvance=several_days（约数日按 3 天计，实际 +4）→ 冲突警告
+    const severalConflict = validateGeneratedTurn(
+      dayNextTurn("旅人数日后抵达。", { gameTimeDayNext: 5, timeAdvance: "several_days" }),
+      adventure,
+      "daynext-several-conflict",
+    );
+    assert.ok(
+      severalConflict.warnings.some(
+        (warning) =>
+          warning.includes("gameTimeDayNext") && warning.includes("timeAdvance"),
+      ),
+    );
+    assert.equal(severalConflict.stateCommit.sceneTransition.gameTimeDayNext, 5);
+
+    // 场景 E：gameTimeDayNext 回退（0 < 当前第 1 日）→ 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          dayNextTurn("时间倒流。", { gameTimeDayNext: 0 }),
+          adventure,
+          "daynext-rollback",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("gameTimeDayNext")),
+    );
+
+    // 场景 F：gameTimeDayNext 非整数 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          dayNextTurn("半天过去。", { gameTimeDayNext: 3.5 }),
+          adventure,
+          "daynext-fraction",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("gameTimeDayNext")),
+    );
+
+    // 场景 G：gameTimeDayNext 字符串 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          dayNextTurn("数日后。", { gameTimeDayNext: "3" }),
+          adventure,
+          "daynext-string",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("gameTimeDayNext")),
+    );
+
+    // 场景 H：与当前日相同的 gameTimeDayNext（不回退、不推进）→ 通过
+    const sameDay = validateGeneratedTurn(
+      dayNextTurn("旅人留在钟楼。", { gameTimeDayNext: 1 }),
+      adventure,
+      "daynext-same",
+    );
+    assert.equal(sameDay.stateCommit.sceneTransition.gameTimeDayNext, 1);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("规则 14 更新：提示词要求跨日剧情用 gameTimeDayNext 显式声明结束日期", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-rule14-daynext-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "规则 14 日期测试");
+    const adventure = store.loadAdventure(started.sessionId);
+    const messages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-rule14",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const systemPrompt = messages[0].content;
+    assert.match(systemPrompt, /14\. 游戏内时间从第 1 日开始/);
+    assert.match(systemPrompt, /gameTimeDayNext/);
+    assert.match(systemPrompt, /时间短语与日期必须一致/);
+    assert.match(systemPrompt, /不得正文写"次日"却不声明日期/);
+    // sceneTransition 示例同样包含新字段说明
+    assert.match(systemPrompt, /gameTimeDayNext.*跨日剧情必填/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});

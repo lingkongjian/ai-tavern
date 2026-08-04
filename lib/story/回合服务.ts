@@ -34,6 +34,7 @@ import {
 import {
   GeneratedTurnValidationError,
   normalizeGeneratedTurnVersion,
+  type GeneratedSceneTransition,
   type PlayerTurnRequest,
   type SceneTimeAdvance,
   validateGeneratedTurn,
@@ -163,6 +164,19 @@ function timeAdvanceDayDelta(
   timeAdvance: SceneTimeAdvance | undefined,
 ): number {
   return timeAdvance === "several_days" ? 3 : timeAdvance === "one_day" ? 1 : 0;
+}
+
+// 本回合结束时的游戏内日期（确定性）：gameTimeDayNext 显式声明时以其为准
+// （两者都提供时 gameTimeDayNext 优先，timeAdvance 仅表示时间幅度）；
+// 否则沿用 timeAdvance 的推进语义。
+function resolvedDayAfterTurn(
+  currentDay: number,
+  transition: GeneratedSceneTransition | null,
+): number {
+  if (transition?.gameTimeDayNext !== undefined) {
+    return transition.gameTimeDayNext;
+  }
+  return currentDay + timeAdvanceDayDelta(transition?.timeAdvance);
 }
 
 function readText(value: JsonValue | undefined) {
@@ -859,20 +873,25 @@ function createStateMutations(input: {
     );
 
     const timeAdvance = transition.timeAdvance ?? "moment";
-    const dayDelta = timeAdvanceDayDelta(timeAdvance);
     const currentDay =
       typeof sessionState?.state.gameTimeDay === "number"
         ? sessionState.state.gameTimeDay
         : 1;
-    if (dayDelta > 0) {
+    const dayAfterTurn = resolvedDayAfterTurn(currentDay, transition);
+    if (dayAfterTurn !== currentDay) {
       mutations.push({
         entityType: "session_state",
         entityId: "core",
         operation: "merge",
         value: {
-          gameTimeDay: currentDay + dayDelta,
+          gameTimeDay: dayAfterTurn,
         },
-        reason: timeAdvance === "several_days" ? "剧情推进了数日" : "剧情推进了一天",
+        reason:
+          transition.gameTimeDayNext !== undefined
+            ? `剧情推进到第 ${dayAfterTurn} 天（gameTimeDayNext 显式声明）`
+            : timeAdvance === "several_days"
+              ? "剧情推进了数日"
+              : "剧情推进了一天",
         evidence: transition.evidence,
       });
     }
@@ -1125,10 +1144,10 @@ function createStateMutations(input: {
     typeof sessionStateForDay?.state.gameTimeDay === "number"
       ? sessionStateForDay.state.gameTimeDay
       : 1;
-  const dayDelta = timeAdvanceDayDelta(
-    generated.stateCommit.sceneTransition?.timeAdvance,
+  const currentDayAfterTurn = resolvedDayAfterTurn(
+    currentDayBeforeTurn,
+    generated.stateCommit.sceneTransition,
   );
-  const currentDayAfterTurn = currentDayBeforeTurn + dayDelta;
   const armedTriggers = adventure.branchState.states.filter(
     (state) =>
       state.entityType === "plot_trigger" &&

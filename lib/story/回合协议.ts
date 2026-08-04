@@ -123,6 +123,8 @@ export interface GeneratedSceneTransition {
   evidence: string[];
   offstageUpdates?: GeneratedOffstageUpdate[];
   timeAdvance?: SceneTimeAdvance;
+  /** 本回合结束时的游戏内日期（整数，≥ 当前 gameTimeDay，不得回退）。 */
+  gameTimeDayNext?: number;
 }
 
 export interface GeneratedOffstageUpdate {
@@ -692,6 +694,63 @@ function collectLocationConsistencyWarnings(input: {
   return warnings;
 }
 
+/**
+ * 时间短语一致性检测（警告级，不拒绝回合）：
+ * 本轮 scene/events 正文出现明显的"跨日/跨夜"时间短语（次日、翌日、数日后、
+ * 入夜后、next day、after ... days 等），而本轮未声明任何日期推进
+ * （sceneTransition 未提供 gameTimeDayNext，且 timeAdvance 为缺省/moment/hours）时，
+ * 产生一条"正文暗示时间流逝但日期未推进"的警告，提醒模型用 gameTimeDayNext
+ * 显式声明本回合结束日期（或改用 timeAdvance）。
+ * 误报控制（保守策略）：
+ * - 只匹配 scene 与 events[].summary，不匹配 dialogue（台词里"等明天再说"不算叙事时间流逝）；
+ * - "小时后"类（数小时后、几个小时后）不算日期变化——hours 合法，不触发；
+ * - 仅当日时间描写（黄昏时分等）且确实未跨日时，模型可忽略该提醒；
+ * - 只警告不拒绝，且同一轮最多一条。
+ */
+const DAY_CROSSING_TIME_PHRASE_PATTERNS: RegExp[] = [
+  // 中文：明确指向次日或数日后的短语
+  /次日|翌日|第二天|第三天|第四天|第五天|第六天/,
+  /数日后|几天后|多日后|两天后|三天后|数日之后|几日之后|一两日后/,
+  // 中文：跨夜/入夜类（天明、天亮、入夜、黄昏等时间节点）
+  /天明后|天亮后|黄昏时分|入夜后|夜幕降临/,
+  // 英文：跨日表达
+  /after\s+(a\s+few\s+|several\s+|\d+\s+)?days/i,
+  /\bnext\s+day\b|\bnext\s+morning\b|\bnext\s+night\b|\bthe\s+following\s+day\b/i,
+  /\bdays\s+later\b|\ba\s+day\s+later\b/i,
+];
+
+function collectTimePhraseConsistencyWarnings(input: {
+  scene: string;
+  events: GeneratedEvent[];
+  sceneTransition: GeneratedSceneTransition | null;
+}) {
+  const { scene, events, sceneTransition } = input;
+  const warnings: string[] = [];
+  const narrativeText = [scene, ...events.map((event) => event.summary)].join("\n");
+  if (!narrativeText.trim()) return warnings;
+
+  // 本轮是否声明了日期推进：gameTimeDayNext 显式声明，或 timeAdvance 跨日枚举。
+  const dateDeclared =
+    sceneTransition?.gameTimeDayNext !== undefined ||
+    sceneTransition?.timeAdvance === "one_day" ||
+    sceneTransition?.timeAdvance === "several_days";
+  if (dateDeclared) return warnings;
+
+  let matchedPhrase: string | undefined;
+  for (const pattern of DAY_CROSSING_TIME_PHRASE_PATTERNS) {
+    const match = pattern.exec(narrativeText);
+    if (match) {
+      matchedPhrase = match[0];
+      break;
+    }
+  }
+  if (!matchedPhrase) return warnings;
+  warnings.push(
+    `正文出现时间流逝短语「${matchedPhrase}」但本轮游戏内日期未推进（sceneTransition 未提供 gameTimeDayNext 且 timeAdvance 为 moment/hours/缺省）。若剧情确实跨日（如"次日""数日后"），请通过 sceneTransition.gameTimeDayNext 显式声明本回合结束日期（整数，≥ 当前游戏内日期），或改用 timeAdvance 表示时间幅度；若只是同日内的时间描写，可忽略本提醒。`,
+  );
+  return warnings;
+}
+
 const cardPaths = [
   "identity.titles",
   "identity.affiliations",
@@ -743,6 +802,15 @@ export function validateGeneratedTurn(
       state.state.role === "player",
   )?.entityId;
   const existingEvidenceIds = collectExistingEvidence(adventure);
+
+  // 当前游戏内日期（回合开始时的快照），供 gameTimeDayNext 校验（≥ 当前日、不回退）。
+  const currentSessionState = adventure.branchState.states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  );
+  const currentGameTimeDay =
+    typeof currentSessionState?.state.gameTimeDay === "number"
+      ? currentSessionState.state.gameTimeDay
+      : 1;
 
   // 当前角色状态与行动受限标记（回合开始时的快照，用于硬拦截校验）。
   const characterStates = new Map(
@@ -1054,7 +1122,38 @@ export function validateGeneratedTurn(
           "sceneTransition.timeAdvance 必须是 moment、hours、one_day 或 several_days。",
         );
       }
-    }    if (transition.offstageUpdates !== undefined) {
+    }
+    let gameTimeDayNext: number | undefined;
+    if (transition.gameTimeDayNext !== undefined) {
+      if (
+        typeof transition.gameTimeDayNext === "number" &&
+        Number.isInteger(transition.gameTimeDayNext) &&
+        transition.gameTimeDayNext >= currentGameTimeDay
+      ) {
+        gameTimeDayNext = transition.gameTimeDayNext;
+      } else {
+        issues.push(
+          `sceneTransition.gameTimeDayNext 必须是 ≥ 当前游戏内日期（第 ${currentGameTimeDay} 天）的整数（本回合结束日期，不得回退）。`,
+        );
+      }
+    }
+    // 两者都提供时以 gameTimeDayNext 为准；若与 timeAdvance 的语义（推进天数）明显
+    // 冲突，产生一条 normalizationWarning 提醒模型对齐，但不拒绝回合。
+    if (
+      gameTimeDayNext !== undefined &&
+      timeAdvance !== undefined &&
+      gameTimeDayNext - currentGameTimeDay !==
+        (timeAdvance === "several_days"
+          ? 3
+          : timeAdvance === "one_day"
+            ? 1
+            : 0)
+    ) {
+      normalizationWarnings.push(
+        `sceneTransition.gameTimeDayNext（第 ${gameTimeDayNext} 天，相对当前第 ${currentGameTimeDay} 天推进 ${gameTimeDayNext - currentGameTimeDay} 天）与 timeAdvance（${timeAdvance}）的语义不一致；日期已按 gameTimeDayNext 为准推进，请检查两个字段是否应保持一致。`,
+      );
+    }
+    if (transition.offstageUpdates !== undefined) {
       if (!Array.isArray(transition.offstageUpdates)) {
         issues.push("sceneTransition.offstageUpdates 必须是数组。");
       } else {
@@ -1124,6 +1223,7 @@ export function validateGeneratedTurn(
       evidence: transitionEvidence,
       ...(offstageUpdates.length > 0 ? { offstageUpdates } : {}),
       ...(timeAdvance !== undefined ? { timeAdvance } : {}),
+      ...(gameTimeDayNext !== undefined ? { gameTimeDayNext } : {}),
     };
   }
   const characterStateChanges = requiredArray(
@@ -1801,6 +1901,15 @@ export function validateGeneratedTurn(
     events,
     sceneTransition,
     adventure,
+  })) {
+    normalizationWarnings.push(warning);
+  }
+
+  // 时间短语一致性检测（警告级）：正文暗示跨日/跨夜但本轮未声明日期推进 → 提醒，不拒绝回合。
+  for (const warning of collectTimePhraseConsistencyWarnings({
+    scene,
+    events,
+    sceneTransition,
   })) {
     normalizationWarnings.push(warning);
   }

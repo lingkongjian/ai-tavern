@@ -6,9 +6,14 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { openLocalDatabase } from "../db/index.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
-import { parsePlayerTurnRequest } from "../lib/story/回合协议.ts";
+import {
+  normalizeGeneratedTurnVersion,
+  parsePlayerTurnRequest,
+  validateGeneratedTurn,
+} from "../lib/story/回合协议.ts";
 import { advanceAdventureTurn } from "../lib/story/回合服务.ts";
 import { createStoryGenerationPrompt } from "../lib/story/剧情提示.ts";
+import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 import { parseStartAdventureInput } from "../lib/story/开局.ts";
 
 const migrationsDir = join(
@@ -681,6 +686,288 @@ test("expired 任务在剧情任务管理中属于终态：不可编辑、不可
           active: false,
         }),
       /已过期/,
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("gameTimeDayNext 显式声明本回合结束日期（合法推进、与 timeAdvance 冲突时以其为准）", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    // 第 1 日 → gameTimeDayNext=3（未提供 timeAdvance）：日期直接推进到第 3 日
+    const before = store.loadAdventure(started.sessionId);
+    const advanced = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-daynext-3",
+        customChoice: "连夜赶路。",
+      }),
+      createTurnId: () => "turn-daynext-3",
+      generate: async () => ({
+        content: turnContent(started, "旅人连日赶路，数日后抵达城外。", {
+          eventId: "event-daynext-3",
+          evidenceId: "event-daynext-3",
+          sceneTransition: { gameTimeDayNext: 3 },
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    assert.equal(advanced.committedTurn.sequence, 2);
+    let core = advanced.adventure.branchState.states.find(
+      (state) => state.entityType === "session_state" && state.entityId === "core",
+    );
+    assert.equal(core.state.gameTimeDay, 3);
+    assert.ok(
+      advanced.adventure.branchState.recentTurns
+        .at(-1)
+        .stateChanges.some(
+          (change) =>
+            change.entityType === "session_state" &&
+            change.reason.includes("gameTimeDayNext"),
+        ),
+      "gameTimeDayNext 显式声明的推进应写入审计原因",
+    );
+
+    // 第 3 日 → gameTimeDayNext=5 与 timeAdvance=one_day 冲突：警告且日期按 gameTimeDayNext=5
+    const before2 = store.loadAdventure(started.sessionId);
+    const conflicted = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before2.branchState.branch.headTurnId,
+        idempotencyKey: "request-daynext-conflict",
+        customChoice: "继续赶路。",
+      }),
+      createTurnId: () => "turn-daynext-conflict",
+      generate: async () => ({
+        content: turnContent(started, "又过了两天，旅人抵达渡口。", {
+          eventId: "event-daynext-conflict",
+          evidenceId: "event-daynext-conflict",
+          sceneTransition: { gameTimeDayNext: 5, timeAdvance: "one_day" },
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    core = conflicted.adventure.branchState.states.find(
+      (state) => state.entityType === "session_state" && state.entityId === "core",
+    );
+    assert.equal(core.state.gameTimeDay, 5, "两者都提供时以 gameTimeDayNext 为准");
+    const savedTurn = conflicted.adventure.branchState.recentTurns.find(
+      (turn) => turn.id === "turn-daynext-conflict",
+    );
+    assert.ok(savedTurn, "冲突只产生警告，回合正常提交");
+    assert.ok(
+      (savedTurn.generatedOutput.warnings ?? []).some(
+        (warning) =>
+          warning.includes("gameTimeDayNext") && warning.includes("timeAdvance"),
+      ),
+      "与 timeAdvance 语义冲突时必须产生 normalizationWarning",
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("时间短语一致性警告：正文暗示跨日但未声明日期推进时提醒且不拒绝", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    // 场景 A（e2e）：正文"次日"但未声明任何日期推进 → 警告且回合正常提交，日期不变
+    const before = store.loadAdventure(started.sessionId);
+    const nextDayTurn = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-phrase-nextday",
+        customChoice: "等到第二天再调查。",
+      }),
+      createTurnId: () => "turn-phrase-nextday",
+      generate: async () => ({
+        content: turnContent(started, "次日清晨，旅人再次来到钟楼前。", {
+          eventId: "event-phrase-nextday",
+          evidenceId: "event-phrase-nextday",
+        }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    assert.ok(nextDayTurn.committedTurn, "时间短语警告不拒绝回合");
+    let core = nextDayTurn.adventure.branchState.states.find(
+      (state) => state.entityType === "session_state" && state.entityId === "core",
+    );
+    assert.equal(core.state.gameTimeDay, 1, "未声明推进时日期保持第 1 日");
+    const savedTurn = nextDayTurn.adventure.branchState.recentTurns.find(
+      (turn) => turn.id === "turn-phrase-nextday",
+    );
+    assert.ok(
+      (savedTurn.generatedOutput.warnings ?? []).some((warning) =>
+        warning.includes("次日"),
+      ),
+      "正文出现跨日短语且日期未推进时必须产生警告",
+    );
+
+    // 后续场景（直接校验）：误报控制
+    const adventure = store.loadAdventure(started.sessionId);
+    const validTurn = (scene, sceneTransition) =>
+      normalizeGeneratedTurnVersion(
+        turnContent(started, scene, {
+          eventId: "event-phrase-x",
+          evidenceId: "event-phrase-x",
+          sceneTransition,
+        }),
+      );
+
+    // 场景 B：正文"数小时后" + timeAdvance=hours → 不警告（小时级推进合法）
+    const hours = validateGeneratedTurn(
+      validTurn("数小时后，钟楼外传来新的动静。", { timeAdvance: "hours" }),
+      adventure,
+      "turn-phrase-hours",
+    );
+    assert.ok(
+      !hours.warnings.some((warning) => warning.includes("时间流逝短语")),
+      "数小时后 + hours 不应触发警告",
+    );
+
+    // 场景 C：正文无时间词 → 不警告
+    const silent = validateGeneratedTurn(
+      validTurn("旅人与守钟人继续交谈。", {}),
+      adventure,
+      "turn-phrase-silent",
+    );
+    assert.ok(
+      !silent.warnings.some((warning) => warning.includes("时间流逝短语")),
+    );
+
+    // 场景 D：正文"次日"但 timeAdvance=hours（hours 不跨天）→ 矛盾，警告
+    const hoursConflict = validateGeneratedTurn(
+      validTurn("次日清晨，旅人离开钟楼。", { timeAdvance: "hours" }),
+      adventure,
+      "turn-phrase-hours-conflict",
+    );
+    assert.ok(
+      hoursConflict.warnings.some((warning) => warning.includes("次日")),
+      "hours 不跨天但正文写次日属于矛盾，应警告",
+    );
+
+    // 场景 E：正文"数日后"但已声明 gameTimeDayNext → 不警告（已显式声明）
+    const declared = validateGeneratedTurn(
+      validTurn("数日后，旅人抵达城外。", { gameTimeDayNext: 4 }),
+      adventure,
+      "turn-phrase-declared",
+    );
+    assert.ok(
+      !declared.warnings.some((warning) => warning.includes("时间流逝短语")),
+      "已通过 gameTimeDayNext 声明日期推进时不警告",
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("gameTimeDayNext 驱动的期限到期回归：任务 deadlineDay、触发器 deadline、词条 expiresAtDay 自动受益", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store, {
+      triggers: [
+        {
+          id: "deadline-flood",
+          when: "玩家在第 2 天前完成堤坝加固",
+          consequence: "山洪提前冲垮旧堤。",
+          deadlineDay: 2,
+          stateEffects: { flags: ["bad_end"] },
+        },
+      ],
+    });
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "daynext-status-set",
+          operation: "set_statuses",
+          characterId: started.mainCharacterId,
+          statuses: [
+            {
+              id: "poison-short",
+              name: "速发毒",
+              kind: "debuff",
+              description: "毒性两日内发作",
+              expiresAtDay: 2,
+            },
+          ],
+        },
+      }),
+    );
+
+    // 第一回合缺省（第 1 日）：期限未到，任务仍 active、触发器未触发、词条保留
+    let after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-daynext-before",
+      turnId: "turn-daynext-before",
+      eventId: "event-daynext-before",
+      scene: "旅人继续在钟楼附近打听。",
+      choice: "继续调查。",
+    });
+    assert.equal(findStoryModule(after, "cure-poison").state.status, "active");
+    assert.equal(
+      after.branchState.states.find(
+        (state) =>
+          state.entityType === "plot_trigger" &&
+          state.state.triggerId === "deadline-flood",
+      ).state.status,
+      "armed",
+    );
+    const playerState = after.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal(playerState.state.statuses.length, 1);
+
+    // 第二回合 gameTimeDayNext=3（跨过任务期限 3 与触发器期限 2，词条到期日 2）：
+    // 任务 expired、触发器强制 fire、到期词条自动移除
+    after = await advanceOneTurn(store, started, {
+      idempotencyKey: "request-daynext-expiry",
+      turnId: "turn-daynext-expiry",
+      eventId: "event-daynext-expiry",
+      scene: "数日后，解药仍无下落，山洪却已逼近。",
+      choice: "继续寻找解药。",
+      sceneTransition: { gameTimeDayNext: 3 },
+    });
+    const core = after.branchState.states.find(
+      (state) => state.entityType === "session_state" && state.entityId === "core",
+    );
+    assert.equal(core.state.gameTimeDay, 3);
+    const expired = findStoryModule(after, "cure-poison").state;
+    assert.equal(expired.status, "expired");
+    assert.equal(expired.expiredAtTurnId, "turn-daynext-expiry");
+    const trigger = after.branchState.states.find(
+      (state) =>
+        state.entityType === "plot_trigger" &&
+        state.state.triggerId === "deadline-flood",
+    );
+    assert.equal(trigger.state.status, "fired", "触发器 deadline 到期自动强制 fire");
+    assert.match(trigger.state.fireReason, /期限/);
+    assert.equal(core.state.badEnd, true, "触发器 stateEffects 随到期 fire 强制应用");
+    const playerAfter = after.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal(
+      playerAfter.state.statuses.length,
+      0,
+      "expiresAtDay ≤ 当前日期的词条随日期推进自动移除",
     );
   } finally {
     database.close();
