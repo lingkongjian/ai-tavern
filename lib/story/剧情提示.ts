@@ -30,6 +30,54 @@ function readArray(value: JsonValue | undefined) {
   return Array.isArray(value) ? value : [];
 }
 
+/** 角色可见状态词条：过滤 hidden=true 的未察觉词条，按模型可维护的字段输出。 */
+function isVisibleStatusEntry(item: JsonValue): item is JsonObject {
+  return isObject(item) && item.hidden !== true;
+}
+
+function visibleCharacterStatuses(value: JsonValue | undefined) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isVisibleStatusEntry)
+    .slice(0, 20)
+    .map((item) => ({
+      id: readText(item.id),
+      name: readText(item.name),
+      kind: readText(item.kind),
+      description: readText(item.description),
+      ...(readText(item.sourceTurnId)
+        ? { sourceTurnId: readText(item.sourceTurnId) }
+        : {}),
+      ...(typeof item.expiresAtDay === "number"
+        ? { expiresAtDay: item.expiresAtDay }
+        : {}),
+    }));
+}
+
+/** 隐藏状态词条（hidden=true）：导演级"未察觉状态"，注入专用导演区。 */
+function isHiddenStatusEntry(item: JsonValue): item is JsonObject {
+  return isObject(item) && item.hidden === true;
+}
+
+function collectHiddenStatuses(value: JsonValue | undefined) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isHiddenStatusEntry)
+    .slice(0, 10)
+    .map((item) => ({
+      id: readText(item.id),
+      name: readText(item.name),
+      kind: readText(item.kind),
+      description: readText(item.description),
+      ...(readText(item.sourceTurnId)
+        ? { sourceTurnId: readText(item.sourceTurnId) }
+        : {}),
+      ...(typeof item.expiresAtDay === "number"
+        ? { expiresAtDay: item.expiresAtDay }
+        : {}),
+    }));
+}
+
 export interface ResolvedPlayerTurn {
   playerInput: JsonObject;
   displayMessage: string;
@@ -337,6 +385,7 @@ export function createStoryGenerationPrompt(input: {
       const restriction = isObject(current?.state.restriction)
         ? current.state.restriction
         : null;
+      const statuses = visibleCharacterStatuses(current?.state.statuses);
       return {
         id: state.entityId,
         name: readText(current?.state.name) || readText(data.name),
@@ -351,8 +400,26 @@ export function createStoryGenerationPrompt(input: {
               },
             }
           : {}),
+        ...(statuses.length > 0 ? { statuses } : {}),
       };
     });
+  const hiddenCharacterStatuses = usableStateRecords
+    .filter((state) => state.entityType === "character_state")
+    .map((state) => {
+      const hidden = collectHiddenStatuses(state.state.statuses);
+      if (hidden.length === 0) return null;
+      return {
+        characterId: state.entityId,
+        characterName:
+          readText(state.state.name) ||
+          readText(state.state.role) ||
+          state.entityId,
+        statuses: hidden,
+      };
+    })
+    .filter(
+      (item): item is NonNullable<typeof item> => item !== null,
+    );
   const relevantCharacterIds = new Set(
     characterDirectory
       .filter(
@@ -421,12 +488,36 @@ export function createStoryGenerationPrompt(input: {
     selectedStateRecords.push(item.state);
     stateTokens += item.cost;
   }
-  const activeStates = selectedStateRecords.map((state) => ({
+  const activeStates = selectedStateRecords.map((state) => {
+    if (state.entityType !== "character_state") {
+      return {
+        entityType: state.entityType,
+        entityId: state.entityId,
+        version: state.version,
+        state: state.state,
+      };
+    }
+    // character_state 脱敏：hidden=true 的状态词条只以导演级
+    // hiddenCharacterStatuses 注入，不得作为角色已知信息进入可见状态区。
+    const stateValue = state.state;
+    if (!Array.isArray(stateValue.statuses)) {
+      return {
+        entityType: state.entityType,
+        entityId: state.entityId,
+        version: state.version,
+        state: stateValue,
+      };
+    }
+    const visibleStatuses = stateValue.statuses.filter(
+      (item) => !(isObject(item) && item.hidden === true),
+    );
+    return {
       entityType: state.entityType,
       entityId: state.entityId,
       version: state.version,
-      state: state.state,
-    }));
+      state: { ...stateValue, statuses: visibleStatuses },
+    };
+  });
   const characterIds = usableStateRecords
     .filter((state) => state.entityType === "character_card")
     .map((state) => state.entityId);
@@ -511,6 +602,9 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 23. plotThreads 是剧本包预埋的伏笔，对 NPC 不可见。status=seeded 的伏笔已经埋下：若本轮剧情自然抵达其 payoffCondition 所描述的情形，必须回收该伏笔——在叙述中呈现 payoffSummary 的核心信息，并在 stateCommit.plotThreadUpdates 中报告 {"threadId":"...","operation":"payoff"}；不要提前泄露或跳过。status=dormant 且与本轮相关的伏笔：若本轮剧情满足了 seedCondition（如角色进入相关地点、遭遇相关人物或关键物件），把伏笔悄然埋入本轮叙述（保持含蓄，NPC 不应察觉其目的），并在 plotThreadUpdates 中报告 {"threadId":"...","operation":"seed"}。
 24. plotTriggers 是剧本包预埋的偏离触发器，对 NPC 不可见。任何未触发的触发器若其 when 条件在本轮剧情中得到满足，consequence 必须作为“意外阻碍”真实写入本轮事实（人物、场面、事件），不得因为后果严厉而回避、淡化或改期；同时在 stateCommit.plotTriggerUpdates 中报告 {"triggerId":"...","operation":"fire"}。deadlineExpired=true 的触发器期限已至，本轮必须让 consequence 显现并报告 fire。触发器声明的关系/属性/标志变化由系统在报告 fire 后强制应用，模型不得自行重复或改写这些数值。
 25. 属性判定：character_state.attributes 保存角色属性（力量/敏捷/感知/意志/魅力/智力/体质，0-100，未设定时按 50 计）。当玩家角色或在场角色进行有明显成败可能的关键行动（潜行、说服、对抗、搜索、拆解、战斗动作等）时，可以在顶层 attributeChecks 中提议判定：模型只提议“何时判、用什么属性、多难（1-100 整数）”，绝不自行写出判定结果。玩家掷骰后由系统确定性结算并把结果作为已发生事实回填本回合。每轮最多 4 项；角色属性随剧情变化通过 characterStateChanges 的 attributes 对象（0-100 绝对数值）更新。
+26. 角色状态词条：character_state.statuses 记录角色身上持续的 buff/debuff 词条（受伤、中毒、迅捷等），每项包含 id（稳定唯一，修改时保持不变）、name、kind（buff 增益 / debuff 减益）、description、expiresAtDay（可选游戏内到期日，第 N 天含当天到期）。词条必须按剧情增减：剧情实际造成伤害、染毒、获得增益或解除状态时，在本轮 characterStateChanges 的 patch.statuses 中写入或更新对应词条。patch.statuses 是完整数组替换：修改、解锁或移除某个词条时必须提供包含全部剩余词条的新数组，未变化的词条必须保留原 id 与原内容，被移除的词条不再出现在新数组中；patch.statuses=null 表示清除该角色全部词条。
+27. 隐藏状态：上下文中的 hiddenCharacterStatuses 是导演级"未察觉状态"清单，角色不知道这些状态的存在与内容（hidden=true）。角色未察觉前，不得在剧情叙述、角色对话或角色思考中直接点破该状态，不得替角色说出症状名称、原因或来源，也不得当作角色已知信息使用。角色通过剧情行动（检查伤口、求医、观察症状、探索等）实际认识到该状态后，才能在同一回合通过 patch.statuses 把该词条的 hidden 置为 false（id 不变、其余内容保留），使其转为角色已知的可见状态继续维护。expiresAtDay ≤ 当前游戏内天数的词条会在回合提交时由系统自动移除，模型不应再在后续剧情中提及已到期词条；新获得有期限的词条时可设置 expiresAtDay 表达时限，到期前应让时限在剧情中显现。
+28. 剧情发展与行为倾向：剧情发展必须与角色身上的状态相关——debuff 随时间或剧情恶化或恢复（中毒加深、伤势恶化或好转、增益消退或延续），并体现在叙述、状态词条内容更新与候选选项之中。角色身上存在 debuff 且存在可行解决方案（求医、解毒、治疗、休息、移除诅咒等）时，角色行动与候选选项应倾向解决该 debuff；若当前没有可行方案，也应体现状态对行动的制约（行动吃力、体力下降、反应迟钝等）。进行属性判定时应结合角色当前状态词条判断判定合理性（如重伤角色攀爬难度提高、中毒角色体力判定更严、迅捷状态闪避更从容），但判定仍由系统按属性与难度确定性结算。
 
 返回结构必须完整：
 {
@@ -527,7 +621,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
   },
   "stateCommit": {
     "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"moment（缺省即时间基本不变；仅剧情实际经过数小时/次日/数日时填 hours/one_day/several_days）","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
-    "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60}},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
+    "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60},"statuses":[{"id":"wound-1","name":"受伤","kind":"debuff","description":"左臂刀伤未愈合","expiresAtDay":5}]},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
     "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"]}],
     "characterCardChanges": [{"characterId":"角色ID","operation":"add","path":"允许路径","value":{},"reason":"原因","evidence":["事件或对话ID"],"sourceTurnId":"${turnId}"}],
     "worldBookChanges": [],
@@ -560,6 +654,9 @@ worldBookChanges 按需使用以下结构之一：
       longTermMemoryBudget: memoryContext?.budgetTokens ?? 0,
     },
     characterDirectory,
+    ...(hiddenCharacterStatuses.length > 0
+      ? { hiddenCharacterStatuses }
+      : {}),
     storyModules: storyModulesForGeneration,
     storyModuleProgress: storyModules.map((module) => ({
       id: module.id,
@@ -669,6 +766,9 @@ worldBookChanges 按需使用以下结构之一：
     ["剧情任务", { modules: context.storyModules, progress: context.storyModuleProgress }],
     ["伏笔与触发器", { threads: context.plotThreads ?? [], triggers: context.plotTriggers ?? [] }],
     ["当前状态", context.activeStates],
+    ...(hiddenCharacterStatuses.length > 0
+      ? [["未察觉状态", context.hiddenCharacterStatuses] as const]
+      : []),
     ["近期回合", context.recentTurns],
     ["章节摘要", context.chapterSummaries],
     ["长期记忆", context.longTermMemory],

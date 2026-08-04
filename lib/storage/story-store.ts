@@ -335,6 +335,23 @@ export interface CharacterRestriction {
   sinceTurnId?: string;
 }
 
+/**
+ * 角色状态词条：持续中的 buff/debuff（受伤、中毒、迅捷等）。
+ * 存储于 character_state 的 statuses 数组（完整数组替换语义）。
+ */
+export interface CharacterStatus {
+  id: string;
+  name: string;
+  kind: "buff" | "debuff";
+  /** 隐藏状态：角色尚未察觉，仅以导演级信息注入上下文。 */
+  hidden?: boolean;
+  description: string;
+  /** 来源回合。 */
+  sourceTurnId?: string;
+  /** 游戏内到期日（第 N 天，含当天）；到期后随回合提交自动移除。 */
+  expiresAtDay?: number;
+}
+
 export interface AdventureWorldBookEntryInput {
   sourceId?: string;
   sourceBookName?: string;
@@ -435,6 +452,13 @@ export type CharacterManagementInput =
       operation: "set_restriction";
       characterId: string;
       restriction: CharacterRestriction | null;
+    }
+  | {
+      actionId: string;
+      sessionId: string;
+      operation: "set_statuses";
+      characterId: string;
+      statuses: CharacterStatus[] | null;
     };
 
 export interface ManagedCharacterResult {
@@ -5027,6 +5051,24 @@ export class LocalStoryStore {
               : `玩家设置角色行动受限：${input.restriction.kind}（${input.restriction.summary}）`,
           evidence: [],
         });
+      } else if (input.operation === "set_statuses") {
+        if (!currentCard?.isActive) {
+          throw new CharacterManagementError("停用角色不能修改状态词条，请先重新启用。");
+        }
+        mutations.push({
+          entityType: "character_state",
+          entityId: requestedCharacterId,
+          operation: "merge",
+          value:
+            input.statuses === null
+              ? { statuses: null }
+              : { statuses: input.statuses as unknown as JsonValue },
+          reason:
+            input.statuses === null
+              ? "玩家清除了角色的状态词条"
+              : `玩家设置了角色的状态词条（${input.statuses.length} 项）`,
+          evidence: [],
+        });
       } else {
         const relatedRows = this.database
           .prepare(`
@@ -9115,6 +9157,122 @@ export class LocalStoryStore {
         stringifyJson(nextState),
         isActive ? 1 : 0,
         (current?.version ?? 0) + 1,
+        input.turnId,
+        input.now,
+      );
+    }
+
+    // 状态词条到期清理：所有 character_state 中 expiresAtDay 已到（≤ 当前游戏内
+    // 天数）的词条在回合事务内自动移除，并写入 state_changes 供重放与审计。
+    this.applyStatusExpirations({
+      sessionId: input.sessionId,
+      branchId: input.branchId,
+      turnId: input.turnId,
+      now: input.now,
+    });
+  }
+
+  /**
+   * 到期状态词条自动移除：读取当前 session 的 gameTimeDay（本回合已先应用
+   * sceneTransition 的时间推进），移除所有 character_state.statuses 中
+   * expiresAtDay ≤ gameTimeDay 的词条。系统确定性行为，不检查字段锁；
+   * 变更写入 state_changes（merge 语义）保证分支重放一致。
+   */
+  private applyStatusExpirations(input: {
+    sessionId: string;
+    branchId: string;
+    turnId: string;
+    now: string;
+  }) {
+    const sessionRow = this.database
+      .prepare(`
+        SELECT state_json
+        FROM materialized_states
+        WHERE session_id = ? AND branch_id = ?
+          AND entity_type = 'session_state' AND entity_id = 'core'
+      `)
+      .get(input.sessionId, input.branchId) as
+      | { state_json: string }
+      | undefined;
+    const sessionState = sessionRow ? parseObject(sessionRow.state_json) : {};
+    const gameTimeDay =
+      typeof sessionState.gameTimeDay === "number"
+        ? sessionState.gameTimeDay
+        : 1;
+    const characterRows = this.database
+      .prepare(`
+        SELECT entity_id, state_json, is_active, version
+        FROM materialized_states
+        WHERE session_id = ? AND branch_id = ?
+          AND entity_type = 'character_state'
+      `)
+      .all(input.sessionId, input.branchId) as unknown as Array<{
+      entity_id: string;
+      state_json: string;
+      is_active: number;
+      version: number;
+    }>;
+    if (characterRows.length === 0) return;
+    const insertChange = this.database.prepare(`
+      INSERT INTO state_changes (
+        id, session_id, branch_id, turn_id, ordinal,
+        entity_type, entity_id, operation, payload_json,
+        reason, evidence_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const upsertCurrent = this.database.prepare(`
+      INSERT INTO materialized_states (
+        session_id, branch_id, entity_type, entity_id,
+        state_json, is_active, version, updated_turn_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, branch_id, entity_type, entity_id)
+      DO UPDATE SET
+        state_json = excluded.state_json,
+        is_active = excluded.is_active,
+        version = excluded.version,
+        updated_turn_id = excluded.updated_turn_id,
+        updated_at = excluded.updated_at
+    `);
+    for (const [index, row] of characterRows.entries()) {
+      const state = parseObject(row.state_json);
+      const statuses = Array.isArray(state.statuses) ? state.statuses : [];
+      if (statuses.length === 0) continue;
+      const isExpired = (item: JsonValue): item is JsonObject =>
+        isJsonObject(item) &&
+        typeof item.expiresAtDay === "number" &&
+        item.expiresAtDay <= gameTimeDay;
+      const kept = statuses.filter((item) => !isExpired(item));
+      if (kept.length === statuses.length) continue;
+      const expiredNames = statuses
+        .filter(isExpired)
+        .map((item) => readString(item.name))
+        .filter(Boolean)
+        .join("、");
+      // 使用大数 ordinal（1_000_000 起）避免与本回合模型变更的 ordinal 冲突。
+      insertChange.run(
+        randomUUID(),
+        input.sessionId,
+        input.branchId,
+        input.turnId,
+        1_000_000 + index,
+        "character_state",
+        row.entity_id,
+        "merge",
+        stringifyJson({ statuses: kept }),
+        expiredNames
+          ? `状态词条到期自动移除：${expiredNames}`
+          : "状态词条到期自动移除",
+        stringifyJson([]),
+        input.now,
+      );
+      upsertCurrent.run(
+        input.sessionId,
+        input.branchId,
+        "character_state",
+        row.entity_id,
+        stringifyJson({ ...state, statuses: kept }),
+        row.is_active,
+        row.version + 1,
         input.turnId,
         input.now,
       );

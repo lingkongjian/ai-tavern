@@ -736,6 +736,11 @@ export function GameInterface({
     kind: "imprisoned",
     summary: "",
   });
+  const [statusEditorCharacterId, setStatusEditorCharacterId] = useState<
+    string | null
+  >(null);
+  const [statusEditorText, setStatusEditorText] = useState("");
+  const [statusEditorError, setStatusEditorError] = useState("");
   const locationManagerOpen = storyWorkbenchTab === "locations";
   const setLocationManagerOpen = (open: boolean) =>
     setStoryWorkbenchTab(open ? "locations" : null);
@@ -1063,6 +1068,20 @@ export function GameInterface({
     const restriction = isObject(currentState?.state.restriction)
       ? currentState.state.restriction
       : null;
+    const statuses = Array.isArray(currentState?.state.statuses)
+      ? currentState.state.statuses
+          .filter((item) => isObject(item))
+          .map((item) => ({
+            id: text(item.id),
+            name: text(item.name, "未命名状态"),
+            kind: text(item.kind, "debuff"),
+            description: text(item.description),
+            hidden: item.hidden === true,
+            ...(typeof item.expiresAtDay === "number"
+              ? { expiresAtDay: item.expiresAtDay }
+              : {}),
+          }))
+      : [];
     return {
       id: card.entityId,
       name: text(data.name, "未命名角色"),
@@ -1073,6 +1092,7 @@ export function GameInterface({
       isActive: card.isActive,
       present: currentState?.state.present !== false,
       restriction: restriction as { kind: string; summary: string } | null,
+      statuses,
     };
   });
   const characterNameById = new Map(
@@ -2040,6 +2060,61 @@ export function GameInterface({
       summary: character?.restriction?.summary ?? "",
     });
     setCharacterManagerError("");
+  }
+
+  function startStatusEditor(characterId: string) {
+    const character = manageableCharacters.find(
+      (candidate) => candidate.id === characterId,
+    );
+    setStatusEditorCharacterId(characterId);
+    setStatusEditorText(
+      character && character.statuses.length > 0
+        ? JSON.stringify(character.statuses, null, 2)
+        : "",
+    );
+    setStatusEditorError("");
+    setCharacterManagerError("");
+  }
+
+  async function submitCharacterStatuses(characterId: string) {
+    let statuses: unknown = null;
+    const trimmed = statusEditorText.trim();
+    if (trimmed) {
+      try {
+        statuses = JSON.parse(trimmed);
+      } catch {
+        setStatusEditorError("状态词条不是有效的 JSON，请检查格式。");
+        return;
+      }
+    }
+    const saved = await runCharacterOperation({
+      operation: "set_statuses",
+      characterId,
+      statuses,
+    });
+    if (saved) {
+      setStatusEditorCharacterId(null);
+      setStatusEditorError("");
+    }
+  }
+
+  async function clearCharacterStatuses(characterId: string) {
+    if (
+      !window.confirm(
+        "确定清除该角色的全部状态词条吗？\n\n剧情中的 buff/debuff 记录会被清空，角色卡与历史回合不会改写。",
+      )
+    ) {
+      return;
+    }
+    const saved = await runCharacterOperation({
+      operation: "set_statuses",
+      characterId,
+      statuses: null,
+    });
+    if (saved) {
+      setStatusEditorCharacterId(null);
+      setStatusEditorError("");
+    }
   }
 
   function startAddingLocation() {
@@ -6451,6 +6526,28 @@ export function GameInterface({
                           受限原因：{character.restriction.summary}
                         </p>
                       ) : null}
+                      {character.statuses.length > 0 ? (
+                        <ul className="managed-character-statuses">
+                          {character.statuses.map((status) => (
+                            <li
+                              className={
+                                status.kind === "debuff" ? "debuff" : "buff"
+                              }
+                              key={status.id}
+                            >
+                              <span>
+                                {status.kind === "debuff" ? "减益" : "增益"}
+                              </span>
+                              <strong>{status.name}</strong>
+                              <em>{status.description}</em>
+                              {status.hidden ? <small>未察觉</small> : null}
+                              {typeof status.expiresAtDay === "number" ? (
+                                <small>第 {status.expiresAtDay} 日到期</small>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
                     </div>
                   </div>
                   {restrictionEditorCharacterId === character.id ? (
@@ -6508,6 +6605,56 @@ export function GameInterface({
                       </button>
                     </div>
                   ) : null}
+                  {statusEditorCharacterId === character.id ? (
+                    <div className="managed-character-status-editor">
+                      <textarea
+                        rows={5}
+                        value={statusEditorText}
+                        disabled={savingCharacter}
+                        placeholder='[{"id":"wound-1","name":"受伤","kind":"debuff","description":"左臂刀伤未愈合，行动受影响","expiresAtDay":5}]'
+                        onChange={(event) =>
+                          setStatusEditorText(event.target.value)
+                        }
+                      />
+                      <small>
+                        JSON 数组，保存时完整替换当前词条；hidden:true 表示角色尚未察觉；传
+                        null 可清除全部。
+                      </small>
+                      {statusEditorError ? (
+                        <p className="character-manager-error" role="alert">
+                          {statusEditorError}
+                        </p>
+                      ) : null}
+                      <div className="managed-character-status-editor-actions">
+                        <button
+                          type="button"
+                          disabled={savingCharacter}
+                          onClick={() =>
+                            void submitCharacterStatuses(character.id)
+                          }
+                        >
+                          保存状态
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingCharacter}
+                          onClick={() => void clearCharacterStatuses(character.id)}
+                        >
+                          清除全部
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingCharacter}
+                          onClick={() => {
+                            setStatusEditorCharacterId(null);
+                            setStatusEditorError("");
+                          }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="managed-character-actions">
                     <button
                       type="button"
@@ -6535,6 +6682,13 @@ export function GameInterface({
                       }
                     >
                       {character.restriction ? "解除受限" : "设置受限"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingCharacter || !character.isActive}
+                      onClick={() => startStatusEditor(character.id)}
+                    >
+                      {character.statuses.length > 0 ? "编辑状态" : "添加状态"}
                     </button>
                     <button
                       className={character.isActive ? "deactivate" : "reactivate"}

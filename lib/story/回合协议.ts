@@ -1,4 +1,5 @@
 import type {
+  CharacterStatus,
   JsonObject,
   JsonValue,
   LoadedAdventure,
@@ -27,6 +28,11 @@ export interface CharacterRestriction {
   summary: string;
   sinceTurnId?: string;
 }
+
+/** 角色状态词条类型白名单：增益（buff）或减益（debuff）。 */
+export const STATUS_KINDS = ["buff", "debuff"] as const;
+
+export type StatusKind = (typeof STATUS_KINDS)[number];
 
 export interface PlayerTurnRequest {
   expectedHeadTurnId: string | null;
@@ -436,6 +442,100 @@ function readEvidence(
     }
   }
   return evidence;
+}
+
+/**
+ * 校验角色状态词条数组（character_state.statuses）。
+ * - undefined/null：未提供或显式清除，返回 null，不产生校验问题；
+ * - 数组：逐项校验 id（非空、限长、数组内唯一）、name、kind 枚举白名单、
+ *   hidden 布尔、description 限长、sourceTurnId、expiresAtDay 正整数。
+ * 返回规范化后的词条列表（有校验问题时返回仍可读取的部分，由调用方决定成败）。
+ * 供回合协议 patch 校验与人物管理 set_statuses 复用（单一权威模式）。
+ */
+export function validateStatusesArray(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+): CharacterStatus[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value)) {
+    issues.push(`${path} 必须是数组（完整替换）或 null（清除全部）。`);
+    return null;
+  }
+  const result: CharacterStatus[] = [];
+  const ids = new Set<string>();
+  value.forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    if (!isObject(item)) {
+      issues.push(`${itemPath} 必须是对象。`);
+      return;
+    }
+    const id = readString(item.id).trim();
+    if (!id) {
+      issues.push(`${itemPath}.id 不能为空。`);
+    } else if (id.length > 120) {
+      issues.push(`${itemPath}.id 不能超过 120 个字符。`);
+    } else if (ids.has(id)) {
+      issues.push(`${itemPath}.id 状态词条 ID ${id} 重复。`);
+    } else {
+      ids.add(id);
+    }
+    const name = readString(item.name).trim();
+    if (!name) {
+      issues.push(`${itemPath}.name 不能为空。`);
+    } else if (name.length > 80) {
+      issues.push(`${itemPath}.name 不能超过 80 个字符。`);
+    }
+    const kind = readString(item.kind);
+    if (!STATUS_KINDS.includes(kind as StatusKind)) {
+      issues.push(
+        `${itemPath}.kind 必须是 ${STATUS_KINDS.join("、")} 之一。`,
+      );
+    }
+    if (item.hidden !== undefined && typeof item.hidden !== "boolean") {
+      issues.push(`${itemPath}.hidden 必须是布尔值。`);
+    }
+    const description = readString(item.description).trim();
+    if (!description) {
+      issues.push(`${itemPath}.description 不能为空。`);
+    } else if (description.length > 2_000) {
+      issues.push(`${itemPath}.description 不能超过 2000 个字符。`);
+    }
+    if (
+      item.sourceTurnId !== undefined &&
+      (typeof item.sourceTurnId !== "string" || !item.sourceTurnId.trim())
+    ) {
+      issues.push(`${itemPath}.sourceTurnId 必须是回合 ID 文本。`);
+    }
+    if (
+      item.expiresAtDay !== undefined &&
+      (typeof item.expiresAtDay !== "number" ||
+        !Number.isInteger(item.expiresAtDay) ||
+        item.expiresAtDay < 1)
+    ) {
+      issues.push(`${itemPath}.expiresAtDay 必须是大于等于 1 的整数（游戏内到期日）。`);
+    }
+    result.push({
+      id: id || `status-${index}`,
+      name: name || `状态${index + 1}`,
+      kind: STATUS_KINDS.includes(kind as StatusKind)
+        ? (kind as StatusKind)
+        : "debuff",
+      ...(item.hidden !== undefined && typeof item.hidden === "boolean"
+        ? { hidden: item.hidden }
+        : {}),
+      description: description || "",
+      ...(typeof item.sourceTurnId === "string" && item.sourceTurnId.trim()
+        ? { sourceTurnId: item.sourceTurnId.trim() }
+        : {}),
+      ...(typeof item.expiresAtDay === "number" &&
+      Number.isInteger(item.expiresAtDay) &&
+      item.expiresAtDay >= 1
+        ? { expiresAtDay: item.expiresAtDay }
+        : {}),
+    });
+  });
+  return result;
 }
 
 function collectExistingEvidence(adventure: LoadedAdventure) {
@@ -953,6 +1053,13 @@ export function validateGeneratedTurn(
           "角色状态补丁的 restriction 必须是对象（设置受限）或 null（解除受限）。",
         );
       }
+    }
+    if (patch.statuses !== undefined) {
+      validateStatusesArray(
+        patch.statuses,
+        `stateCommit.characterStateChanges[${index}].patch.statuses`,
+        issues,
+      );
     }
     if (patch.attributes !== undefined) {
       if (!isObject(patch.attributes)) {

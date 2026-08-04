@@ -314,6 +314,322 @@ test("manages existing-story characters without creating story turns", () => {
   }
 });
 
+test("set_statuses 校验词条结构，设置/清除/审计/幂等并随存档往返，与 restriction 共存", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-statuses-"));
+  const databasePath = join(temporaryDirectory, "story.sqlite");
+  let database = openLocalDatabase({ filePath: databasePath, migrationsDir });
+
+  try {
+    let store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "状态词条测试",
+      world: { name: "镜城", premise: "镜面会记录公开说出的承诺。" },
+      player: { name: "访客", description: "寻找一份旧誓言的旅行者。" },
+      mainCharacter: {
+        name: "守镜人",
+        role: "镜城档案馆看守",
+        personality: "冷静、严谨，不替陌生人保守未经交换的秘密。",
+        firstMessage: "镜子记得你说过的每一个字。",
+      },
+      openingScene: "访客进入堆满银镜的档案馆。",
+    });
+    const characterId = started.mainCharacterId;
+
+    // —— 结构校验 ——
+    const invalid = (extra) =>
+      managementInput(started.sessionId, {
+        actionId: `statuses-bad-${Math.random()}`,
+        operation: "set_statuses",
+        characterId,
+        ...extra,
+      });
+    // 非法 kind 拒绝
+    assert.throws(
+      () => invalid({ statuses: [{ id: "s1", name: "中毒", kind: "magic", description: "毒性发作" }] }),
+      CharacterManagementInputError,
+    );
+    // name 超长拒绝
+    assert.throws(
+      () => invalid({ statuses: [{ id: "s1", name: "状".repeat(81), kind: "debuff", description: "描述" }] }),
+      CharacterManagementInputError,
+    );
+    // 重复 id 拒绝
+    assert.throws(
+      () =>
+        invalid({
+          statuses: [
+            { id: "dup", name: "受伤", kind: "debuff", description: "伤势" },
+            { id: "dup", name: "中毒", kind: "debuff", description: "毒性" },
+          ],
+        }),
+      CharacterManagementInputError,
+    );
+    // expiresAtDay 非法（0 / 小数 / 文本）拒绝
+    assert.throws(
+      () => invalid({ statuses: [{ id: "s1", name: "中毒", kind: "debuff", description: "毒性", expiresAtDay: 0 }] }),
+      CharacterManagementInputError,
+    );
+    assert.throws(
+      () => invalid({ statuses: [{ id: "s1", name: "中毒", kind: "debuff", description: "毒性", expiresAtDay: 1.5 }] }),
+      CharacterManagementInputError,
+    );
+    assert.throws(
+      () => invalid({ statuses: [{ id: "s1", name: "中毒", kind: "debuff", description: "毒性", expiresAtDay: "明天" }] }),
+      CharacterManagementInputError,
+    );
+    // hidden 非布尔拒绝
+    assert.throws(
+      () => invalid({ statuses: [{ id: "s1", name: "潜伏之毒", kind: "debuff", description: "毒性潜伏", hidden: "yes" }] }),
+      CharacterManagementInputError,
+    );
+    // 非数组非 null 拒绝
+    assert.throws(
+      () => invalid({ statuses: "中毒" }),
+      CharacterManagementInputError,
+    );
+    // 未提供 statuses 拒绝
+    assert.throws(
+      () => invalid({}),
+      CharacterManagementInputError,
+    );
+    // 合法请求（含 null 清除与数组）通过解析
+    const cleared = managementInput(started.sessionId, {
+      actionId: "statuses-clear-parse",
+      operation: "set_statuses",
+      characterId,
+      statuses: null,
+    });
+    assert.equal(cleared.statuses, null);
+
+    // —— 设置 ——
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-set",
+        operation: "set_statuses",
+        characterId,
+        statuses: [
+          {
+            id: "wound-arm",
+            name: "受伤",
+            kind: "debuff",
+            description: "左臂刀伤未愈合，影响行动",
+            sourceTurnId: started.openingTurnId,
+            expiresAtDay: 5,
+          },
+          {
+            id: "swift-charm",
+            name: "迅捷",
+            kind: "buff",
+            description: "镜之祝福，身法轻快",
+          },
+        ],
+      }),
+    );
+    let adventure = store.loadAdventure(started.sessionId);
+    const characterState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === characterId,
+    );
+    assert.equal(characterState.state.statuses.length, 2);
+    assert.equal(characterState.state.statuses[0].id, "wound-arm");
+    assert.equal(characterState.state.statuses[0].kind, "debuff");
+    assert.equal(characterState.state.statuses[0].expiresAtDay, 5);
+    assert.equal(characterState.state.statuses[1].kind, "buff");
+
+    // 审计记录人物管理来源
+    const audit = store.loadStateAudit(started.sessionId);
+    assert.equal(
+      audit.actions.some(
+        (action) =>
+          action.source === "character_management" &&
+          action.title.includes("人物管理"),
+      ),
+      true,
+    );
+    // 幂等 actionId 复用
+    const retried = store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-set",
+        operation: "set_statuses",
+        characterId,
+        statuses: [
+          { id: "wound-arm", name: "受伤", kind: "debuff", description: "左臂刀伤未愈合，影响行动" },
+        ],
+      }),
+    );
+    assert.equal(retried.reused, true);
+    assert.equal(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS total FROM character_management_changes WHERE action_id = ?",
+        )
+        .get("statuses-set").total,
+      1,
+    );
+
+    // —— 与 restriction 共存 ——
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-with-restriction",
+        operation: "set_restriction",
+        characterId,
+        restriction: { kind: "bound", summary: "被铁链束缚在柱上" },
+      }),
+    );
+    adventure = store.loadAdventure(started.sessionId);
+    const coexistingState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === characterId,
+    );
+    assert.equal(coexistingState.state.restriction.kind, "bound");
+    assert.equal(coexistingState.state.statuses.length, 2);
+
+    // —— 隐藏词条与上下文注入 ——
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-hidden",
+        operation: "set_statuses",
+        characterId,
+        statuses: [
+          {
+            id: "wound-arm",
+            name: "受伤",
+            kind: "debuff",
+            description: "左臂刀伤未愈合",
+            expiresAtDay: 5,
+          },
+          {
+            id: "poison-slow",
+            name: "慢性毒",
+            kind: "debuff",
+            hidden: true,
+            description: "镜中渗入的慢性毒，角色尚未察觉",
+            expiresAtDay: 7,
+          },
+        ],
+      }),
+    );
+    const hiddenMessages = createStoryGenerationMessages({
+      adventure: store.loadAdventure(started.sessionId),
+      turnId: "next-turn-statuses-test",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    // 系统规则包含未察觉/到期/行为倾向规则
+    assert.match(hiddenMessages[0].content, /未察觉状态/);
+    assert.match(hiddenMessages[0].content, /hiddenCharacterStatuses/);
+    assert.match(hiddenMessages[0].content, /求医、解毒、治疗、休息/);
+    assert.match(hiddenMessages[0].content, /expiresAtDay/);
+    // 导演级区包含隐藏词条，角色可见区不泄露
+    const userJson = JSON.parse(hiddenMessages[1].content.slice("请根据以下 JSON 故事上下文生成并只返回下一回合 JSON：".length));
+    assert.equal(userJson.hiddenCharacterStatuses[0].characterId, characterId);
+    assert.equal(userJson.hiddenCharacterStatuses[0].statuses[0].id, "poison-slow");
+    const directoryEntry = userJson.characterDirectory.find(
+      (character) => character.id === characterId,
+    );
+    assert.equal(
+      directoryEntry.statuses.some((status) => status.id === "poison-slow"),
+      false,
+    );
+    assert.equal(
+      directoryEntry.statuses.some((status) => status.id === "wound-arm"),
+      true,
+    );
+
+    // —— 清除全部 ——
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-clear",
+        operation: "set_statuses",
+        characterId,
+        statuses: null,
+      }),
+    );
+    adventure = store.loadAdventure(started.sessionId);
+    const clearedState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === characterId,
+    );
+    assert.equal("statuses" in clearedState.state, false);
+
+    // —— 玩家角色与停用角色拒绝 ——
+    assert.throws(
+      () =>
+        store.manageCharacter(
+          managementInput(started.sessionId, {
+            actionId: "statuses-player-blocked",
+            operation: "set_statuses",
+            characterId: started.playerCharacterId,
+            statuses: [{ id: "s1", name: "受伤", kind: "debuff", description: "测试" }],
+          }),
+        ),
+      CharacterManagementError,
+    );
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-deactivate",
+        operation: "set_active",
+        characterId,
+        active: false,
+      }),
+    );
+    assert.throws(
+      () =>
+        store.manageCharacter(
+          managementInput(started.sessionId, {
+            actionId: "statuses-inactive-blocked",
+            operation: "set_statuses",
+            characterId,
+            statuses: [{ id: "s1", name: "受伤", kind: "debuff", description: "测试" }],
+          }),
+        ),
+      CharacterManagementError,
+    );
+
+    // —— 存档往返 ——
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-reactivate",
+        operation: "set_active",
+        characterId,
+        active: true,
+      }),
+    );
+    store.manageCharacter(
+      managementInput(started.sessionId, {
+        actionId: "statuses-roundtrip",
+        operation: "set_statuses",
+        characterId,
+        statuses: [
+          { id: "wound-arm", name: "受伤", kind: "debuff", description: "左臂刀伤未愈合" },
+        ],
+      }),
+    );
+    database.close();
+    database = openLocalDatabase({ filePath: databasePath, migrationsDir });
+    store = new LocalStoryStore(database);
+    adventure = store.loadAdventure(started.sessionId);
+    const roundtripState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === characterId,
+    );
+    assert.equal(roundtripState.state.statuses.length, 1);
+    assert.equal(roundtripState.state.statuses[0].id, "wound-arm");
+    assert.equal(roundtripState.state.statuses[0].kind, "debuff");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("行动受限状态可设置、解除、进入审计并随存档往返", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-restriction-"));
   const databasePath = join(temporaryDirectory, "story.sqlite");

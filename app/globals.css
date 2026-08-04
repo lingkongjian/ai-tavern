@@ -5679,6 +5679,105 @@ a {
   width: 100%;
 }
 
+.managed-character-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.managed-character-statuses li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 999px;
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+
+.managed-character-statuses li span {
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 0.52rem;
+}
+
+.managed-character-statuses li.buff {
+  border-color: rgb(113 154 120 / 28%);
+  color: #7f9e84;
+}
+
+.managed-character-statuses li.buff span {
+  background: rgb(113 154 120 / 16%);
+}
+
+.managed-character-statuses li.debuff {
+  border-color: rgb(171 78 85 / 30%);
+  color: #a97b76;
+}
+
+.managed-character-statuses li.debuff span {
+  background: rgb(171 78 85 / 16%);
+}
+
+.managed-character-statuses li strong {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.managed-character-statuses li em {
+  color: #8a7d73;
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-character-statuses li small {
+  padding: 1px 5px;
+  border: 1px solid rgb(171 155 120 / 22%);
+  border-radius: 999px;
+  color: #9c8b6d;
+  font-size: 0.5rem;
+  white-space: nowrap;
+}
+
+.managed-character-status-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.managed-character-status-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.62rem;
+}
+
+.managed-character-status-editor > small {
+  color: #746a63;
+  font-size: 0.56rem;
+  line-height: 1.5;
+}
+
+.managed-character-status-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.managed-character-status-editor-actions button {
+  flex: 1 1 auto;
+}
+
 .managed-character-actions {
   display: flex;
   flex: 0 0 auto;

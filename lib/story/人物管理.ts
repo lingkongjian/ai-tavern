@@ -2,8 +2,12 @@ import type {
   AdventureCharacterInput,
   CharacterManagementInput,
   CharacterRestriction,
+  JsonValue,
 } from "@/lib/storage/story-store";
-import { RESTRICTION_KINDS } from "./回合协议.ts";
+import {
+  RESTRICTION_KINDS,
+  validateStatusesArray,
+} from "./回合协议.ts";
 
 const limits = {
   id: 120,
@@ -104,7 +108,8 @@ export function parseCharacterManagementInput(input: {
     operation !== "update" &&
     operation !== "set_presence" &&
     operation !== "set_active" &&
-    operation !== "set_restriction"
+    operation !== "set_restriction" &&
+    operation !== "set_statuses"
   ) {
     issues.push("人物管理操作无效。");
   }
@@ -195,6 +200,24 @@ export function parseCharacterManagementInput(input: {
       operation,
       characterId,
       restriction,
+    };
+  }
+  if (operation === "set_statuses") {
+    if (input.value.statuses === undefined) {
+      issues.push("状态词条不能为空；清除全部请传 null。");
+    }
+    const statuses = validateStatusesArray(
+      input.value.statuses as JsonValue | undefined,
+      "状态词条",
+      issues,
+    );
+    if (issues.length > 0) throw new CharacterManagementInputError(issues);
+    return {
+      actionId,
+      sessionId: input.sessionId,
+      operation,
+      characterId,
+      statuses,
     };
   }
 

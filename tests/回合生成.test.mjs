@@ -16,6 +16,7 @@ import {
   advanceAdventureTurn,
   collectDivergenceSignals,
 } from "../lib/story/回合服务.ts";
+import { createStoryGenerationMessages } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
@@ -1797,6 +1798,519 @@ test("AI 回合设置行动受限后生效，且下一回合受限角色发言�
       ).state.restriction.kind,
       "imprisoned",
     );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+function statusesTestTurn(started, eventId, scene, extra = {}) {
+  return {
+    schemaVersion: "1.0.0",
+    turn: {
+      scene,
+      events: [
+        {
+          id: eventId,
+          type: "status_change",
+          summary: scene,
+          characterIds: [started.playerCharacterId, started.mainCharacterId],
+          locationId: "clock-tower",
+        },
+      ],
+      dialogue: [
+        {
+          id: `${eventId}-line`,
+          speakerId: started.mainCharacterId,
+          content: "镜面在微微发烫。",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+    },
+    decision: {
+      context: "action_direction",
+      prompt: "旅人接下来准备做什么？",
+      choices: [
+        {
+          id: "choice-1",
+          label: "继续调查",
+          description: "留在钟楼继续调查。",
+          stance: "neutral",
+        },
+        {
+          id: "choice-2",
+          label: "回去休息",
+          description: "先离开钟楼休息。",
+          stance: "benevolent",
+        },
+      ],
+    },
+    stateCommit: {
+      sceneTransition: {
+        locationId: "clock-tower",
+        locationName: "逆流钟楼",
+        locationDescription: "铜钟悬在潮湿的石室中央。",
+        presentCharacterIds: [started.playerCharacterId, started.mainCharacterId],
+        reason: "旅人与守钟人仍在钟楼石室中。",
+        evidence: [eventId],
+        ...(extra.timeAdvance ? { timeAdvance: extra.timeAdvance } : {}),
+      },
+      characterStateChanges: extra.characterStateChanges ?? [],
+      relationshipChanges: [],
+      characterCardChanges: [],
+      worldBookChanges: [],
+      plotThreadUpdates: [],
+      plotTriggerUpdates: [],
+      storyDirectionEvaluation: null,
+      summaryPatch: scene,
+    },
+    warnings: [],
+  };
+}
+
+function statusesAdventure(store, campaignName) {
+  return store.startAdventure({
+    campaignName,
+    world: { name: "潮汐城", premise: "钟声会改变潮水方向。" },
+    player: { name: "旅人", description: "寻找失踪同伴的测绘师。" },
+    mainCharacter: {
+      name: "守钟人",
+      role: "钟楼看守",
+      personality: "警觉但守信。",
+      firstMessage: "钟还没有敲响。",
+    },
+    openingScene: "旅人在黄昏来到钟楼。",
+  });
+}
+
+test("角色状态词条 patch 校验：非法结构拒绝，合法数组通过", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-statuses-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "状态协议测试");
+    const adventure = store.loadAdventure(started.sessionId);
+    const base = statusesTestTurn(
+      started,
+      "event-status-protocol",
+      "守钟人查看镜面。",
+    );
+    const withStatuses = (statuses) => ({
+      ...base,
+      stateCommit: {
+        ...base.stateCommit,
+        characterStateChanges: [
+          {
+            characterId: started.mainCharacterId,
+            patch: { statuses },
+            duration: "until_changed",
+            reason: "剧情中的状态变化",
+            evidence: ["event-status-protocol"],
+          },
+        ],
+      },
+    });
+
+    // 非数组非 null → 拒绝
+    assert.throws(
+      () => validateGeneratedTurn(withStatuses("中毒"), adventure, "protocol-1"),
+      GeneratedTurnValidationError,
+    );
+    // 非法 kind → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withStatuses([
+            { id: "s1", name: "中毒", kind: "magic", description: "毒性" },
+          ]),
+          adventure,
+          "protocol-2",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("kind")),
+    );
+    // 重复 id → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withStatuses([
+            { id: "dup", name: "受伤", kind: "debuff", description: "伤势" },
+            { id: "dup", name: "中毒", kind: "debuff", description: "毒性" },
+          ]),
+          adventure,
+          "protocol-3",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("重复")),
+    );
+    // expiresAtDay 非法 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withStatuses([
+            { id: "s1", name: "中毒", kind: "debuff", description: "毒性", expiresAtDay: 0 },
+          ]),
+          adventure,
+          "protocol-4",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("expiresAtDay")),
+    );
+    // hidden 非布尔 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withStatuses([
+            { id: "s1", name: "潜伏", kind: "debuff", description: "潜伏", hidden: 1 },
+          ]),
+          adventure,
+          "protocol-5",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("hidden")),
+    );
+    // null 清除全部 → 通过
+    const cleared = validateGeneratedTurn(
+      withStatuses(null),
+      adventure,
+      "protocol-6",
+    );
+    assert.equal(cleared.stateCommit.characterStateChanges[0].patch.statuses, null);
+    // 合法数组 → 通过
+    const valid = validateGeneratedTurn(
+      withStatuses([
+        {
+          id: "wound-1",
+          name: "受伤",
+          kind: "debuff",
+          description: "左臂刀伤未愈合",
+          expiresAtDay: 5,
+        },
+        {
+          id: "swift-1",
+          name: "迅捷",
+          kind: "buff",
+          description: "镜之祝福",
+          hidden: false,
+        },
+      ]),
+      adventure,
+      "protocol-7",
+    );
+    assert.equal(
+      valid.stateCommit.characterStateChanges[0].patch.statuses.length,
+      2,
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("hidden 状态词条仅导演级注入，探索解锁后转为角色可见状态", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-hidden-status-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "隐藏状态测试");
+    const characterId = started.mainCharacterId;
+
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "hidden-status-set",
+          operation: "set_statuses",
+          characterId,
+          statuses: [
+            {
+              id: "poison-slow",
+              name: "慢性毒",
+              kind: "debuff",
+              hidden: true,
+              description: "镜中渗入的慢性毒，守钟人尚未察觉",
+              expiresAtDay: 7,
+            },
+          ],
+        },
+      }),
+    );
+
+    // 未察觉时：词条只出现在导演级 hiddenCharacterStatuses，角色可见区不含
+    let adventure = store.loadAdventure(started.sessionId);
+    let messages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-hidden-1",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    let context = parseStoryContext(messages[1].content);
+    assert.equal(context.hiddenCharacterStatuses[0].characterId, characterId);
+    assert.equal(context.hiddenCharacterStatuses[0].statuses[0].id, "poison-slow");
+    const directoryEntry = context.characterDirectory.find(
+      (character) => character.id === characterId,
+    );
+    assert.equal("statuses" in directoryEntry, false);
+    // activeStates 中的完整状态也被脱敏
+    const activeState = context.activeStates.find(
+      (state) => state.entityType === "character_state" && state.entityId === characterId,
+    );
+    assert.equal(Array.isArray(activeState.state.statuses), true);
+    assert.equal(activeState.state.statuses.length, 0);
+
+    // 模型同轮让角色通过检查伤口实际认识到状态，patch 中 hidden 置 false
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "hidden-unlock-1",
+        customChoice: "继续调查",
+      }),
+      createTurnId: () => "turn-hidden-1",
+      generate: async () => ({
+        content: statusesTestTurn(
+          started,
+          "event-hidden-1",
+          "守钟人挽起袖子，看见左臂上一道淡淡的黑纹，终于意识到自己中毒了。",
+          {
+            characterStateChanges: [
+              {
+                characterId,
+                patch: {
+                  statuses: [
+                    {
+                      id: "poison-slow",
+                      name: "慢性毒",
+                      kind: "debuff",
+                      hidden: false,
+                      description: "镜中渗入的慢性毒，守钟人已察觉",
+                      expiresAtDay: 7,
+                    },
+                  ],
+                },
+                duration: "until_changed",
+                reason: "守钟人通过检查伤口认识到自己中毒",
+                evidence: ["event-hidden-1"],
+              },
+            ],
+          },
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    adventure = store.loadAdventure(started.sessionId);
+    const stateAfterUnlock = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" && state.entityId === characterId,
+    );
+    assert.equal(stateAfterUnlock.state.statuses[0].hidden, false);
+
+    // 解锁后：导演区不再注入，角色可见区正常展示
+    messages = createStoryGenerationMessages({
+      adventure,
+      turnId: "next-turn-hidden-2",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    context = parseStoryContext(messages[1].content);
+    assert.equal("hiddenCharacterStatuses" in context, false);
+    const unlockedEntry = context.characterDirectory.find(
+      (character) => character.id === characterId,
+    );
+    assert.equal(unlockedEntry.statuses[0].id, "poison-slow");
+    assert.equal(unlockedEntry.statuses[0].hidden, undefined);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("到期状态词条在回合提交时自动移除，未到期保留并写入状态变化记录", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-status-expiry-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "状态到期测试");
+    const characterId = started.mainCharacterId;
+
+    store.manageCharacter(
+      parseCharacterManagementInput({
+        sessionId: started.sessionId,
+        value: {
+          actionId: "expiry-status-set",
+          operation: "set_statuses",
+          characterId,
+          statuses: [
+            {
+              id: "poison-short",
+              name: "速发毒",
+              kind: "debuff",
+              description: "毒性将在次日发作完毕",
+              expiresAtDay: 2,
+            },
+            {
+              id: "wound-long",
+              name: "重伤",
+              kind: "debuff",
+              description: "胸口的伤势需要数日静养",
+              expiresAtDay: 5,
+            },
+          ],
+        },
+      }),
+    );
+
+    // 第一回合未推进时间（仍为第 1 日）：两个词条都保留
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "expiry-1",
+        customChoice: "继续调查",
+      }),
+      createTurnId: () => "turn-expiry-1",
+      generate: async () => ({
+        content: statusesTestTurn(
+          started,
+          "event-expiry-1",
+          "守钟人包扎了伤口，毒势没有扩散。",
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    let adventure = store.loadAdventure(started.sessionId);
+    let state = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" && state.entityId === characterId,
+    );
+    assert.equal(state.state.statuses.length, 2);
+    assert.deepEqual(
+      state.state.statuses.map((status) => status.id).sort(),
+      ["poison-short", "wound-long"],
+    );
+
+    // 第二回合推进一天（第 2 日）：expiresAtDay=2 的词条自动移除，未到期保留
+    const second = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: first.committedTurn.id,
+        idempotencyKey: "expiry-2",
+        selectedChoiceId: "choice-1",
+      }),
+      createTurnId: () => "turn-expiry-2",
+      generate: async () => ({
+        content: statusesTestTurn(
+          started,
+          "event-expiry-2",
+          "第 2 天，速发毒在睡梦中耗尽，胸口的重伤仍在。",
+          { timeAdvance: "one_day" },
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    state = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" && state.entityId === characterId,
+    );
+    assert.equal(state.state.statuses.length, 1);
+    assert.equal(state.state.statuses[0].id, "wound-long");
+
+    // 到期移除写入 state_changes（重放一致性与审计）
+    const expiryChanges = database
+      .prepare(`
+        SELECT reason, payload_json
+        FROM state_changes
+        WHERE session_id = ? AND turn_id = ?
+          AND entity_type = 'character_state' AND entity_id = ?
+          AND reason LIKE '%到期%'
+      `)
+      .all(started.sessionId, "turn-expiry-2", characterId);
+    assert.equal(expiryChanges.length, 1);
+    assert.match(expiryChanges[0].reason, /速发毒/);
+    const payload = JSON.parse(expiryChanges[0].payload_json);
+    assert.equal(payload.statuses.length, 1);
+    assert.equal(payload.statuses[0].id, "wound-long");
+
+    // 第三回合模型在 patch 中续期剩余词条：expiresAtDay 更新后不再到期
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: second.committedTurn.id,
+        idempotencyKey: "expiry-3",
+        selectedChoiceId: "choice-1",
+      }),
+      createTurnId: () => "turn-expiry-3",
+      generate: async () => ({
+        content: statusesTestTurn(
+          started,
+          "event-expiry-3",
+          "守钟人喝下药汤，重伤开始好转。",
+          {
+            timeAdvance: "one_day",
+            characterStateChanges: [
+              {
+                characterId,
+                patch: {
+                  statuses: [
+                    {
+                      id: "wound-long",
+                      name: "重伤",
+                      kind: "debuff",
+                      description: "胸口的伤势逐渐好转",
+                      expiresAtDay: 9,
+                    },
+                  ],
+                },
+                duration: "until_changed",
+                reason: "守钟人用药后重伤开始好转",
+                evidence: ["event-expiry-3"],
+              },
+            ],
+          },
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 800 },
+      }),
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    state = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" && state.entityId === characterId,
+    );
+    assert.equal(state.state.statuses.length, 1);
+    assert.equal(state.state.statuses[0].id, "wound-long");
+    assert.equal(state.state.statuses[0].expiresAtDay, 9);
+    assert.equal(state.state.statuses[0].description, "胸口的伤势逐渐好转");
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
