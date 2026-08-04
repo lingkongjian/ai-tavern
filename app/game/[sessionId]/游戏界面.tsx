@@ -407,6 +407,19 @@ interface BranchManagementResponse {
   issues?: string[];
 }
 
+// 状态审计操作前的"原因输入"弹层请求。Electron 桌面环境不支持 window.prompt，
+// 撤销状态变化/资料修改、字段锁定均改用面板内嵌弹层输入原因。
+type ReasonPromptState =
+  | { kind: "rollback_change"; changeId: string }
+  | { kind: "rollback_asset"; change: ContentAssetManagementChange }
+  | {
+      kind: "set_lock";
+      entityType: StateAuditChange["entityType"];
+      entityId: string;
+      fieldPath: string;
+      locked: boolean;
+    };
+
 interface SavePointResponse {
   recoveryPoints?: AdventureRecoveryPoint[];
   error?: string;
@@ -798,6 +811,10 @@ export function GameInterface({
   >([]);
   const [stateAuditError, setStateAuditError] = useState("");
   const [stateAuditBusy, setStateAuditBusy] = useState("");
+  const [reasonPrompt, setReasonPrompt] = useState<ReasonPromptState | null>(
+    null,
+  );
+  const [reasonPromptValue, setReasonPromptValue] = useState("");
   const [turnContextOpen, setTurnContextOpen] = useState(false);
   const [turnContext, setTurnContext] = useState<LoadedTurnContextSnapshot | null>(null);
   const [turnContextError, setTurnContextError] = useState("");
@@ -819,6 +836,8 @@ export function GameInterface({
   const [branchManagerError, setBranchManagerError] = useState("");
   const [branchBusyAction, setBranchBusyAction] = useState("");
   const [branchName, setBranchName] = useState("");
+  const [renamingBranchId, setRenamingBranchId] = useState<string | null>(null);
+  const [branchRenameValue, setBranchRenameValue] = useState("");
   const [branchSourceTurnId, setBranchSourceTurnId] = useState(
     initialAdventure.branchState.branch.headTurnId ?? "",
   );
@@ -1739,10 +1758,25 @@ export function GameInterface({
     }
   }
 
-  async function renameExistingBranch(branch: AdventureBranchSummary) {
+  function startRenameBranch(branch: AdventureBranchSummary) {
     if (branchBusyAction) return;
-    const requestedName = window.prompt("输入新的分支名称：", branch.name)?.trim();
-    if (!requestedName || requestedName === branch.name) return;
+    setBranchManagerError("");
+    setRenamingBranchId(branch.id);
+    setBranchRenameValue(branch.name);
+  }
+
+  async function submitBranchRename(branch: AdventureBranchSummary) {
+    if (branchBusyAction) return;
+    const requestedName = branchRenameValue.trim();
+    if (!requestedName) {
+      setBranchManagerError("分支名称不能为空。");
+      return;
+    }
+    if (requestedName === branch.name) {
+      setRenamingBranchId(null);
+      setBranchRenameValue("");
+      return;
+    }
     setBranchBusyAction(`rename:${branch.id}`);
     setBranchManagerError("");
     try {
@@ -1757,6 +1791,8 @@ export function GameInterface({
       const body = (await response.json()) as BranchManagementResponse;
       if (!response.ok) throw new Error(body.error ?? "重命名分支失败。");
       applyBranchPayload(body);
+      setRenamingBranchId(null);
+      setBranchRenameValue("");
     } catch (error) {
       setBranchManagerError(
         error instanceof Error ? error.message : "重命名分支失败。",
@@ -2707,6 +2743,7 @@ export function GameInterface({
   async function openStateAudit() {
     setStateAuditOpen(true);
     setStateAuditError("");
+    setReasonPrompt(null);
     setStateAuditBusy("loading");
     try {
       const response = await fetch(
@@ -2818,86 +2855,98 @@ export function GameInterface({
     }
   }
 
-  async function rollbackAuditChange(change: StateAuditChange) {
-    if (!change.canRollback) return;
-    const reason = window.prompt(
-      "请输入撤销这项状态变化的原因。\n\n系统会在当前剧情末尾追加补偿记录，不会删除或改写过去的对话。",
-      "玩家不希望保留这项状态变化",
-    );
-    if (!reason?.trim()) return;
-    if (
-      !window.confirm(
-        "确定撤销这项状态变化吗？\n\n该实体会恢复到变化发生前的完整状态，因此它在更晚回合产生的状态修改也可能被覆盖；所有剧情对话仍会保留。",
-      )
-    ) {
-      return;
-    }
-    await runStateAuditOperation(
-      { operation: "rollback", changeId: change.id, reason: reason.trim() },
-      `rollback:${change.id}`,
-    );
-  }
-
-  async function rollbackContentAsset(change: ContentAssetManagementChange) {
-    if (!change.canRollback || stateAuditBusy) return;
-    const reason = window.prompt(
-      "请输入撤销这项资料修改的原因。\n\n只有当前剧情节点上同一对象的最新修改可以安全撤销。",
-      "玩家不希望保留这项资料修改",
-    );
-    if (!reason?.trim()) return;
-    if (
-      !window.confirm(
-        `确定撤销“${contentAssetOperationLabels[change.operation] ?? "资料修改"} · ${contentAssetTarget(change)}”吗？`,
-      )
-    ) {
-      return;
-    }
-    setStateAuditBusy(`asset:${change.id}`);
+  function openAuditReasonPrompt(state: ReasonPromptState) {
+    if (stateAuditBusy) return;
     setStateAuditError("");
-    try {
-      await sendStoryContentCommand(
-        change.domain,
+    setReasonPrompt(state);
+    setReasonPromptValue(
+      state.kind === "set_lock"
+        ? state.locked
+          ? "保留玩家确认的重要设定"
+          : "允许后续剧情继续更新该字段"
+        : "玩家不希望保留这项状态变化",
+    );
+  }
+
+  async function submitAuditReasonPrompt() {
+    const prompt = reasonPrompt;
+    if (!prompt || stateAuditBusy) return;
+    const reason = reasonPromptValue.trim();
+    if (!reason) return;
+    if (prompt.kind === "rollback_change") {
+      if (
+        !window.confirm(
+          "确定撤销这项状态变化吗？\n\n该实体会恢复到变化发生前的完整状态，因此它在更晚回合产生的状态修改也可能被覆盖；所有剧情对话仍会保留。",
+        )
+      ) {
+        return;
+      }
+      setReasonPrompt(null);
+      await runStateAuditOperation(
+        { operation: "rollback", changeId: prompt.changeId, reason },
+        `rollback:${prompt.changeId}`,
+      );
+    } else if (prompt.kind === "rollback_asset") {
+      const change = prompt.change;
+      if (
+        !window.confirm(
+          `确定撤销“${contentAssetOperationLabels[change.operation] ?? "资料修改"} · ${contentAssetTarget(change)}”吗？`,
+        )
+      ) {
+        return;
+      }
+      setReasonPrompt(null);
+      setStateAuditBusy(`asset:${change.id}`);
+      setStateAuditError("");
+      try {
+        await sendStoryContentCommand(
+          change.domain,
+          { operation: "rollback", changeId: change.id, reason },
+          "撤销资料修改失败。",
+        );
+        await openStateAudit();
+      } catch (error) {
+        setStateAuditError(
+          error instanceof Error ? error.message : "撤销资料修改失败。",
+        );
+      } finally {
+        setStateAuditBusy("");
+      }
+    } else {
+      const { entityType, entityId, fieldPath, locked } = prompt;
+      setReasonPrompt(null);
+      await runStateAuditOperation(
         {
-          operation: "rollback",
-          changeId: change.id,
-          reason: reason.trim(),
+          operation: "set_lock",
+          entityType,
+          entityId,
+          fieldPath,
+          locked,
+          reason,
         },
-        "撤销资料修改失败。",
+        `lock:${entityType}:${entityId}:${fieldPath}`,
       );
-      await openStateAudit();
-    } catch (error) {
-      setStateAuditError(
-        error instanceof Error ? error.message : "撤销资料修改失败。",
-      );
-    } finally {
-      setStateAuditBusy("");
     }
   }
 
-  async function setAuditFieldLock(input: {
+  function requestRollbackAuditChange(change: StateAuditChange) {
+    if (!change.canRollback) return;
+    openAuditReasonPrompt({ kind: "rollback_change", changeId: change.id });
+  }
+
+  function requestRollbackContentAsset(change: ContentAssetManagementChange) {
+    if (!change.canRollback || stateAuditBusy) return;
+    openAuditReasonPrompt({ kind: "rollback_asset", change });
+  }
+
+  function requestAuditFieldLock(input: {
     entityType: StateAuditChange["entityType"];
     entityId: string;
     fieldPath: string;
     locked: boolean;
   }) {
-    const reason = window.prompt(
-      input.locked
-        ? "请输入锁定该字段的原因。锁定对本剧本的所有分支生效，只阻止 AI 自动改写。"
-        : "请输入解除字段锁定的原因。",
-      input.locked ? "保留玩家确认的重要设定" : "允许后续剧情继续更新该字段",
-    );
-    if (!reason?.trim()) return;
-    await runStateAuditOperation(
-      {
-        operation: "set_lock",
-        entityType: input.entityType,
-        entityId: input.entityId,
-        fieldPath: input.fieldPath,
-        locked: input.locked,
-        reason: reason.trim(),
-      },
-      `lock:${input.entityType}:${input.entityId}:${input.fieldPath}`,
-    );
+    if (stateAuditBusy) return;
+    openAuditReasonPrompt({ kind: "set_lock", ...input });
   }
 
   async function importSourceFile(file: File | undefined) {
@@ -3099,6 +3148,9 @@ export function GameInterface({
   }
 
   function selectStoryWorkbenchTab(tab: StoryWorkbenchTab) {
+    if (tab !== "state_audit") {
+      setReasonPrompt(null);
+    }
     if (tab === "memories") {
       void openMemoryManager();
       return;
@@ -4422,6 +4474,7 @@ export function GameInterface({
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget && !stateAuditBusy) {
+              setReasonPrompt(null);
               setStateAuditOpen(false);
             }
           }}
@@ -4445,7 +4498,10 @@ export function GameInterface({
                 type="button"
                 aria-label="关闭状态审计"
                 disabled={Boolean(stateAuditBusy)}
-                onClick={() => setStateAuditOpen(false)}
+                onClick={() => {
+                  setReasonPrompt(null);
+                  setStateAuditOpen(false);
+                }}
               >
                 ×
               </button>
@@ -4534,7 +4590,9 @@ export function GameInterface({
                                           ? "恢复到本次资料修改之前"
                                           : change.rollbackBlockedReason ?? "不能自动撤销"
                                       }
-                                      onClick={() => void rollbackContentAsset(change)}
+                                      onClick={() =>
+                                        requestRollbackContentAsset(change)
+                                      }
                                     >
                                       {stateAuditBusy === `asset:${change.id}`
                                         ? "正在撤销……"
@@ -4611,7 +4669,7 @@ export function GameInterface({
                             type="button"
                             disabled={Boolean(stateAuditBusy)}
                             onClick={() =>
-                              void setAuditFieldLock({
+                              requestAuditFieldLock({
                                 entityType: lock.entityType,
                                 entityId: lock.entityId,
                                 fieldPath: lock.fieldPath,
@@ -4663,7 +4721,7 @@ export function GameInterface({
                                       ? "恢复到这项变化发生前的状态"
                                       : "开局基础资料不能回滚"
                                   }
-                                  onClick={() => void rollbackAuditChange(change)}
+                                  onClick={() => void requestRollbackAuditChange(change)}
                                 >
                                   {stateAuditBusy === `rollback:${change.id}`
                                     ? "正在撤销……"
@@ -4697,7 +4755,7 @@ export function GameInterface({
                                         type="button"
                                         disabled={Boolean(stateAuditBusy)}
                                         onClick={() =>
-                                          void setAuditFieldLock({
+                                          requestAuditFieldLock({
                                             entityType: change.entityType,
                                             entityId: change.entityId,
                                             fieldPath: field.path,
@@ -4724,6 +4782,97 @@ export function GameInterface({
                   ) : null}
                 </div>
               </>
+            ) : null}
+
+            {reasonPrompt ? (
+              <div
+                className="reason-prompt-backdrop"
+                role="presentation"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget && !stateAuditBusy) {
+                    setReasonPrompt(null);
+                  }
+                }}
+              >
+                <form
+                  className="reason-prompt-card"
+                  role="dialog"
+                  aria-modal="true"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submitAuditReasonPrompt();
+                  }}
+                >
+                  <header>
+                    <div>
+                      <p className="eyebrow">修改记录与恢复 · 操作原因</p>
+                      <h3>
+                        {reasonPrompt.kind === "rollback_change"
+                          ? "撤销这项状态变化"
+                          : reasonPrompt.kind === "rollback_asset"
+                            ? "撤销这项资料修改"
+                            : reasonPrompt.locked
+                              ? "锁定字段"
+                              : "解除字段锁定"}
+                      </h3>
+                      <p>
+                        {reasonPrompt.kind === "rollback_change"
+                          ? "系统会在当前剧情末尾追加补偿记录，不会删除或改写过去的对话。"
+                          : reasonPrompt.kind === "rollback_asset"
+                            ? "只有当前剧情节点上同一对象的最新修改可以安全撤销。"
+                            : reasonPrompt.locked
+                              ? "锁定对本剧本的所有分支生效，只阻止 AI 自动改写。"
+                              : "允许后续剧情继续更新该字段。"}
+                      </p>
+                    </div>
+                    <button
+                      className="character-manager-close"
+                      type="button"
+                      aria-label="关闭原因输入"
+                      disabled={Boolean(stateAuditBusy)}
+                      onClick={() => setReasonPrompt(null)}
+                    >
+                      ×
+                    </button>
+                  </header>
+                  <label>
+                    <span>原因（将写入剧情末尾的补偿记录）</span>
+                    <textarea
+                      autoFocus
+                      rows={3}
+                      maxLength={500}
+                      value={reasonPromptValue}
+                      disabled={Boolean(stateAuditBusy)}
+                      onChange={(event) =>
+                        setReasonPromptValue(event.target.value)
+                      }
+                    />
+                  </label>
+                  <footer>
+                    <button
+                      type="button"
+                      disabled={Boolean(stateAuditBusy)}
+                      onClick={() => setReasonPrompt(null)}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={
+                        Boolean(stateAuditBusy) || !reasonPromptValue.trim()
+                      }
+                    >
+                      {reasonPrompt.kind === "rollback_change"
+                        ? "撤销这项变化"
+                        : reasonPrompt.kind === "rollback_asset"
+                          ? "撤销这项修改"
+                          : reasonPrompt.locked
+                            ? "确认锁定"
+                            : "确认解除"}
+                    </button>
+                  </footer>
+                </form>
+              </div>
             ) : null}
           </section>
         </div>
@@ -4927,6 +5076,8 @@ export function GameInterface({
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget && !branchBusyAction) {
+              setRenamingBranchId(null);
+              setBranchRenameValue("");
               setBranchManagerOpen(false);
             }
           }}
@@ -4950,7 +5101,11 @@ export function GameInterface({
                 type="button"
                 aria-label="关闭分支与存档"
                 disabled={Boolean(branchBusyAction)}
-                onClick={() => setBranchManagerOpen(false)}
+                onClick={() => {
+                  setRenamingBranchId(null);
+                  setBranchRenameValue("");
+                  setBranchManagerOpen(false);
+                }}
               >
                 ×
               </button>
@@ -4974,7 +5129,9 @@ export function GameInterface({
                 <div className="branch-list">
                   {branches.map((branch) => (
                     <article
-                      className={branch.isActive ? "active" : ""}
+                      className={`${branch.isActive ? "active" : ""}${
+                        renamingBranchId === branch.id ? " branch-renaming" : ""
+                      }`}
                       key={branch.id}
                     >
                       <div>
@@ -4998,13 +5155,15 @@ export function GameInterface({
                               ? "正在使用"
                               : "切换"}
                         </button>
-                        <button
-                          type="button"
-                          disabled={Boolean(branchBusyAction)}
-                          onClick={() => void renameExistingBranch(branch)}
-                        >
-                          重命名
-                        </button>
+                        {renamingBranchId !== branch.id ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(branchBusyAction)}
+                            onClick={() => startRenameBranch(branch)}
+                          >
+                            重命名
+                          </button>
+                        ) : null}
                         {!branch.isMain ? (
                           <button
                             type="button"
@@ -5025,6 +5184,51 @@ export function GameInterface({
                           删除
                         </button>
                       </footer>
+                      {renamingBranchId === branch.id ? (
+                        <form
+                          className="branch-rename-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void submitBranchRename(branch);
+                          }}
+                        >
+                          <label>
+                            <span>新分支名称</span>
+                            <input
+                              autoFocus
+                              maxLength={80}
+                              value={branchRenameValue}
+                              disabled={Boolean(branchBusyAction)}
+                              onChange={(event) =>
+                                setBranchRenameValue(event.target.value)
+                              }
+                            />
+                          </label>
+                          <div>
+                            <button
+                              type="submit"
+                              disabled={
+                                Boolean(branchBusyAction) ||
+                                !branchRenameValue.trim()
+                              }
+                            >
+                              {branchBusyAction === `rename:${branch.id}`
+                                ? "保存中……"
+                                : "保存"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={Boolean(branchBusyAction)}
+                              onClick={() => {
+                                setRenamingBranchId(null);
+                                setBranchRenameValue("");
+                              }}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </form>
+                      ) : null}
                     </article>
                   ))}
                 </div>

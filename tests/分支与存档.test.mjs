@@ -44,6 +44,14 @@ test("validates branch and save requests", () => {
   assert.deepEqual(parseBranchUpdateRequest({ operation: "set_main" }), {
     operation: "set_main",
   });
+  assert.deepEqual(
+    parseBranchUpdateRequest({ operation: "rename", name: "新名字" }),
+    { operation: "rename", name: "新名字" },
+  );
+  assert.throws(
+    () => parseBranchUpdateRequest({ operation: "rename", name: "  " }),
+    BranchAndSaveInputError,
+  );
   assert.throws(
     () => parseBranchUpdateRequest({ operation: "merge" }),
     BranchAndSaveInputError,
@@ -60,6 +68,74 @@ test("validates branch and save requests", () => {
       }),
     BranchAndSaveInputError,
   );
+});
+
+test("renames a branch at the storage layer and rejects duplicates", () => {
+  const temporaryDirectory = mkdtempSync(
+    join(tmpdir(), "ai-tavern-branch-rename-"),
+  );
+  const databasePath = join(temporaryDirectory, "story.sqlite");
+  let database = openLocalDatabase({ filePath: databasePath, migrationsDir });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "重命名测试",
+      world: { name: "镜城", premise: "名字会改变道路的形状。" },
+      player: { name: "旅人", description: "喜欢给道路起名字的人。" },
+      mainCharacter: {
+        name: "向导",
+        role: "镜城向导",
+        personality: "尊重每个名字。",
+        firstMessage: "你打算怎么称呼这条路？",
+      },
+      openingScene: "旅人与向导站在岔路口。",
+    });
+    const fork = store.createBranch({
+      sessionId: started.sessionId,
+      name: "东路分支",
+      sourceTurnId: started.openingTurnId,
+    });
+
+    const renamed = store.renameBranch(
+      started.sessionId,
+      started.branchId,
+      "主线改名",
+    );
+    assert.equal(renamed.name, "主线改名");
+    let branches = store.listBranches(started.sessionId);
+    const rootAfterRename = branches.find(
+      (branch) => branch.id === started.branchId,
+    );
+    assert.equal(rootAfterRename.name, "主线改名");
+
+    // 空名称与超长名称被拒绝（长度校验与分支名唯一性由存储层保证）
+    assert.throws(
+      () => store.renameBranch(started.sessionId, fork.branchId, "   "),
+      /分支名称/,
+    );
+    assert.throws(
+      () =>
+        store.renameBranch(
+          started.sessionId,
+          fork.branchId,
+          "长".repeat(81),
+        ),
+      BranchManagementError,
+    );
+    // 同剧本内重名被拒绝，原分支名不受影响
+    assert.throws(
+      () => store.renameBranch(started.sessionId, fork.branchId, "主线改名"),
+      /不能重复/,
+    );
+    branches = store.listBranches(started.sessionId);
+    const forkAfterFailure = branches.find(
+      (branch) => branch.id === fork.branchId,
+    );
+    assert.equal(forkAfterFailure.name, "东路分支");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("forks historical state, isolates branches and restores exact save points", () => {

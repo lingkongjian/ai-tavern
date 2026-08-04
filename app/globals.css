@@ -6919,6 +6919,149 @@ a {
   line-height: 1.6;
 }
 
+/* 分支内嵌重命名（Electron 不支持 window.prompt，改为条目内展开输入行） */
+.branch-list article.branch-renaming {
+  flex-wrap: wrap;
+}
+
+.branch-rename-form {
+  display: grid;
+  flex-basis: 100%;
+  padding-top: 10px;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+  gap: 8px;
+}
+
+.branch-rename-form label {
+  display: grid;
+  color: #897970;
+  font-size: 0.61rem;
+  gap: 6px;
+}
+
+.branch-rename-form input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 3px;
+  color: #b5a79f;
+  background: #110d0f;
+  font-size: 0.65rem;
+}
+
+.branch-rename-form > div {
+  display: flex;
+  gap: 6px;
+}
+
+.branch-rename-form button[type="submit"] {
+  color: #201311;
+  background: linear-gradient(135deg, #d9915f, #b96137);
+  font-weight: 700;
+}
+
+/* 状态审计操作原因弹层（替换 window.prompt） */
+.reason-prompt-backdrop {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgb(4 3 4 / 62%);
+  place-items: center;
+}
+
+.reason-prompt-card {
+  display: grid;
+  width: min(560px, 100%);
+  padding: 24px;
+  border: 1px solid var(--line-bright);
+  border-radius: 5px;
+  background:
+    radial-gradient(circle at 90% 0, rgb(105 75 41 / 25%), transparent 24rem),
+    #171214;
+  box-shadow: 0 40px 120px rgb(0 0 0 / 62%);
+  gap: 18px;
+}
+
+.reason-prompt-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.reason-prompt-card > header h3 {
+  margin: 4px 0 0;
+  color: #d8c5b5;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 1.3rem;
+  font-weight: 500;
+}
+
+.reason-prompt-card > header p:last-child {
+  max-width: 420px;
+  margin: 8px 0 0;
+  color: #83776e;
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+
+.reason-prompt-card label {
+  display: grid;
+  color: #897970;
+  font-size: 0.61rem;
+  gap: 6px;
+}
+
+.reason-prompt-card textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 11px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 3px;
+  color: #b5a79f;
+  background: #110d0f;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.reason-prompt-card > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.reason-prompt-card > footer button {
+  padding: 8px 14px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 3px;
+  color: #9e8c7e;
+  background: rgb(31 24 26 / 76%);
+  cursor: pointer;
+  font-size: 0.65rem;
+}
+
+.reason-prompt-card > footer button[type="submit"] {
+  border-color: rgb(212 124 69 / 28%);
+  color: #201311;
+  background: linear-gradient(135deg, #d9915f, #b96137);
+  font-weight: 700;
+}
+
+.reason-prompt-card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (max-width: 680px) {
+  .reason-prompt-backdrop {
+    padding: 12px;
+  }
+}
+
 .location-editor {
   border-color: rgb(111 148 132 / 23%);
   background: linear-gradient(145deg, rgb(28 59 48 / 18%), rgb(10 8 9 / 28%));
