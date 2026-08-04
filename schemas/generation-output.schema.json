@@ -656,6 +656,52 @@
             { "$ref": "#/$defs/nextStoryDirection" },
             { "type": "null" }
           ]
+        },
+        "divergenceState": {
+          "oneOf": [
+            { "$ref": "#/$defs/divergenceState" },
+            { "type": "null" }
+          ],
+          "description": "仅当 continuity=diverged 时填写；aligned/uncertain 时省略或置 null。"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["divergenceState"],
+            "properties": {
+              "divergenceState": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "continuity": {
+                "const": "diverged"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "divergenceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outlineRecoverable", "badEndDrift", "reason"],
+      "properties": {
+        "outlineRecoverable": {
+          "enum": ["recoverable", "broken"],
+          "description": "原作后续剧情的触发条件是否仍可满足：recoverable=仍可沿原作路径继续；broken=已不可满足，需另起炉灶。"
+        },
+        "badEndDrift": {
+          "enum": ["rising", "neutral"],
+          "description": "局势是否正滑向坏结局：rising=正在走向不可挽回；neutral=尚未向坏结局倾斜。"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString",
+          "maxLength": 500,
+          "description": "判断依据（不超过 500 字）。"
         }
       }
     },

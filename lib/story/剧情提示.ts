@@ -152,6 +152,12 @@ export interface SourceProgressInfo {
   chapterCount: number;
 }
 
+/** 导演级偏离状态清单：仅当上一轮剧情判定为 diverged 时注入，不是角色情报。 */
+export type DivergenceSignals = JsonObject & {
+  broken: string[];
+  recoverable: string[];
+};
+
 export function createStoryGenerationPrompt(input: {
   adventure: LoadedAdventure;
   turnId: string;
@@ -160,6 +166,7 @@ export function createStoryGenerationPrompt(input: {
   scriptGuidanceReferences?: SourceReferenceExcerpt[];
   memoryContext?: StoryMemoryContext;
   sourceProgressInfo?: SourceProgressInfo[];
+  divergenceSignals?: DivergenceSignals | null;
 }): StoryGenerationPrompt {
   const { adventure, turnId, resolvedPlayerTurn } = input;
   const sourceReferences = input.sourceReferences ?? [];
@@ -167,6 +174,7 @@ export function createStoryGenerationPrompt(input: {
   const guidanceScope: SourceReferenceScope =
     scriptGuidanceReferences[0]?.scope ?? "next_chapter_director_only";
   const sourceProgressInfo = input.sourceProgressInfo ?? [];
+  const divergenceSignals = input.divergenceSignals ?? null;
   const memoryContext = input.memoryContext;
   const activeStateRecords = adventure.branchState.states.filter(
     (state) => state.isActive,
@@ -453,6 +461,19 @@ ${
 
 同意与玩家控制边界：婚约、婚姻、过去关系、重生记忆、原作既有情节或未明确拒绝都不等于本轮同意。不得替玩家角色同意、发起或完成玩家未输入的亲密行为。任何参与者拒绝、撤回同意、无法同意，或参与者的成年身份不明确时，不得升级亲密内容，应停在可由玩家回应的节点。
 
+${
+  divergenceSignals
+    ? `偏离路线处理规则：上一轮剧情已被判定为明显偏离剧本（continuity=diverged），本轮候选选项必须自然地把剧情推向两个方向之一，不能继续原地打转。
+上下文中的 divergenceSignals 是导演级偏离状态清单，不是角色情报：broken 分组列出原剧本后续触发条件已经不可满足的信号，recoverable 分组列出仍可能满足的信号。它只用于你判断候选选项的方向，不得在台词、叙述或选项措辞中直接引用，也不能让角色知道它的存在。
+候选选项必须对局势有实质推动：改变关系、推进目标、承担代价或产生新的可验证结果。禁止连续两轮全部是调查、观望、试探类选项；若上一轮已经停留在观望，本轮至少提供一个直接行动的选项。
+在保持自然措辞的前提下，候选选项应覆盖以下两个方向，不得出现"坏结局"、"bad end"、"放弃原作"、"跳过剧情"等字样，也不得向玩家说明某些选项是在走向坏结局或脱离原作：
+- 方向一：把局势推向坏结局——孤注一掷、采用极端手段、接受沉重代价、押上一切。若本轮 storyDirectionEvaluation.divergenceState.badEndDrift=rising，可适当增加此类选项的数量。
+- 方向二：不依赖原作路径，用当前已建立的关系、资源或证据另辟蹊径完成原有目标，并自然略过原剧本的后续剧情。若 divergenceState.outlineRecoverable=broken，选项应自然体现另起炉灶、不再回到原剧本路线；若为 recoverable，保留至少一个沿原作路径继续推进的选项。
+本规则是规则 20 的偏离场景例外：剧情已偏离剧本时，你可以基于已发生事实与当前资源提出替代方案，不再强制只能提出调查步骤；替代方案仍必须建立在已发生事实上，不能凭空发明原作不存在的机制来强行圆回原作结局。连续性恢复为 aligned 或 uncertain 时，本规则自动失效，规则 20 恢复原约束。
+divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会展示给玩家：仅当 continuity=diverged 时填写，outlineRecoverable 依据 divergenceSignals.broken 是否已阻断原作后续决定，badEndDrift 依据本轮事件是否把局势推向不可挽回，reason 简述判断依据（不超过 500 字）。`
+    : ""
+}
+
 核心规则：
 1. 不替玩家作出其未明确授权的关键承诺或不可逆决定。
 2. 主要角色必须遵守角色卡、知识边界、目标和当前状态；剧情走向属于 NPC 不可见的导演意图。
@@ -501,12 +522,14 @@ ${
     "worldBookChanges": [],
     "plotThreadUpdates": [],
     "plotTriggerUpdates": [],
-    "storyDirectionEvaluation": {"status":"active 或 completed","reason":"评估原因","evidence":["完成时必须有证据"],"continuity":"aligned、diverged 或 uncertain","continuityReason":"与预埋剧本的连续性判定","recommendedModuleId":null,"suggestedNextDirection":null},
+    "storyDirectionEvaluation": {"status":"active 或 completed","reason":"评估原因","evidence":["完成时必须有证据"],"continuity":"aligned、diverged 或 uncertain","continuityReason":"与预埋剧本的连续性判定","recommendedModuleId":null,"suggestedNextDirection":null,"divergenceState":null},
     "summaryPatch": "用于后续上下文的简短摘要"
   },
   "warnings": [],
   "attributeChecks": []
 }
+
+divergenceState 按需使用：仅当 continuity=diverged 时填写 {"outlineRecoverable":"recoverable 或 broken（原作后续触发条件是否仍可满足）","badEndDrift":"rising 或 neutral（局势是否正滑向坏结局）","reason":"判断依据，不超过 500 字"}；aligned 或 uncertain 时必须省略该字段或置 null。divergenceState 是导演级判断，系统不会展示给玩家，只能自然体现在本轮候选选项的措辞中。
 
 worldBookChanges 按需使用以下结构之一：
 - create：{"operation":"create","entry":{"keys":["关键词"],"content":"持久事实","enabled":true},"sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
@@ -565,6 +588,7 @@ worldBookChanges 按需使用以下结构之一：
       locationId: entry.locationId,
     })),
     playerInput: resolvedPlayerTurn.playerInput,
+    ...(divergenceSignals ? { divergenceSignals } : {}),
     sourceReferences: sourceReferences.map((reference) => ({
       chunkId: reference.chunkId,
       documentName: reference.documentName,
@@ -645,6 +669,9 @@ worldBookChanges 按需使用以下结构之一：
       context.upcomingScriptGuidance,
     ],
     ["玩家输入", context.playerInput],
+    ...(divergenceSignals
+      ? [["偏离状态清单", divergenceSignals] as const]
+      : []),
   ] as const;
   const sections = sectionEntries.map(([name, value]) => ({
     name,

@@ -41,6 +41,7 @@ import {
 import {
   createStoryGenerationPrompt,
   resolvePlayerTurn,
+  type DivergenceSignals,
   type SourceProgressInfo,
 } from "./剧情提示.ts";
 import { DEFAULT_ATTRIBUTE_VALUE } from "./判定服务.ts";
@@ -339,6 +340,120 @@ function nestedPatch(path: string, value: JsonValue): JsonObject {
     }
   }
   return root;
+}
+
+/**
+ * 组装"偏离状态清单"（导演级，不进历史、不展示玩家）：
+ * 仅当上一回合生成的 storyDirectionEvaluation.continuity=diverged 时返回；
+ * broken 分组列出原剧本后续触发条件已不可满足的信号，recoverable 分组列出
+ * 仍可能满足的信号。aligned/uncertain 或没有上一回合时返回 null。
+ */
+export function collectDivergenceSignals(
+  adventure: ReturnType<LocalStoryStore["loadAdventure"]>,
+): DivergenceSignals | null {
+  const lastTurn = adventure.branchState.recentTurns.at(-1);
+  const lastOutput = isJsonObject(lastTurn?.generatedOutput)
+    ? lastTurn.generatedOutput
+    : undefined;
+  const lastStateCommit = isJsonObject(lastOutput?.stateCommit)
+    ? lastOutput.stateCommit
+    : undefined;
+  const lastEvaluation = isJsonObject(lastStateCommit?.storyDirectionEvaluation)
+    ? lastStateCommit.storyDirectionEvaluation
+    : undefined;
+  if (lastEvaluation?.continuity !== "diverged") return null;
+
+  const broken: string[] = [];
+  const recoverable: string[] = [];
+  const states = adventure.branchState.states;
+  const sessionState = states.find(
+    (state) => state.entityType === "session_state" && state.entityId === "core",
+  );
+  const gameTimeDay =
+    typeof sessionState?.state.gameTimeDay === "number"
+      ? sessionState.state.gameTimeDay
+      : 1;
+  const activeCardIds = new Set(
+    states
+      .filter((state) => state.entityType === "character_card" && state.isActive)
+      .map((state) => state.entityId),
+  );
+  const inactiveCardNames = states
+    .filter(
+      (state) => state.entityType === "character_card" && !state.isActive,
+    )
+    .map((state) => {
+      const data = isJsonObject(state.state.data) ? state.state.data : {};
+      return (
+        readText(state.state.name) ||
+        readText(data.name) ||
+        readText(state.state.role)
+      );
+    })
+    .filter(Boolean);
+
+  for (const state of states) {
+    if (state.entityType === "story_module") {
+      const status = readText(state.state.status);
+      const title = readText(state.state.title);
+      if (!state.isActive && status !== "completed") {
+        broken.push(`被停用的任务《${title}》尚未完成，原剧本路径已被跳过。`);
+      } else if (state.isActive && status === "active") {
+        const deadlineDay =
+          typeof state.state.deadlineDay === "number"
+            ? state.state.deadlineDay
+            : null;
+        if (deadlineDay !== null && deadlineDay <= gameTimeDay) {
+          broken.push(
+            `任务《${title}》已超过期限（第 ${deadlineDay} 天），原方案的时机窗口已经错过。`,
+          );
+        } else {
+          recoverable.push(
+            `任务《${title}》仍在进行：${readText(state.state.objective).slice(0, 120)}`,
+          );
+        }
+      }
+    } else if (state.entityType === "plot_trigger") {
+      const triggerId = readText(state.state.triggerId);
+      if (readText(state.state.status) === "fired") {
+        broken.push(
+          `偏离触发器《${triggerId}》已经触发：${readText(state.state.when).slice(0, 100)} → ${readText(state.state.consequence).slice(0, 160)}`,
+        );
+      } else {
+        recoverable.push(
+          `偏离触发器《${triggerId}》仍待触发：${readText(state.state.when).slice(0, 160)}`,
+        );
+      }
+    } else if (state.entityType === "plot_thread") {
+      const status = readText(state.state.status);
+      if (status === "seeded" || status === "dormant") {
+        recoverable.push(
+          `伏笔《${readText(state.state.threadId)}》尚未回收（${status}）：${(
+            readText(state.state.payoffSummary) || readText(state.state.seedCondition)
+          ).slice(0, 120)}`,
+        );
+      }
+    } else if (
+      state.entityType === "character_state" &&
+      activeCardIds.has(state.entityId) &&
+      state.state.present === false &&
+      readText(state.state.role) !== "player"
+    ) {
+      broken.push(
+        `关键角色《${readText(state.state.name) || readText(state.state.role)}》已不在场。`,
+      );
+    } else if (state.entityType === "location" && !state.isActive) {
+      broken.push(`地点《${readText(state.state.name)}》已停用，原剧本的现场条件不复存在。`);
+    }
+  }
+  for (const name of inactiveCardNames) {
+    broken.push(`角色卡《${name}》已被停用。`);
+  }
+  const unique = (items: string[]) => [...new Set(items)];
+  return {
+    broken: unique(broken).slice(0, 8),
+    recoverable: unique(recoverable).slice(0, 8),
+  };
 }
 
 function usageMetadata(model: string, usage: AiUsage): JsonObject {
@@ -1307,6 +1422,7 @@ export async function advanceAdventureTurn(
       currentChapter: document.currentChapter,
       chapterCount: document.chapterCount,
     }));
+  const divergenceSignals = collectDivergenceSignals(adventure);
   const prompt = createStoryGenerationPrompt({
     adventure,
     turnId,
@@ -1315,6 +1431,7 @@ export async function advanceAdventureTurn(
     scriptGuidanceReferences,
     memoryContext,
     sourceProgressInfo,
+    divergenceSignals,
   });
   const messages = prompt.messages;
   const generate =
@@ -1520,6 +1637,9 @@ export async function regenerateLatestAdventureTurn(
       currentChapter: document.currentChapter,
       chapterCount: document.chapterCount,
     }));
+  const divergenceSignals = collectDivergenceSignals(
+    prepared.adventureBeforeTurn,
+  );
   const prompt = createStoryGenerationPrompt({
     adventure: prepared.adventureBeforeTurn,
     turnId: prepared.currentTurn.id,
@@ -1528,6 +1648,7 @@ export async function regenerateLatestAdventureTurn(
     scriptGuidanceReferences,
     memoryContext,
     sourceProgressInfo,
+    divergenceSignals,
   });
   const regenerationSystemPrompt = [
     prompt.snapshot.systemPrompt,

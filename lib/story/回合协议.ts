@@ -190,6 +190,11 @@ export interface ValidatedGeneratedTurn {
         content: string;
         reason: string;
       } | null;
+      divergenceState?: {
+        outlineRecoverable: "recoverable" | "broken";
+        badEndDrift: "rising" | "neutral";
+        reason: string;
+      };
     } | null;
     summaryPatch: string;
   };
@@ -1282,6 +1287,43 @@ export function validateGeneratedTurn(
       issues,
       1_000,
     );
+    let divergenceState: NonNullable<
+      ValidatedGeneratedTurn["stateCommit"]["storyDirectionEvaluation"]
+    >["divergenceState"] = undefined;
+    if (
+      evaluation.divergenceState !== null &&
+      evaluation.divergenceState !== undefined
+    ) {
+      const divergence = requiredObject(
+        evaluation.divergenceState,
+        "stateCommit.storyDirectionEvaluation.divergenceState",
+        issues,
+      );
+      const outlineRecoverable = oneOf(
+        divergence.outlineRecoverable,
+        ["recoverable", "broken"] as const,
+        "stateCommit.storyDirectionEvaluation.divergenceState.outlineRecoverable",
+        issues,
+      );
+      const badEndDrift = oneOf(
+        divergence.badEndDrift,
+        ["rising", "neutral"] as const,
+        "stateCommit.storyDirectionEvaluation.divergenceState.badEndDrift",
+        issues,
+      );
+      const reason = requiredText(
+        divergence.reason,
+        "stateCommit.storyDirectionEvaluation.divergenceState.reason",
+        issues,
+        500,
+      );
+      if (continuity !== "diverged") {
+        issues.push(
+          "divergenceState 只能在 continuity=diverged 时填写；aligned 或 uncertain 时必须省略或置 null。",
+        );
+      }
+      divergenceState = { outlineRecoverable, badEndDrift, reason };
+    }
     let recommendedModuleId: string | null = null;
     if (evaluation.recommendedModuleId !== null) {
       recommendedModuleId = requiredText(
@@ -1419,6 +1461,7 @@ export function validateGeneratedTurn(
       continuityReason,
       recommendedModuleId,
       suggestedNextDirection,
+      ...(divergenceState !== undefined ? { divergenceState } : {}),
     };
   }
 

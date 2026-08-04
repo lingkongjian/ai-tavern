@@ -7,10 +7,15 @@ import test from "node:test";
 import { openLocalDatabase } from "../db/index.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
 import {
+  GeneratedTurnValidationError,
   normalizeGeneratedTurnVersion,
   parsePlayerTurnRequest,
+  validateGeneratedTurn,
 } from "../lib/story/回合协议.ts";
-import { advanceAdventureTurn } from "../lib/story/回合服务.ts";
+import {
+  advanceAdventureTurn,
+  collectDivergenceSignals,
+} from "../lib/story/回合服务.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 
@@ -624,6 +629,703 @@ test("剧情一致时注入剧本推进引导，偏离后停止且引导不写�
     const fourthContext = parseStoryContext(fourthMessages[1].content);
     assert.deepEqual(fourthContext.upcomingScriptGuidance, []);
     assert.doesNotMatch(fourthMessages[0].content, /剧本推进引导规则/);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+function divergenceEvaluationTurn(started, scene, eventId, evaluation) {
+  return {
+    schemaVersion: "1.0.0",
+    turn: {
+      scene,
+      events: [
+        {
+          id: eventId,
+          type: "plot_progress",
+          summary: scene,
+          characterIds: [started.playerCharacterId, started.mainCharacterId],
+          locationId: "clock-tower",
+        },
+      ],
+      dialogue: [
+        {
+          id: `${eventId}-line`,
+          speakerId: started.mainCharacterId,
+          content: "钟楼里还有我们没看过的东西。",
+          addressedCharacterIds: [started.playerCharacterId],
+        },
+      ],
+    },
+    decision: {
+      context: "action_direction",
+      prompt: "旅人接下来准备做什么？",
+      choices: [
+        {
+          id: "choice-1",
+          label: "继续行动",
+          description: "采取下一步行动。",
+          stance: "neutral",
+        },
+        {
+          id: "choice-2",
+          label: "先观察",
+          description: "再观察一段时间。",
+          stance: "benevolent",
+        },
+      ],
+    },
+    stateCommit: {
+      sceneTransition: {
+        locationId: "clock-tower",
+        locationName: "逆流钟楼",
+        locationDescription: "铜钟悬在潮湿的石室中央。",
+        presentCharacterIds: [started.playerCharacterId, started.mainCharacterId],
+        reason: "旅人与守钟人仍在钟楼石室中。",
+        evidence: [eventId],
+      },
+      characterStateChanges: [],
+      relationshipChanges: [],
+      characterCardChanges: [],
+      worldBookChanges: [],
+      plotThreadUpdates: [],
+      plotTriggerUpdates: [],
+      storyDirectionEvaluation: evaluation,
+      summaryPatch: scene,
+    },
+    warnings: [],
+  };
+}
+
+test("divergenceState 协议校验：仅 diverged 可填、枚举白名单、reason 限长", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-divergence-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "偏离协议测试",
+      world: { name: "烛城", premise: "灯火与影子相生。" },
+      player: { name: "旅人", description: "夜行客。" },
+      mainCharacter: {
+        name: "守夜人",
+        role: "更夫",
+        personality: "机敏。",
+        firstMessage: "夜深了。",
+      },
+      openingScene: "旅人在烛城更楼下落脚。",
+    });
+    const adventure = store.loadAdventure(started.sessionId);
+    const divergedEvaluation = {
+      status: "active",
+      reason: "调查偏离了预埋剧本。",
+      evidence: [],
+      continuity: "diverged",
+      continuityReason: "已发生剧情与预埋剧本不再连续。",
+      recommendedModuleId: null,
+      suggestedNextDirection: null,
+      divergenceState: {
+        outlineRecoverable: "broken",
+        badEndDrift: "rising",
+        reason: "关键线索被毁，局势正在失控。",
+      },
+    };
+
+    // diverged + divergenceState 通过并保留
+    const validated = validateGeneratedTurn(
+      divergenceEvaluationTurn(
+        started,
+        "旅人决定走自己的路。",
+        "event-protocol-1",
+        divergedEvaluation,
+      ),
+      adventure,
+      "protocol-turn-1",
+    );
+    assert.deepEqual(
+      validated.stateCommit.storyDirectionEvaluation.divergenceState,
+      {
+        outlineRecoverable: "broken",
+        badEndDrift: "rising",
+        reason: "关键线索被毁，局势正在失控。",
+      },
+    );
+
+    // aligned 携带 divergenceState → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          divergenceEvaluationTurn(
+            started,
+            "剧情仍然一致。",
+            "event-protocol-2",
+            {
+              ...divergedEvaluation,
+              continuity: "aligned",
+              continuityReason: "剧情与剧本一致。",
+            },
+          ),
+          adventure,
+          "protocol-turn-2",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("只能在 continuity=diverged")),
+    );
+
+    // uncertain 携带 divergenceState → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          divergenceEvaluationTurn(
+            started,
+            "连续性不确定。",
+            "event-protocol-3",
+            {
+              ...divergedEvaluation,
+              continuity: "uncertain",
+              continuityReason: "暂无法判断连续性。",
+            },
+          ),
+          adventure,
+          "protocol-turn-3",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("只能在 continuity=diverged")),
+    );
+
+    // outlineRecoverable 非法枚举 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          divergenceEvaluationTurn(
+            started,
+            "偏离继续。",
+            "event-protocol-4",
+            {
+              ...divergedEvaluation,
+              divergenceState: {
+                outlineRecoverable: "maybe",
+                badEndDrift: "rising",
+                reason: "判断依据",
+              },
+            },
+          ),
+          adventure,
+          "protocol-turn-4",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("outlineRecoverable")),
+    );
+
+    // badEndDrift 非法枚举 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          divergenceEvaluationTurn(
+            started,
+            "偏离继续。",
+            "event-protocol-5",
+            {
+              ...divergedEvaluation,
+              divergenceState: {
+                outlineRecoverable: "recoverable",
+                badEndDrift: "spiking",
+                reason: "判断依据",
+              },
+            },
+          ),
+          adventure,
+          "protocol-turn-5",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("badEndDrift")),
+    );
+
+    // reason 超过 500 字被截断而非拒绝
+    const validatedLong = validateGeneratedTurn(
+      divergenceEvaluationTurn(
+        started,
+        "偏离继续。",
+        "event-protocol-6",
+        {
+          ...divergedEvaluation,
+          divergenceState: {
+            outlineRecoverable: "recoverable",
+            badEndDrift: "neutral",
+            reason: "长".repeat(800),
+          },
+        },
+      ),
+      adventure,
+      "protocol-turn-6",
+    );
+    assert.equal(
+      validatedLong.stateCommit.storyDirectionEvaluation.divergenceState.reason
+        .length,
+      500,
+    );
+
+    // aligned + divergenceState 显式 null → 通过且不保留字段
+    const validatedNull = validateGeneratedTurn(
+      divergenceEvaluationTurn(
+        started,
+        "剧情一致。",
+        "event-protocol-7",
+        {
+          status: "active",
+          reason: "调查仍在继续。",
+          evidence: [],
+          continuity: "aligned",
+          continuityReason: "剧情与剧本一致。",
+          recommendedModuleId: null,
+          suggestedNextDirection: null,
+          divergenceState: null,
+        },
+      ),
+      adventure,
+      "protocol-turn-7",
+    );
+    assert.equal(
+      validatedNull.stateCommit.storyDirectionEvaluation.divergenceState,
+      undefined,
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("上一轮 diverged 时注入偏离状态清单与偏离路线处理规则，aligned 停止注入且不进历史", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-divergence-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "偏离选项引导测试",
+      world: { name: "潮汐城", premise: "钟声会改变潮水方向。" },
+      player: { name: "旅人", description: "寻找失踪同伴的测绘师。" },
+      mainCharacter: {
+        name: "守钟人",
+        role: "钟楼看守",
+        personality: "警觉但守信。",
+        firstMessage: "钟还没有敲响。",
+      },
+      additionalCharacters: [
+        {
+          name: "账房先生",
+          role: "掌柜",
+          personality: "精打细算。",
+          initiallyPresent: false,
+        },
+      ],
+      openingScene: "旅人在黄昏来到钟楼。",
+      initialStoryDirection: "查明旅人的影子为何变淡。",
+      initialStoryModuleId: "fading-shadow",
+      storyModules: [
+        {
+          id: "fading-shadow",
+          title: "影子失踪",
+          objective: "查明旅人的影子为何变淡。",
+          completionCriteria: ["影子变淡的原因得到可信解释"],
+          prerequisiteModuleIds: [],
+        },
+        {
+          id: "second-module",
+          title: "钟楼之下",
+          objective: "进入钟楼底层查看逆流铜钟。",
+          completionCriteria: ["钟楼底层被打开"],
+          prerequisiteModuleIds: [],
+        },
+      ],
+      locations: [
+        {
+          name: "潮汐集市",
+          description: "黄昏时人声鼎沸的集市。",
+          characters: ["账房先生"],
+        },
+      ],
+      foreshadowing: [
+        {
+          id: "thread-tide",
+          keywords: ["潮汐", "逆流"],
+          seedCondition: "旅人进入钟楼底层",
+          payoffCondition: "旅人查明逆流真相",
+          payoffSummary: "铜钟逆流会夺走影子。",
+          characters: ["守钟人"],
+        },
+      ],
+      triggers: [
+        {
+          id: "trigger-ambush",
+          when: "旅人试图强闯钟楼侧门",
+          consequence: "守钟人鸣钟示警，城卫封锁钟楼。",
+          deadline: 10,
+        },
+        {
+          id: "trigger-keep",
+          when: "旅人在钟楼逗留超过三天",
+          consequence: "城卫开始盘查所有外来者。",
+          deadline: 20,
+        },
+      ],
+    });
+
+    const storyDirection = "查明旅人的影子为何变淡。";
+    const evaluationFor = (continuity, divergenceState) => ({
+      status: "active",
+      reason: "调查仍在继续。",
+      evidence: [],
+      continuity,
+      continuityReason: `与预埋剧本的连续性${continuity === "aligned" ? "一致" : "不一致"}。`,
+      recommendedModuleId: null,
+      suggestedNextDirection: null,
+      ...(divergenceState !== undefined ? { divergenceState } : {}),
+    });
+    const divergedState = {
+      outlineRecoverable: "broken",
+      badEndDrift: "rising",
+      reason: "原剧本触发条件已不可满足，局势正滑向坏结局。",
+    };
+
+    // 回合 1：没有上一回合，不注入；输出 diverged + divergenceState 被保存
+    const firstOutput = {
+      ...divergenceEvaluationTurn(
+        started,
+        "旅人决定抛开钟楼的线索，独自去追查潮汐集市。",
+        "event-diverge-1",
+        evaluationFor("diverged", divergedState),
+      ),
+      stateCommit: {
+        ...divergenceEvaluationTurn(
+          started,
+          "旅人决定抛开钟楼的线索，独自去追查潮汐集市。",
+          "event-diverge-1",
+          evaluationFor("diverged", divergedState),
+        ).stateCommit,
+        plotTriggerUpdates: [
+          {
+            triggerId: "trigger-ambush",
+            operation: "fire",
+            reason: "旅人试图强闯钟楼侧门，触发器条件满足",
+            evidence: ["event-diverge-1"],
+          },
+        ],
+      },
+    };
+    let firstMessages;
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "divergence-e2e-1",
+        selectedChoiceId: "opening-neutral",
+        roleplay: { mode: "action", content: "旅人先观察守钟人的反应。" },
+        storyDirection,
+      }),
+      createTurnId: () => "turn-diverge-1",
+      generate: async (messages) => {
+        firstMessages = messages;
+        return {
+          content: firstOutput,
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        };
+      },
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    assert.doesNotMatch(firstMessages[0].content, /偏离路线处理规则/);
+    const firstContext = parseStoryContext(firstMessages[1].content);
+    assert.equal(firstContext.divergenceSignals, undefined);
+    assert.deepEqual(
+      store
+        .loadAdventure(started.sessionId)
+        .branchState.recentTurns.at(-1)
+        .generatedOutput.stateCommit.storyDirectionEvaluation.divergenceState,
+      divergedState,
+      "divergenceState 随回合输出保存",
+    );
+    assert.equal(
+      store
+        .loadAdventure(started.sessionId)
+        .branchState.recentTurns.at(-1)
+        .generatedOutput.divergenceSignals,
+      undefined,
+      "偏离状态清单不进历史回合输出",
+    );
+
+    // 内容管理：停用排队任务、停用预注册地点、停用角色卡
+    const adventureBeforeManagement = store.loadAdventure(started.sessionId);
+    const marketLocation = adventureBeforeManagement.branchState.states.find(
+      (state) =>
+        state.entityType === "location" && state.state.name === "潮汐集市",
+    );
+    const clerkCard = adventureBeforeManagement.branchState.states.find(
+      (state) =>
+        state.entityType === "character_card" &&
+        state.state.data?.name === "账房先生",
+    );
+    store.manageStoryModule({
+      actionId: "manage-module-deactivate",
+      sessionId: started.sessionId,
+      operation: "set_active",
+      moduleId: "second-module",
+      active: false,
+    });
+    store.manageLocation({
+      actionId: "manage-location-deactivate",
+      sessionId: started.sessionId,
+      operation: "set_active",
+      locationId: marketLocation.entityId,
+      active: false,
+    });
+    store.manageCharacter({
+      actionId: "manage-character-deactivate",
+      sessionId: started.sessionId,
+      operation: "set_active",
+      characterId: clerkCard.entityId,
+      active: false,
+    });
+
+    // 回合 2：上一轮 diverged → 注入偏离状态清单与偏离路线处理规则
+    const secondOutput = {
+      ...divergenceEvaluationTurn(
+        started,
+        "旅人在潮汐集市追问账房的去向。",
+        "event-diverge-2",
+        evaluationFor("diverged", divergedState),
+      ),
+      stateCommit: {
+        ...divergenceEvaluationTurn(
+          started,
+          "旅人在潮汐集市追问账房的去向。",
+          "event-diverge-2",
+          evaluationFor("diverged", divergedState),
+        ).stateCommit,
+        plotTriggerUpdates: [],
+      },
+    };
+    let secondMessages;
+    const second = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: first.committedTurn.id,
+        idempotencyKey: "divergence-e2e-2",
+        selectedChoiceId: "choice-1",
+        storyDirection,
+      }),
+      createTurnId: () => "turn-diverge-2",
+      generate: async (messages) => {
+        secondMessages = messages;
+        return {
+          content: secondOutput,
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        };
+      },
+    });
+    assert.equal(second.committedTurn.sequence, 3);
+    assert.match(secondMessages[0].content, /偏离路线处理规则/);
+    assert.match(secondMessages[0].content, /divergenceSignals 是导演级偏离状态清单/);
+    assert.match(secondMessages[0].content, /不得出现"坏结局"/);
+    assert.match(secondMessages[0].content, /规则 20 的偏离场景例外/);
+    assert.match(secondMessages[0].content, /方向一/);
+    assert.match(secondMessages[0].content, /方向二/);
+    assert.match(secondMessages[0].content, /divergenceState 是导演级判断/);
+    const secondContext = parseStoryContext(secondMessages[1].content);
+    assert.equal(Array.isArray(secondContext.divergenceSignals.broken), true);
+    assert.equal(Array.isArray(secondContext.divergenceSignals.recoverable), true);
+    assert.equal(
+      secondContext.divergenceSignals.broken.some((item) => item.includes("已经触发")),
+      true,
+      "已触发偏离触发器进入 broken 分组",
+    );
+    assert.equal(
+      secondContext.divergenceSignals.broken.some((item) => item.includes("被停用的任务")),
+      true,
+      "被停用未完成任务进入 broken 分组",
+    );
+    assert.equal(
+      secondContext.divergenceSignals.broken.some((item) => item.includes("地点《潮汐集市》已停用")),
+      true,
+      "停用地点进入 broken 分组",
+    );
+    assert.equal(
+      secondContext.divergenceSignals.broken.some((item) => item.includes("角色卡《账房先生》已被停用")),
+      true,
+      "停用角色卡进入 broken 分组",
+    );
+    assert.equal(
+      secondContext.divergenceSignals.recoverable.some((item) => item.includes("仍在进行")),
+      true,
+      "活动任务进入 recoverable 分组",
+    );
+    assert.equal(
+      secondContext.divergenceSignals.recoverable.some((item) => item.includes("仍待触发")),
+      true,
+      "未触发触发器进入 recoverable 分组",
+    );
+    assert.equal(
+      secondContext.divergenceSignals.recoverable.some((item) => item.includes("尚未回收")),
+      true,
+      "未回收伏笔进入 recoverable 分组",
+    );
+
+    // collectDivergenceSignals 单元行为与上下文一致
+    const directSignals = collectDivergenceSignals(
+      store.loadAdventure(started.sessionId),
+    );
+    assert.deepEqual(directSignals, secondContext.divergenceSignals);
+
+    // 回合 3：输出 aligned（不再携带 divergenceState）→ 回合 4 停止注入
+    const alignedOutput = divergenceEvaluationTurn(
+      started,
+      "守钟人找到了影子变淡的原因。",
+      "event-align-3",
+      evaluationFor("aligned"),
+    );
+    const third = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: second.committedTurn.id,
+        idempotencyKey: "divergence-e2e-3",
+        selectedChoiceId: "choice-1",
+        storyDirection,
+      }),
+      createTurnId: () => "turn-align-3",
+      generate: async () => ({
+        content: alignedOutput,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    assert.equal(third.committedTurn.sequence, 4);
+
+    let fourthMessages;
+    const fourth = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: third.committedTurn.id,
+        idempotencyKey: "divergence-e2e-4",
+        selectedChoiceId: "choice-1",
+        storyDirection,
+      }),
+      createTurnId: () => "turn-align-4",
+      generate: async (messages) => {
+        fourthMessages = messages;
+        return {
+          content: divergenceEvaluationTurn(
+            started,
+            "旅人与守钟人核对潮汐旧盟约。",
+            "event-align-4",
+            evaluationFor("aligned"),
+          ),
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        };
+      },
+    });
+    assert.equal(fourth.committedTurn.sequence, 5);
+    assert.doesNotMatch(fourthMessages[0].content, /偏离路线处理规则/);
+    const fourthContext = parseStoryContext(fourthMessages[1].content);
+    assert.equal(fourthContext.divergenceSignals, undefined);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("collectDivergenceSignals 把超期任务列入 broken 分组", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-divergence-deadline-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "偏离期限测试",
+      world: { name: "烛城", premise: "灯火与影子相生。" },
+      player: { name: "旅人", description: "夜行客。" },
+      mainCharacter: {
+        name: "守夜人",
+        role: "更夫",
+        personality: "机敏。",
+        firstMessage: "夜深了。",
+      },
+      openingScene: "旅人在烛城更楼下落脚。",
+      initialStoryDirection: "查明烛影的来源。",
+      initialStoryModuleId: "fading-shadow",
+      storyModules: [
+        {
+          id: "fading-shadow",
+          title: "影子失踪",
+          objective: "查明影子为何变淡。",
+          completionCriteria: ["影子变淡的原因得到可信解释"],
+          prerequisiteModuleIds: [],
+          deadlineDay: 1,
+        },
+      ],
+    });
+    const divergedEvaluation = {
+      status: "active",
+      reason: "调查偏离了预埋剧本。",
+      evidence: [],
+      continuity: "diverged",
+      continuityReason: "已发生剧情与预埋剧本不再连续。",
+      recommendedModuleId: null,
+      suggestedNextDirection: null,
+      divergenceState: {
+        outlineRecoverable: "broken",
+        badEndDrift: "neutral",
+        reason: "原剧本触发条件已不可满足。",
+      },
+    };
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "divergence-deadline-1",
+        selectedChoiceId: "opening-neutral",
+        storyDirection: "查明烛影的来源。",
+      }),
+      createTurnId: () => "turn-deadline-1",
+      generate: async () => ({
+        content: divergenceEvaluationTurn(
+          started,
+          "旅人决定独自追查烛影。",
+          "event-deadline-1",
+          divergedEvaluation,
+        ),
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    const signals = collectDivergenceSignals(store.loadAdventure(started.sessionId));
+    assert.equal(
+      signals.broken.some((item) => item.includes("已超过期限")),
+      true,
+      "超过期限的任务进入 broken 分组",
+    );
+    assert.equal(
+      signals.recoverable.some((item) => item.includes("仍在进行")),
+      false,
+      "已超期任务不应同时进入 recoverable 分组",
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

@@ -53,6 +53,12 @@ export interface StoryDirectionEvaluation {
     content: string;
     reason: string;
   } | null;
+  /** 仅当 continuity=diverged 时可填写：原作后续触发条件是否已不可满足、局势是否正滑向坏结局。 */
+  divergenceState?: {
+    outlineRecoverable: "recoverable" | "broken";
+    badEndDrift: "rising" | "neutral";
+    reason: string;
+  };
 }
 
 /** 一个回合结束时需要以原子方式保存的剧情状态。 */

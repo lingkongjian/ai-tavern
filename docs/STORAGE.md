@@ -139,6 +139,8 @@ macOS 桌面版由桌面入口强制设置绝对数据目录：`AI酒馆/用户�
 
 `turn_context_snapshots` 与 AI 回合一一对应，保存生成当时的完整系统消息、结构化上下文、实际基础请求消息、分区覆盖诊断、本地 token 估算和供应商输入 token。回合提交与快照写入处于同一事务；重生成以同一回合 ID 原子更新快照。页面通过独立回合接口按需读取，避免常规会话载入携带全部历史提示词。
 
+当上一轮 `storyDirectionEvaluation.continuity=diverged` 时，本轮组装会额外生成导演级"偏离状态清单"（`divergenceSignals`：`broken` 已破坏条件 / `recoverable` 仍可满足条件），只进入本轮请求与上下文快照，不写入回合生成输出与历史。模型输出可携带 `divergenceState`（`outlineRecoverable` / `badEndDrift` / `reason`，仅 `continuity=diverged` 时有效），随 `generated_output_json` 保存用于审计与引导强度调节；该字段为导演级输出，不展示给玩家。
+
 ## 剧情外人物管理
 
 人物、地点、剧情任务、伏笔、触发器、世界书、原文、记忆和修改记录在页面上统一归入“剧本工作台”。其中前八类通过 `POST /api/adventures/{sessionId}/content` 的 `1.0.0` 协议共享命令信封、错误结构和最新内容快照；修改记录通过同一服务读取原文/记忆审计，通过专用状态接口执行跨领域状态回滚与字段锁。分支、存档、历史回看和回合重生成仍属于剧情时间线操作。完整协议见 [`CONTENT_SERVICE.md`](CONTENT_SERVICE.md)，玩家文件、内部记录和 API 上下文之间的转换规则见 [`FILE_LIFECYCLE.md`](FILE_LIFECYCLE.md)。
