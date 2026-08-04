@@ -2291,6 +2291,28 @@ export class LocalStoryStore {
       },
     ];
 
+    // 玩家与其他角色的零值关系必须在 initialRelationships 声明循环之前建立：
+    // stateMutations 按顺序应用（replace 整体覆盖），若零值在声明之后写入，
+    // 会把声明循环已物化的玩家→其他角色关系值覆盖为 0。
+    for (const character of additionalCharacters) {
+      stateMutations.push({
+        entityType: "relationship",
+        entityId: `${playerCharacterId}:${character.id}`,
+        operation: "replace",
+        value: {
+          sourceCharacterId: playerCharacterId,
+          targetCharacterId: character.id,
+          trust: 0,
+          affinity: 0,
+          fear: 0,
+          hostility: 0,
+          summary: "关系尚未建立",
+        },
+        reason: "建立玩家与其他角色的初始关系",
+        evidence: [openingEventId],
+      });
+    }
+
     const characterIdByName = new Map<string, string>([
       [playerName.trim(), playerCharacterId],
       [mainCharacterName.trim(), mainCharacterId],
@@ -2453,22 +2475,6 @@ export class LocalStoryStore {
               : {}),
           },
           reason: "建立其他角色初始状态",
-          evidence: [openingEventId],
-        },
-        {
-          entityType: "relationship",
-          entityId: `${playerCharacterId}:${character.id}`,
-          operation: "replace",
-          value: {
-            sourceCharacterId: playerCharacterId,
-            targetCharacterId: character.id,
-            trust: 0,
-            affinity: 0,
-            fear: 0,
-            hostility: 0,
-            summary: "关系尚未建立",
-          },
-          reason: "建立玩家与其他角色的初始关系",
           evidence: [openingEventId],
         },
       );

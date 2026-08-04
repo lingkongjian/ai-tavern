@@ -634,6 +634,85 @@ test("creates and restores a complete opening adventure", () => {
   }
 });
 
+test("开局物化 initialRelationships：玩家→其他角色声明值不被零值覆盖，未声明对保持零值", () => {
+  const temporaryDirectory = mkdtempSync(
+    join(tmpdir(), "ai-tavern-opening-relations-"),
+  );
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure(
+      parseStartAdventureInput({
+        ...validInput,
+        additionalCharacters: [
+          ...validInput.additionalCharacters,
+          { name: "陆远", role: "酒馆常客", personality: "沉默寡言。" },
+        ],
+        initialRelationships: [
+          {
+            sourceCharacterName: "沈砚",
+            targetCharacterName: "米洛",
+            dimensions: { trust: 45, affection: 30, respect: 25 },
+            summary: "沈砚在港口欠米洛一个人情。",
+          },
+        ],
+      }),
+    );
+    const states = store.loadAdventure(started.sessionId).branchState.states;
+    const relationships = states.filter(
+      (state) => state.entityType === "relationship",
+    );
+    const byPair = new Map(
+      relationships.map((state) => [
+        `${state.state.sourceCharacterId}:${state.state.targetCharacterId}`,
+        state.state,
+      ]),
+    );
+    const miloId = started.additionalCharacterIds[0];
+    const luYuanId = started.additionalCharacterIds[1];
+
+    // 声明方向（玩家→其他角色）：非零值物化，不被零值覆盖
+    const playerMilo = byPair.get(`${started.playerCharacterId}:${miloId}`);
+    assert.ok(playerMilo, "玩家→其他角色应建立关系记录");
+    assert.equal(playerMilo.trust, 45);
+    assert.equal(playerMilo.affinity, 30); // 内部存储 affinity ↔ 协议 affection
+    assert.equal(playerMilo.respect, 25);
+    assert.equal(playerMilo.summary, "沈砚在港口欠米洛一个人情。");
+
+    // 未声明的反向自动补建，与正向声明一致
+    const miloPlayer = byPair.get(`${miloId}:${started.playerCharacterId}`);
+    assert.ok(miloPlayer, "未声明的反向关系应自动补建");
+    assert.equal(miloPlayer.trust, 45);
+    assert.equal(miloPlayer.affinity, 30);
+    assert.equal(miloPlayer.respect, 25);
+    assert.equal(miloPlayer.summary, "沈砚在港口欠米洛一个人情。");
+
+    // 未声明对（玩家→陆远）：仍建立零值关系（"关系尚未建立"）
+    const playerLuYuan = byPair.get(`${started.playerCharacterId}:${luYuanId}`);
+    assert.ok(playerLuYuan, "未声明的玩家→其他角色对应建立零值关系");
+    assert.equal(playerLuYuan.trust, 0);
+    assert.equal(playerLuYuan.affinity, 0);
+    assert.equal(playerLuYuan.fear, 0);
+    assert.equal(playerLuYuan.hostility, 0);
+    assert.equal(playerLuYuan.summary, "关系尚未建立");
+
+    // 玩家↔主要角色既有行为不变：未声明时仍为零值
+    const playerMain = byPair.get(
+      `${started.playerCharacterId}:${started.mainCharacterId}`,
+    );
+    assert.equal(playerMain.trust, 0);
+    assert.equal(playerMain.affinity, 0);
+    assert.equal(playerMain.summary, "关系尚未建立");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("deletes a complete local adventure with all cascaded records", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-delete-"));
   const database = openLocalDatabase({
