@@ -904,6 +904,339 @@ test("divergenceState 协议校验：仅 diverged 可填、枚举白名单、rea
   }
 });
 
+test("规则 8 证据硬校验：所有状态变化类必须携带至少一条证据，active 评估除外", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-evidence-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "证据协议测试",
+      world: { name: "烛城", premise: "灯火与影子相生。" },
+      player: { name: "旅人", description: "夜行客。" },
+      mainCharacter: {
+        name: "守夜人",
+        role: "更夫",
+        personality: "机敏。",
+        firstMessage: "夜深了。",
+      },
+      additionalCharacters: [
+        {
+          name: "老匠人",
+          role: "铸钟师",
+          personality: "寡言。",
+          initiallyPresent: false,
+        },
+      ],
+      openingScene: "旅人在烛城更楼下落脚。",
+      foreshadowing: [
+        {
+          id: "well-bell",
+          keywords: ["古井", "钟"],
+          seedCondition: "角色进入古井附近或听到井中回声",
+          payoffCondition: "玩家发现古井底部埋着铜钟",
+          payoffSummary: "古井底的钟与老宅闹钟事件有关。",
+          characters: ["老匠人"],
+        },
+      ],
+      triggers: [
+        {
+          id: "ambush-den",
+          when: "主角实力不足时强闯叛军大营",
+          consequence: "叛军提前察觉并亲自出手。",
+          stateEffects: { flags: ["bad_end"] },
+        },
+      ],
+    });
+    const adventure = store.loadAdventure(started.sessionId);
+    const eventId = "event-evidence-1";
+
+    function evidenceTurn(extraStateCommit) {
+      return {
+        schemaVersion: "1.0.0",
+        turn: {
+          scene: "更楼里灯火摇曳，守夜人放下铜锣。",
+          events: [
+            {
+              id: eventId,
+              type: "plot_progress",
+              summary: "守夜人向旅人说起铜锣的来历。",
+              characterIds: [started.playerCharacterId, started.mainCharacterId],
+              locationId: "clock-tower",
+            },
+          ],
+          dialogue: [],
+        },
+        decision: {
+          context: "action_direction",
+          prompt: "旅人接下来准备做什么？",
+          choices: [
+            {
+              id: "choice-1",
+              label: "继续追问",
+              description: "追问铜锣的来历。",
+              stance: "neutral",
+            },
+            {
+              id: "choice-2",
+              label: "先观察",
+              description: "再观察一段时间。",
+              stance: "benevolent",
+            },
+          ],
+        },
+        stateCommit: {
+          sceneTransition: {
+            locationId: "clock-tower",
+            locationName: "更楼",
+            locationDescription: "木楼二层。",
+            presentCharacterIds: [
+              started.playerCharacterId,
+              started.mainCharacterId,
+            ],
+            reason: "两人仍在更楼。",
+            evidence: [eventId],
+          },
+          characterStateChanges: [],
+          relationshipChanges: [],
+          characterCardChanges: [],
+          worldBookChanges: [],
+          plotThreadUpdates: [],
+          plotTriggerUpdates: [],
+          storyDirectionEvaluation: null,
+          summaryPatch: "守夜人说起铜锣的来历。",
+          ...extraStateCommit,
+        },
+        warnings: [],
+      };
+    }
+
+    const stateChangeBase = {
+      characterId: started.mainCharacterId,
+      patch: { mood: "警惕" },
+      duration: "until_changed",
+      reason: "守夜人听到门外动静。",
+    };
+
+    const cases = [
+      {
+        label: "characterStateChanges",
+        empty: { characterStateChanges: [{ ...stateChangeBase, evidence: [] }] },
+        valid: { characterStateChanges: [{ ...stateChangeBase, evidence: [eventId] }] },
+      },
+      {
+        label: "relationshipChanges",
+        empty: {
+          relationshipChanges: [
+            {
+              sourceCharacterId: started.mainCharacterId,
+              targetCharacterId: started.playerCharacterId,
+              dimension: "trust",
+              delta: 5,
+              reason: "旅人的谨慎回应获得认可。",
+              evidence: [],
+            },
+          ],
+        },
+        valid: {
+          relationshipChanges: [
+            {
+              sourceCharacterId: started.mainCharacterId,
+              targetCharacterId: started.playerCharacterId,
+              dimension: "trust",
+              delta: 5,
+              reason: "旅人的谨慎回应获得认可。",
+              evidence: [eventId],
+            },
+          ],
+        },
+      },
+      {
+        label: "characterCardChanges",
+        empty: {
+          characterCardChanges: [
+            {
+              characterId: started.mainCharacterId,
+              operation: "add",
+              path: "beliefs",
+              value: ["铜锣怕火"],
+              reason: "守夜人主动展示铜锣。",
+              evidence: [],
+              sourceTurnId: "evidence-turn-1",
+            },
+          ],
+        },
+        valid: {
+          characterCardChanges: [
+            {
+              characterId: started.mainCharacterId,
+              operation: "add",
+              path: "beliefs",
+              value: ["铜锣怕火"],
+              reason: "守夜人主动展示铜锣。",
+              evidence: [eventId],
+              sourceTurnId: "evidence-turn-1",
+            },
+          ],
+        },
+      },
+      {
+        label: "worldBookChanges",
+        empty: {
+          worldBookChanges: [
+            {
+              operation: "create",
+              entry: { keys: ["铜锣"], content: "铜锣怕火。", enabled: true },
+              sourceTurnId: "evidence-turn-1",
+              reason: "铜锣的规则已被证实。",
+              evidence: [],
+            },
+          ],
+        },
+        valid: {
+          worldBookChanges: [
+            {
+              operation: "create",
+              entry: { keys: ["铜锣"], content: "铜锣怕火。", enabled: true },
+              sourceTurnId: "evidence-turn-1",
+              reason: "铜锣的规则已被证实。",
+              evidence: [eventId],
+            },
+          ],
+        },
+      },
+      {
+        label: "plotThreadUpdates",
+        empty: {
+          plotThreadUpdates: [
+            { threadId: "well-bell", operation: "seed", reason: "听到井中回声。", evidence: [] },
+          ],
+        },
+        valid: {
+          plotThreadUpdates: [
+            { threadId: "well-bell", operation: "seed", reason: "听到井中回声。", evidence: [eventId] },
+          ],
+        },
+      },
+      {
+        label: "plotTriggerUpdates",
+        empty: {
+          plotTriggerUpdates: [
+            { triggerId: "ambush-den", operation: "fire", reason: "强闯叛军大营。", evidence: [] },
+          ],
+        },
+        valid: {
+          plotTriggerUpdates: [
+            { triggerId: "ambush-den", operation: "fire", reason: "强闯叛军大营。", evidence: [eventId] },
+          ],
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      assert.throws(
+        () =>
+          validateGeneratedTurn(
+            evidenceTurn(testCase.empty),
+            adventure,
+            "evidence-turn-1",
+          ),
+        (error) =>
+          error instanceof GeneratedTurnValidationError &&
+          /至少需要 1 项/.test(error.message),
+        `${testCase.label} 空证据必须被拒绝`,
+      );
+      // 带证据的同类型变化必须通过（证据引用本轮真实事件）。
+      const validated = validateGeneratedTurn(
+        evidenceTurn(testCase.valid),
+        adventure,
+        "evidence-turn-1",
+      );
+      assert.ok(validated.stateCommit[testCase.label].length >= 1);
+    }
+
+    // storyDirectionEvaluation：active 允许空证据（评估未完成，语义上无新事件也可），
+    // completed 必须携带证据。
+    const activeEvaluation = validateGeneratedTurn(
+      evidenceTurn({
+        storyDirectionEvaluation: {
+          status: "active",
+          reason: "调查仍在继续。",
+          evidence: [],
+          continuity: "uncertain",
+          continuityReason: "当前没有预埋剧本任务可供比较。",
+          recommendedModuleId: null,
+          suggestedNextDirection: null,
+        },
+      }),
+      adventure,
+      "evidence-turn-1",
+    );
+    assert.equal(
+      activeEvaluation.stateCommit.storyDirectionEvaluation.status,
+      "active",
+    );
+
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          evidenceTurn({
+            storyDirectionEvaluation: {
+              status: "completed",
+              reason: "剧情目标已经达成。",
+              evidence: [],
+              continuity: "aligned",
+              continuityReason: "与剧本一致。",
+              recommendedModuleId: null,
+              suggestedNextDirection: {
+                title: "新目标",
+                content: "继续调查铜锣。",
+                reason: "自然推进。",
+              },
+            },
+          }),
+          adventure,
+          "evidence-turn-1",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        /至少需要 1 项/.test(error.message),
+      "storyDirectionEvaluation completed 空证据必须被拒绝",
+    );
+
+    // 场景变化也必须引用本轮真实发生的事件或对话（基线行为保持）。
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          evidenceTurn({
+            sceneTransition: {
+              locationId: "clock-tower",
+              locationName: "更楼",
+              locationDescription: "木楼二层。",
+              presentCharacterIds: [
+                started.playerCharacterId,
+                started.mainCharacterId,
+              ],
+              reason: "两人仍在更楼。",
+              evidence: [],
+            },
+          }),
+          adventure,
+          "evidence-turn-1",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        /至少需要 1 项/.test(error.message),
+      "sceneTransition 空证据必须被拒绝",
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("上一轮 diverged 时注入偏离状态清单与偏离路线处理规则，aligned 停止注入且不进历史", async () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-divergence-e2e-"));
   const database = openLocalDatabase({

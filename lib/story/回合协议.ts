@@ -892,6 +892,7 @@ export function validateGeneratedTurn(
       "stateCommit.sceneTransition.evidence",
       knownEvidenceIds,
       issues,
+      1,
     );
     if (
       !transitionEvidence.some(
@@ -1108,6 +1109,7 @@ export function validateGeneratedTurn(
         `stateCommit.characterStateChanges[${index}].evidence`,
         knownEvidenceIds,
         issues,
+        1,
       ),
     };
   });
@@ -1165,6 +1167,7 @@ export function validateGeneratedTurn(
         `stateCommit.relationshipChanges[${index}].evidence`,
         knownEvidenceIds,
         issues,
+        1,
       ),
     };
   });
@@ -1225,6 +1228,7 @@ export function validateGeneratedTurn(
         `stateCommit.characterCardChanges[${index}].evidence`,
         knownEvidenceIds,
         issues,
+        1,
       ),
       sourceTurnId,
     };
@@ -1269,6 +1273,7 @@ export function validateGeneratedTurn(
         `stateCommit.worldBookChanges[${index}].evidence`,
         knownEvidenceIds,
         issues,
+        1,
       ),
     };
     if (operation === "create") {
@@ -1371,6 +1376,7 @@ export function validateGeneratedTurn(
             `stateCommit.plotThreadUpdates[${index}].evidence`,
             knownEvidenceIds,
             issues,
+            1,
           ),
         };
       },
@@ -1431,6 +1437,7 @@ export function validateGeneratedTurn(
             `stateCommit.plotTriggerUpdates[${index}].evidence`,
             knownEvidenceIds,
             issues,
+            1,
           ),
         };
       },
