@@ -222,6 +222,40 @@
         "summary": "公务往来，林雾觉得巡夜人知道得太多。"
       }
     ],
+    "initialStatuses": [
+      {
+        "characterName": "林雾",
+        "statuses": [
+          {
+            "id": "linwu-old-wound",
+            "name": "旧伤",
+            "kind": "debuff",
+            "description": "左臂旧伤在雨夜隐隐作痛，不影响公务，但让她握笔与格挡时略微迟缓。",
+            "expiresAtDay": 5
+          },
+          {
+            "id": "linwu-lamp-dust",
+            "name": "灯尘入体",
+            "kind": "debuff",
+            "hidden": true,
+            "description": "常年接触失魂灯芯，体内积有灯尘，林雾自己尚未察觉，只在满月之夜感到莫名乏力。",
+            "expiresAtDay": 12
+          }
+        ]
+      },
+      {
+        "characterName": "记录员",
+        "statuses": [
+          {
+            "id": "record-lantern-glow",
+            "name": "提灯余辉",
+            "kind": "buff",
+            "description": "档案馆守夜提灯的光辉护持，短时内视物清晰、精神集中。",
+            "expiresAtDay": 2
+          }
+        ]
+      }
+    ],
     "locations": [
       {
         "name": "纸城城门",

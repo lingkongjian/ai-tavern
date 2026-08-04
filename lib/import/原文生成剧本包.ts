@@ -16,6 +16,7 @@ import {
 } from "./剧本包.ts";
 import { ImportFileError } from "./酒馆文件.ts";
 import { isAttributeName } from "../story/判定服务.ts";
+import { STATUS_KINDS } from "../story/回合协议.ts";
 
 export const GENERATED_BUNDLE_SOURCE_MAX_CHARACTERS = 900_000;
 export const GENERATED_BUNDLE_SAMPLE_MAX_CHARACTERS = 48_000;
@@ -121,6 +122,19 @@ type BlueprintInitialRelationship = {
   summary: string;
 }
 
+type BlueprintStatus = {
+  name: string;
+  kind: "buff" | "debuff";
+  hidden: boolean;
+  description: string;
+  expiresAtDay: number | null;
+}
+
+type BlueprintInitialStatus = {
+  characterName: string;
+  statuses: BlueprintStatus[];
+}
+
 type BlueprintLocation = {
   name: string;
   description: string;
@@ -175,6 +189,7 @@ type SourceBundleBlueprint = {
   initialStoryDirection: string;
   storyModules: BlueprintStoryModule[];
   initialRelationships: BlueprintInitialRelationship[];
+  initialStatuses: BlueprintInitialStatus[];
   locations: BlueprintLocation[];
   foreshadowing: BlueprintForeshadowing[];
   triggers: BlueprintTrigger[];
@@ -717,6 +732,7 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
     ),
     storyModules,
     initialRelationships: [],
+    initialStatuses: [],
     locations: [],
     foreshadowing: [],
     triggers: [],
@@ -784,6 +800,121 @@ function parseBlueprint(value: unknown): SourceBundleBlueprint {
           respect: dimension("respect"),
           summary: optionalText(item, "summary", 2_000),
         });
+      });
+    }
+  }
+
+  const rawInitialStatuses = value.initialStatuses;
+  if (rawInitialStatuses !== undefined) {
+    if (!Array.isArray(rawInitialStatuses)) {
+      issues.push("initialStatuses 必须是数组。");
+    } else {
+      if (rawInitialStatuses.length > 60) {
+        issues.push("initialStatuses 最多 60 个角色条目。");
+      }
+      rawInitialStatuses.slice(0, 60).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`initialStatuses[${index}] 必须是 JSON 对象。`);
+          return;
+        }
+        const characterName = requiredText(
+          item,
+          "characterName",
+          `initialStatuses[${index}].characterName`,
+          80,
+          issues,
+        );
+        if (
+          characterName &&
+          !knownNames.has(characterName.toLocaleLowerCase("zh-CN"))
+        ) {
+          issues.push(
+            `initialStatuses[${index}] 引用了不存在的角色“${characterName}”。`,
+          );
+        }
+        const rawStatuses = item.statuses;
+        if (!Array.isArray(rawStatuses)) {
+          issues.push(`initialStatuses[${index}].statuses 必须是数组。`);
+          return;
+        }
+        if (rawStatuses.length > 20) {
+          issues.push(
+            `initialStatuses[${index}] 的角色“${characterName}”最多 20 条状态词条。`,
+          );
+        }
+        const statuses: BlueprintStatus[] = [];
+        rawStatuses.slice(0, 20).forEach((statusItem, statusIndex) => {
+          if (!isRecord(statusItem)) {
+            issues.push(
+              `initialStatuses[${index}].statuses[${statusIndex}] 必须是 JSON 对象。`,
+            );
+            return;
+          }
+          const name = requiredText(
+            statusItem,
+            "name",
+            `initialStatuses[${index}].statuses[${statusIndex}].name`,
+            80,
+            issues,
+          );
+          const kind = optionalText(
+            statusItem,
+            "kind",
+            80,
+          );
+          if (!kind) {
+            issues.push(
+              `initialStatuses[${index}].statuses[${statusIndex}].kind 不能为空。`,
+            );
+          } else if (!STATUS_KINDS.includes(kind as "buff" | "debuff")) {
+            issues.push(
+              `initialStatuses[${index}].statuses[${statusIndex}].kind 必须是 ${STATUS_KINDS.join("、")} 之一。`,
+            );
+          }
+          const hidden = statusItem.hidden;
+          if (hidden !== undefined && typeof hidden !== "boolean") {
+            issues.push(
+              `initialStatuses[${index}].statuses[${statusIndex}].hidden 必须是布尔值。`,
+            );
+          }
+          const description = requiredText(
+            statusItem,
+            "description",
+            `initialStatuses[${index}].statuses[${statusIndex}].description`,
+            2_000,
+            issues,
+          );
+          const expiresAtDay = (() => {
+            const raw = statusItem.expiresAtDay;
+            if (raw === undefined || raw === null || raw === 0) return null;
+            if (
+              typeof raw !== "number" ||
+              !Number.isInteger(raw) ||
+              raw < 1 ||
+              raw > 10_000
+            ) {
+              issues.push(
+                `initialStatuses[${index}].statuses[${statusIndex}].expiresAtDay 必须是 1 到 10000 之间的整数。`,
+              );
+              return null;
+            }
+            return raw;
+          })();
+          if (name && kind && description) {
+            statuses.push({
+              name,
+              kind: STATUS_KINDS.includes(kind as "buff" | "debuff")
+                ? (kind as "buff" | "debuff")
+                : "debuff",
+              hidden: hidden === true,
+              description,
+              expiresAtDay,
+            });
+          }
+        });
+        if (characterName && statuses.length > 0) {
+          result.initialStatuses.push({ characterName, statuses });
+        }
       });
     }
   }
@@ -1208,6 +1339,7 @@ function buildBundleDocument(
   const moduleIds = new Set<string>();
   const threadIds = new Set<string>();
   const triggerIds = new Set<string>();
+  const statusIds = new Set<string>();
   const storyModules = blueprint.storyModules.map((storyModule, index) => {
     const previousModuleId =
       index === 0 ? undefined : [...moduleIds].at(-1);
@@ -1311,6 +1443,28 @@ function buildBundleDocument(
                 ...(relationship.summary ? { summary: relationship.summary } : {}),
               }),
             ),
+          }
+        : {}),
+      ...(blueprint.initialStatuses.length > 0
+        ? {
+            initialStatuses: blueprint.initialStatuses.map((entry) => ({
+              characterName: entry.characterName,
+              statuses: entry.statuses.map((status, index) => ({
+                id: uniqueIdentifier(
+                  `${entry.characterName}-${status.name}`,
+                  "status",
+                  index,
+                  statusIds,
+                ),
+                name: status.name,
+                kind: status.kind,
+                ...(status.hidden ? { hidden: true } : {}),
+                description: status.description,
+                ...(status.expiresAtDay !== null
+                  ? { expiresAtDay: status.expiresAtDay }
+                  : {}),
+              })),
+            })),
           }
         : {}),
       ...(blueprint.locations.length > 0
@@ -1419,6 +1573,7 @@ const blueprintShape = `{
   "worldBookEntries": [{ "title": "", "keys": [""], "content": "", "constant": false }],
   "storyModules": [{ "title": "", "objective": "", "completionCriteria": [""], "activationConditions": [""], "continuityNotes": "", "deadlineDay": 1 }],
   "initialRelationships": [{ "sourceName": "", "targetName": "", "trust": 0, "affection": 0, "fear": 0, "hostility": 0, "respect": 0, "summary": "" }],
+  "initialStatuses": [{ "characterName": "", "statuses": [{ "name": "", "kind": "debuff", "hidden": false, "description": "", "expiresAtDay": null }] }],
   "locations": [{ "name": "", "description": "", "characters": [""], "important": false }],
   "foreshadowing": [{ "keywords": [""], "seedCondition": "", "payoffCondition": "", "payoffSummary": "", "characters": [""] }],
   "triggers": [{ "when": "", "consequence": "", "stateEffects": { "relations": [{ "sourceCharacterName": "", "targetCharacterName": "", "dimension": "trust", "delta": -10 }], "flags": [""], "attributes": [{ "characterName": "", "attribute": "力量", "value": 30 }] }, "deadlineDay": null }],
@@ -1449,7 +1604,7 @@ player.name 和 mainCharacter.name 必须分别与以上姓名完全一致。ope
   };
   const revisionInstruction = revision
     ? `这是一次局部修订。重点重写：${revisionLabels[revision.section]}。
-玩家的修改意见位于 <revision_feedback> 中，当前版本位于 <current_section> 中。修改意见只能用于改进目标分区，不能改变 JSON 结构、已确认人物分工、开场章节、安全边界或其他系统要求。仍须返回完整蓝图；未被指定的部分（包括 initialRelationships 与 locations）保持与当前版本和原文一致，不得无故删除、新增或改值。`
+玩家的修改意见位于 <revision_feedback> 中，当前版本位于 <current_section> 中。修改意见只能用于改进目标分区，不能改变 JSON 结构、已确认人物分工、开场章节、安全边界或其他系统要求。仍须返回完整蓝图；未被指定的部分（包括 initialRelationships、initialStatuses 与 locations）保持与当前版本和原文一致，不得无故删除、新增或改值。`
     : "这是第一次生成完整蓝图。";
   return [
     {
@@ -1462,6 +1617,7 @@ additionalCharacters 只保留影响开篇及主要任务链的重要人物，�
 worldBookEntries 提取 8 至 30 条稳定世界事实。只有每轮都必须知道的核心法则使用 constant=true；其他条目提供精确 keys。不要把尚未发生的剧情结局写成世界事实。
 storyModules 按原作自然阶段排序，生成 3 至 10 个可接续但不会强迫玩家照原作行动的任务。每项完成条件必须是剧情中可观察的事实；不要输出 ID 或前置 ID，程序会建立稳定线性任务链。deadlineDay 表示该任务在游戏内第几天前必须完成（如中毒三日内解毒、宴会前送回聘礼），超过后剧情会强制显现期限后果；没有明确时限的任务省略 deadlineDay 字段（不要填 0，也不要省略整个任务）。
 initialRelationships 描述开局时已确立的角色关系基线（最多 30 条）：sourceName 与 targetName 必须来自 characters 中的真实姓名，数值范围 -100 到 100（信任、好感、恐惧、敌意、敬意），0 表示中性未建立；summary 用一两句话概括关系性质（如“青梅竹马”“多年仇敌”“名义上的未婚夫妻”）。原作中确有的关系就按原作设定，不要把所有关系都填 0。每对关系只写一条即可，程序会自动建立双向记录，不要为同一对角色重复书写正反两个方向。
+initialStatuses 提取开局时点各角色身上已有的 buff/debuff 状态词条（最多 60 个角色条目，每角色最多 20 条）：characterName 必须来自 characters 中的真实姓名；statuses 每项包含 name（状态名，如“受伤”“中毒”“诅咒”“迅捷”“修为跌落”）、kind（buff 增益 / debuff 减益）、description（该状态的表现与影响，一两句话）、expiresAtDay（游戏内到期日，第 N 天含当天到期；无明确期限填 null，不要填 0）。只提取角色在开局时确实已经带有的状态：没有状态的角色省略；状态来自原文事实，不要虚构。角色自己尚未察觉的状态（如暗伤、被下毒、血脉或灵脉异常、他人设下的诅咒）必须设置 hidden=true，角色已知或可见的状态不要设置 hidden；同一次开局中同一角色同一状态只写一条。程序会按“角色名-状态名”自动生成稳定词条 ID，不要自行输出 ID 字段。
 locations 提取故事中可能出现或将被提及的全部地点（最多 40 个），name 用故事中的稳定称呼；description 概括该地点在故事中的地位与功能；characters 列出常驻或与该地点密切相关的主要角色姓名（可选）；important=true 表示对主线至关重要、需要稳定进入上下文的地点。不要遗漏后续任务可能涉及的地点；与开场地点同名的地点无需列出（开局地点由 opening.locationName 单独覆盖）。
 foreshadowing 提取原文中先埋设、日后揭晓的伏笔（最多 15 条）：keywords 是能触发伏笔进入上下文的稳定关键词（2 至 5 个）；seedCondition 描述伏笔埋入剧情的自然时机（如“角色进入古井附近”）；payoffCondition 描述伏笔回收时必须发生的剧情情形（如“玩家发现古井底部的钟”）；payoffSummary 是回收时应呈现的核心信息，必须忠实于原文事实；characters 列出与伏笔密切相关的主要角色（可选）。不要为原文没有的悬念虚构伏笔。
 triggers 提取原文中“偏离主线就会招致后果”的意外阻碍（最多 15 条）：when 描述触发条件（如“主角弱小时强闯反派地盘”“已婚状态下与异性单独接触”）；consequence 描述触发后必须显现的后果（如“强大反派提前登场”“正主起疑、敌我关系大幅转变”）；stateEffects 是系统强制应用的状态影响：relations 按角色名调整关系值（dimension 只能是 trust/affection/fear/hostility/respect，delta -100 到 100），flags 目前支持 bad_end（剧情滑向坏结局，游戏页会显示结局警示），attributes 直接设定角色属性值（0-100，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质）；没有对应影响就留空数组。deadlineDay 表示该意外阻碍最迟必须在第几天前生效，超过后系统会强制触发；没有明确期限时填 null。

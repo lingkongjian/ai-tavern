@@ -244,6 +244,9 @@ export function parseAdventureBundleDocument(
       source.initialRelationships.length > 0
         ? { initialRelationships: source.initialRelationships }
         : {}),
+      ...(Array.isArray(source.initialStatuses) && source.initialStatuses.length > 0
+        ? { initialStatuses: source.initialStatuses }
+        : {}),
       ...(Array.isArray(source.locations) && source.locations.length > 0
         ? { locations: source.locations }
         : {}),

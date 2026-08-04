@@ -295,6 +295,10 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 如果角色死亡或失去行动能力，必须同步更新其状态。人物加入、离场和地点变化统一通过 `sceneTransition` 提交。
 
+### 10.1 角色属性（attributes）
+
+`character_state.attributes` 保存角色属性（0-100），白名单为：力量、敏捷、感知、意志、魅力、智力、体质。事件驱动的属性变化通过 `characterStateChanges` 的 `attributes` 对象写入最终数值（0-100）；后端校验白名单与范围，越界值会被拒绝或钳制。属性未设定时按 50 计。
+
 ### 10.2 行动受限（restriction）
 
 `character_state.restriction` 表达角色因死亡、被关押、被控制、被束缚等"行动受限"因素无法自由行动：`{ kind: "dead" | "imprisoned" | "controlled" | "bound" | "other"; summary: string; sinceTurnId?: string }`。模型通过 `characterStateChanges.patch.restriction` 设置（对象）或解除（`null`），后端校验 kind 白名单、summary 长度与结构。
@@ -308,9 +312,14 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 解除必须伴随真实剧情事件（复活、越狱、挣脱控制、释放等）写入 `turn.events`，并在**同一回合**通过 `characterStateChanges` 把该角色 `patch.restriction` 置为 `null`；未同轮解除的发言/登场/移动/判定全部拒绝。玩家可在人物管理中设置或解除行动受限，设置的 `sinceTurnId` 记录当时分支头回合。
 
-### 10.1 角色属性（attributes）
+### 10.3 状态词条（statuses）
 
-`character_state.attributes` 保存角色属性（0-100），白名单为：力量、敏捷、感知、意志、魅力、智力、体质。事件驱动的属性变化通过 `characterStateChanges` 的 `attributes` 对象写入最终数值（0-100）；后端校验白名单与范围，越界值会被拒绝或钳制。属性未设定时按 50 计。
+`character_state.statuses` 记录角色身上的 buff/debuff 词条（受伤、中毒、增益等）：`{ id, name, kind: "buff" | "debuff", hidden?: boolean, description, sourceTurnId?, expiresAtDay? }`。模型通过 `characterStateChanges.patch.statuses` 以完整数组替换（`null` 清除全部），后端校验 id 唯一、kind 白名单、长度与范围。
+
+- **隐藏状态**：`hidden: true` 的词条以导演级"未察觉状态"（`hiddenCharacterStatuses`）注入，角色未察觉前模型不得在叙述、对话或思考中点破；角色通过剧情行动（检查伤口、求医、观察症状、探索）实际认识到后，在同一回合把该词条 `hidden` 置 `false`，之后作为正常可见状态。
+- **到期移除**：`expiresAtDay` 不超过当前游戏内日期时，系统在回合提交事务内自动移除该词条并写入状态变化记录（剧情驱动的到期/恶化语义由模型在剧情中体现并更新词条）。
+- **剧情联动与行为倾向**：debuff 随时间或剧情恶化或恢复，并体现在叙述与词条内容中；角色身上存在 debuff 且有可行解决方案时，角色行动与候选选项应倾向解决（求医、解毒、治疗、休息等）；属性判定应结合词条判断合理性（不修改判定公式）。
+- 剧本包可通过 `adventure.initialStatuses` 声明人物开局状态词条（`characterName` + `statuses`，字段与本节一致，可含 `hidden`），开局物化为各角色 `character_state.statuses`，隐藏词条沿用上述导演级注入与探索解锁语义。
 
 ## 11. 角色卡演化变更
 

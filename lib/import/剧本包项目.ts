@@ -40,6 +40,7 @@ export interface BundleProjectReport {
     storyModules: number;
     plotThreads: number;
     plotTriggers: number;
+    initialStatuses: number;
   };
   checks: string[];
   warnings: string[];
@@ -440,6 +441,16 @@ export async function assembleBundleProject(
       ) as JsonValue[];
     }
   }
+  let initialStatuses: JsonValue[] | undefined;
+  if (campaign.initialStatuses !== undefined) {
+    if (!Array.isArray(campaign.initialStatuses)) {
+      issues.push("campaign.initialStatuses 必须是数组。");
+    } else {
+      initialStatuses = structuredClone(
+        campaign.initialStatuses,
+      ) as JsonValue[];
+    }
+  }
   let locations: JsonValue[] | undefined;
   if (campaign.locations !== undefined) {
     if (!Array.isArray(campaign.locations)) {
@@ -718,6 +729,7 @@ export async function assembleBundleProject(
       worldBook: normalizedWorldBook(worldBook),
       ...(storyModules ? { storyModules } : {}),
       ...(initialRelationships ? { initialRelationships } : {}),
+      ...(initialStatuses ? { initialStatuses } : {}),
       ...(locations ? { locations } : {}),
       ...(foreshadowing ? { foreshadowing } : {}),
       ...(triggers ? { triggers } : {}),
@@ -812,6 +824,7 @@ export async function assembleBundleProject(
       storyModules: validated.adventure.storyModules?.length ?? 0,
       plotThreads: validated.adventure.foreshadowing?.length ?? 0,
       plotTriggers: validated.adventure.triggers?.length ?? 0,
+      initialStatuses: validated.adventure.initialStatuses?.length ?? 0,
     },
     checks: [
       "维护清单格式有效",
@@ -820,6 +833,7 @@ export async function assembleBundleProject(
       "角色姓名与维护清单一致且不重复",
       "剧情任务 ID、前置关系和初始任务有效且无循环",
       "伏笔与偏离触发器的 ID、角色引用和属性白名单有效",
+      "人物初始状态的词条结构与角色引用有效",
       "生成结果可被 AI 酒馆完整剧本包导入器接受",
     ],
     warnings: uniqueWarnings,

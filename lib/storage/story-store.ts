@@ -721,6 +721,16 @@ export interface AdventureTriggerInput {
   deadlineDay?: number;
 }
 
+/**
+ * 开局时角色身上已有的 buff/debuff 状态词条（按角色姓名引用，
+ * characterName 必须与玩家/主要/其他角色姓名一致）。
+ * 词条结构与运行时 character_state.statuses 完全一致（CharacterStatus）。
+ */
+export interface AdventureInitialStatusInput {
+  characterName: string;
+  statuses: CharacterStatus[];
+}
+
 export interface StartAdventureInput {
   campaignName: string;
   campaignDescription?: string;
@@ -743,6 +753,7 @@ export interface StartAdventureInput {
   storyModules?: AdventureStoryModuleInput[];
   initialStoryModuleId?: string;
   initialRelationships?: AdventureRelationshipInput[];
+  initialStatuses?: AdventureInitialStatusInput[];
   locations?: AdventureDeclaredLocation[];
   foreshadowing?: AdventureForeshadowingInput[];
   triggers?: AdventureTriggerInput[];
@@ -1997,6 +2008,20 @@ export class LocalStoryStore {
     const firstMessage = input.mainCharacter.firstMessage?.trim() ?? "";
     const mainDialogueId = firstMessage ? randomUUID() : "";
     const initialStoryModuleId = input.initialStoryModuleId?.trim() ?? "";
+    const initialStatusesByCharacterName = new Map<string, CharacterStatus[]>();
+    for (const entry of input.initialStatuses ?? []) {
+      const statuses = initialStatusesByCharacterName.get(
+        entry.characterName.trim(),
+      );
+      if (statuses) {
+        statuses.push(...entry.statuses);
+      } else {
+        initialStatusesByCharacterName.set(
+          entry.characterName.trim(),
+          [...entry.statuses],
+        );
+      }
+    }
     const initialStoryDirection =
       input.initialStoryDirection?.trim() ||
       input.storyModules
@@ -2211,6 +2236,13 @@ export class LocalStoryStore {
           alive: true,
           mood: "待定",
           currentGoal: "了解当前局势",
+          ...(initialStatusesByCharacterName.get(playerName)?.length
+            ? {
+                statuses: initialStatusesByCharacterName.get(
+                  playerName,
+                ) as unknown as JsonValue,
+              }
+            : {}),
         },
         reason: "建立玩家角色初始状态",
         evidence: [openingEventId],
@@ -2227,6 +2259,13 @@ export class LocalStoryStore {
           alive: true,
           mood: "待定",
           currentGoal: "依照角色设定应对玩家",
+          ...(initialStatusesByCharacterName.get(mainCharacterName)?.length
+            ? {
+                statuses: initialStatusesByCharacterName.get(
+                  mainCharacterName,
+                ) as unknown as JsonValue,
+              }
+            : {}),
         },
         reason: "建立主要角色初始状态",
         evidence: [openingEventId],
@@ -2403,6 +2442,13 @@ export class LocalStoryStore {
             alive: true,
             mood: "待定",
             currentGoal: "依照角色设定参与当前剧情",
+            ...(initialStatusesByCharacterName.get(character.name)?.length
+              ? {
+                  statuses: initialStatusesByCharacterName.get(
+                    character.name,
+                  ) as unknown as JsonValue,
+                }
+              : {}),
           },
           reason: "建立其他角色初始状态",
           evidence: [openingEventId],

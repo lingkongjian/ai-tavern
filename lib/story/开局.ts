@@ -17,6 +17,7 @@ import {
   ATTRIBUTE_WHITELIST,
   isAttributeName,
 } from "./判定服务.ts";
+import { validateStatusesArray } from "./回合协议.ts";
 
 const limits = {
   short: 80,
@@ -1046,12 +1047,73 @@ export function parseStartAdventureInput(value: unknown): StartAdventureInput {
     }
   }
 
+  const initialStatuses: StartAdventureInput["initialStatuses"] = [];
+  if (value.initialStatuses !== undefined) {
+    if (!Array.isArray(value.initialStatuses)) {
+      issues.push("初始状态必须是数组。");
+    } else {
+      if (value.initialStatuses.length > 60) {
+        issues.push("初始状态最多允许 60 个角色条目。");
+      }
+      value.initialStatuses.slice(0, 60).forEach((item, index) => {
+        if (!isRecord(item)) {
+          issues.push(`初始状态 ${index + 1} 格式无效。`);
+          return;
+        }
+        const characterName = readRequiredText(
+          item,
+          "characterName",
+          `初始状态 ${index + 1} 角色名`,
+          limits.short,
+          issues,
+        );
+        if (
+          characterName &&
+          !knownCharacterNames.has(characterName.toLocaleLowerCase("zh-CN"))
+        ) {
+          issues.push(
+            `初始状态 ${index + 1} 的角色“${characterName}”不在剧本角色中。`,
+          );
+        }
+        const rawStatuses = item.statuses;
+        if (!Array.isArray(rawStatuses)) {
+          issues.push(`初始状态 ${index + 1} 的 statuses 必须是数组。`);
+          return;
+        }
+        if (rawStatuses.length > 20) {
+          issues.push(
+            `初始状态 ${index + 1} 的角色“${characterName}”最多允许 20 条状态词条。`,
+          );
+        }
+        const statusIssues: string[] = [];
+        const validated = validateStatusesArray(
+          rawStatuses.slice(0, 20),
+          `初始状态 ${index + 1} 词条`,
+          statusIssues,
+        );
+        issues.push(...statusIssues);
+        if (characterName && validated && validated.length > 0) {
+          initialStatuses.push({
+            characterName,
+            // 开局词条没有来源回合，去掉 sourceTurnId（不属于剧本包公开格式）。
+            statuses: validated.map((status) => {
+              const rest = { ...status };
+              delete rest.sourceTurnId;
+              return rest;
+            }),
+          });
+        }
+      });
+    }
+  }
+
   if (issues.length > 0) {
     throw new AdventureInputError(issues);
   }
   return {
     ...result,
     ...(initialRelationships.length > 0 ? { initialRelationships } : {}),
+    ...(initialStatuses.length > 0 ? { initialStatuses } : {}),
     ...(locations.length > 0 ? { locations } : {}),
     ...(foreshadowing.length > 0 ? { foreshadowing } : {}),
     ...(triggers.length > 0 ? { triggers } : {}),

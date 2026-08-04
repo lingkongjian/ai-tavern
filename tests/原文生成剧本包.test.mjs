@@ -136,6 +136,151 @@ test("从原文生成标准剧本包并原样内嵌本地参考正文", async ()
   assert.match(capturedRequest.messages[0].content, /不要填 0/);
 });
 
+test("蓝图中的初始状态词条生成稳定 ID、保留隐藏标记并写入生成包", async () => {
+  const source = `# 第一章 雾城旧邮局\n\n${"雨点敲在邮局玻璃上，沈川看见林遥按住那封来自七日前的信。".repeat(15)}`;
+  let capturedRequest;
+  const generated = await generateAdventureBundleFromSource(
+    { fileName: "雾城来信.md", content: source },
+    {
+      config: {
+        provider: "openai_compatible",
+        baseUrl: "https://models.example/v1",
+        model: "story-model",
+        apiKey: "secret",
+      },
+      fetchImplementation: async (_url, init) => {
+        capturedRequest = JSON.parse(init.body);
+        return providerResponse(
+          blueprint({
+            initialStatuses: [
+              {
+                characterName: "沈川",
+                statuses: [
+                  {
+                    name: "旧伤",
+                    kind: "debuff",
+                    hidden: false,
+                    description: "追查兄长时留下的左肩旧伤，雨夜隐隐作痛。",
+                    expiresAtDay: 5,
+                  },
+                  {
+                    name: "灯尘入体",
+                    kind: "debuff",
+                    hidden: true,
+                    description: "在旧邮局滞留过久，体内积有灯尘，沈川自己尚未察觉。",
+                    expiresAtDay: null,
+                  },
+                ],
+              },
+              {
+                characterName: "林遥",
+                statuses: [
+                  {
+                    name: "提灯余辉",
+                    kind: "buff",
+                    hidden: false,
+                    description: "守夜提灯的光辉护持，短时内精神集中。",
+                    expiresAtDay: 2,
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+      },
+    },
+  );
+
+  const statuses = generated.preview.adventure.initialStatuses;
+  assert.equal(statuses.length, 2);
+  const shenchuan = statuses.find((entry) => entry.characterName === "沈川");
+  assert.equal(shenchuan.statuses.length, 2);
+  assert.match(shenchuan.statuses[0].id, /^沈川-旧伤$/);
+  assert.equal(shenchuan.statuses[0].kind, "debuff");
+  assert.equal(shenchuan.statuses[0].expiresAtDay, 5);
+  assert.equal(Object.hasOwn(shenchuan.statuses[0], "hidden"), false);
+  assert.equal(shenchuan.statuses[1].hidden, true);
+  assert.equal(shenchuan.statuses[1].expiresAtDay, undefined);
+  const linyao = statuses.find((entry) => entry.characterName === "林遥");
+  assert.equal(linyao.statuses[0].id, "林遥-提灯余辉");
+  assert.equal(linyao.statuses[0].kind, "buff");
+  assert.match(capturedRequest.messages[0].content, /initialStatuses/);
+  assert.match(capturedRequest.messages[0].content, /hidden=true/);
+  assert.match(capturedRequest.messages[0].content, /不要自行输出 ID/);
+});
+
+test("蓝图初始状态引用未知角色或非法 kind 时拒绝生成", async () => {
+  const source = `# 第一章 雾城旧邮局\n\n${"雨点敲在邮局玻璃上，沈川看见林遥按住那封来自七日前的信。".repeat(15)}`;
+  const options = {
+    config: {
+      provider: "openai_compatible",
+      baseUrl: "https://models.example/v1",
+      model: "story-model",
+      apiKey: "secret",
+    },
+    fetchImplementation: async () =>
+      providerResponse(
+        blueprint({
+          initialStatuses: [
+            {
+              characterName: "路人甲",
+              statuses: [
+                {
+                  name: "发烧",
+                  kind: "debuff",
+                  hidden: false,
+                  description: "高烧不退。",
+                  expiresAtDay: null,
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+  };
+
+  await assert.rejects(
+    generateAdventureBundleFromSource(
+      { fileName: "非法状态.md", content: source },
+      options,
+    ),
+    (error) =>
+      error instanceof SourceBundleGenerationOutputError &&
+      error.issues.some((issue) => issue.includes("引用了不存在的角色")),
+  );
+
+  await assert.rejects(
+    generateAdventureBundleFromSource(
+      { fileName: "非法状态.md", content: source },
+      {
+        config: options.config,
+        fetchImplementation: async () =>
+          providerResponse(
+            blueprint({
+              initialStatuses: [
+                {
+                  characterName: "沈川",
+                  statuses: [
+                    {
+                      name: "诅咒",
+                      kind: "curse",
+                      hidden: false,
+                      description: "类型不在白名单中。",
+                      expiresAtDay: null,
+                    },
+                  ],
+                },
+              ],
+            }),
+          ),
+      },
+    ),
+    (error) =>
+      error instanceof SourceBundleGenerationOutputError &&
+      error.issues.some((issue) => issue.includes("kind 必须是 buff、debuff 之一")),
+  );
+});
+
 test("蓝图中的 deadlineDay 0 视为无期限且不报错", async () => {
   const source = `# 第一章 雾城旧邮局\n\n${"雨点敲在邮局玻璃上，沈川看见林遥按住那封来自七日前的信。".repeat(15)}`;
   const generated = await generateAdventureBundleFromSource(

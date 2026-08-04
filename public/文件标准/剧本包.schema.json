@@ -160,6 +160,14 @@
             "$ref": "#/$defs/initialRelationship"
           }
         },
+        "initialStatuses": {
+          "type": "array",
+          "maxItems": 60,
+          "description": "开局时各角色身上已有的 buff/debuff 状态词条（按角色姓名引用，词条结构与运行时 character_state.statuses 一致）",
+          "items": {
+            "$ref": "#/$defs/initialStatus"
+          }
+        },
         "locations": {
           "type": "array",
           "maxItems": 60,
@@ -281,6 +289,75 @@
         "summary": {
           "type": "string",
           "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    },
+    "initialStatus": {
+      "type": "object",
+      "required": [
+        "characterName",
+        "statuses"
+      ],
+      "properties": {
+        "characterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "角色姓名（必须与人物卡姓名一致）"
+        },
+        "statuses": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/characterStatus"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "characterStatus": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "稳定唯一的状态词条 ID，剧情中修改词条时保持不变"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "kind": {
+          "enum": [
+            "buff",
+            "debuff"
+          ],
+          "description": "buff 增益 / debuff 减益"
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "隐藏状态：角色尚未察觉，仅以导演级信息注入上下文，探索认识到后解锁为可见"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "状态的表现与影响"
+        },
+        "expiresAtDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "游戏内到期日（第 N 天，含当天）；到期后随回合提交自动移除，无期限省略"
         }
       },
       "additionalProperties": false

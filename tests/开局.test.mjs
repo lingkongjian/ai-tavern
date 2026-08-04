@@ -118,6 +118,281 @@ test("accepts legacy affinity alias as affection for initial relationships", () 
   );
 });
 
+test("validates and materializes initial statuses for each character", () => {
+  const withStatuses = parseStartAdventureInput({
+    ...validInput,
+    initialStatuses: [
+      {
+        characterName: "沈砚",
+        statuses: [
+          {
+            id: "shenyan-lamp-dust",
+            name: "灯尘入体",
+            kind: "debuff",
+            hidden: true,
+            description: "常年接触档案馆的失魂灯芯，体内积有灯尘，沈砚自己尚未察觉。",
+            expiresAtDay: 12,
+          },
+          {
+            id: "shenyan-brisk",
+            name: "海风提神",
+            kind: "buff",
+            description: "海风带来的短时清醒。",
+          },
+        ],
+      },
+      {
+        characterName: "伊芙琳",
+        statuses: [
+          {
+            id: "evelyn-old-wound",
+            name: "旧伤",
+            kind: "debuff",
+            description: "左臂旧伤在雨夜隐隐作痛。",
+            expiresAtDay: 5,
+          },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(withStatuses.initialStatuses, [
+    {
+      characterName: "沈砚",
+      statuses: [
+        {
+          id: "shenyan-lamp-dust",
+          name: "灯尘入体",
+          kind: "debuff",
+          hidden: true,
+          description: "常年接触档案馆的失魂灯芯，体内积有灯尘，沈砚自己尚未察觉。",
+          expiresAtDay: 12,
+        },
+        {
+          id: "shenyan-brisk",
+          name: "海风提神",
+          kind: "buff",
+          description: "海风带来的短时清醒。",
+        },
+      ],
+    },
+    {
+      characterName: "伊芙琳",
+      statuses: [
+        {
+          id: "evelyn-old-wound",
+          name: "旧伤",
+          kind: "debuff",
+          description: "左臂旧伤在雨夜隐隐作痛。",
+          expiresAtDay: 5,
+        },
+      ],
+    },
+  ]);
+
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialStatuses: [
+          {
+            characterName: "路人甲",
+            statuses: [
+              {
+                id: "passerby-status",
+                name: "发烧",
+                kind: "debuff",
+                description: "高烧不退。",
+              },
+            ],
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) =>
+        issue.includes("不在剧本角色中"),
+      ),
+  );
+
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialStatuses: [
+          {
+            characterName: "沈砚",
+            statuses: [
+              {
+                id: "bad-kind",
+                name: "未知类型",
+                kind: "curse",
+                description: "类型不在白名单中。",
+              },
+            ],
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("kind 必须是 buff、debuff 之一")),
+  );
+
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialStatuses: [
+          {
+            characterName: "沈砚",
+            statuses: Array.from({ length: 21 }, (_, index) => ({
+              id: `status-${index}`,
+              name: `状态${index}`,
+              kind: "debuff",
+              description: "词条",
+            })),
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("最多允许 20 条状态词条")),
+  );
+
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialStatuses: Array.from({ length: 61 }, (_, index) => ({
+          characterName: "沈砚",
+          statuses: [
+            {
+              id: `entry-${index}`,
+              name: "重复状态",
+              kind: "debuff",
+              description: "条目数量超过上限。",
+            },
+          ],
+        })),
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("最多允许 60 个角色条目")),
+  );
+
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialStatuses: [
+          {
+            characterName: "沈砚",
+            statuses: [
+              {
+                id: "duplicate",
+                name: "词条一",
+                kind: "debuff",
+                description: "第一项",
+              },
+              {
+                id: "duplicate",
+                name: "词条二",
+                kind: "debuff",
+                description: "第二项",
+              },
+            ],
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("状态词条 ID duplicate 重复")),
+  );
+});
+
+test("creates an opening adventure with initial statuses materialized", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-statuses-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure(
+      parseStartAdventureInput({
+        ...validInput,
+        initialStatuses: [
+          {
+            characterName: "沈砚",
+            statuses: [
+              {
+                id: "shenyan-lamp-dust",
+                name: "灯尘入体",
+                kind: "debuff",
+                hidden: true,
+                description: "沈砚自己尚未察觉。",
+                expiresAtDay: 12,
+              },
+            ],
+          },
+          {
+            characterName: "米洛",
+            statuses: [
+              {
+                id: "milo-stiff",
+                name: "落枕",
+                kind: "debuff",
+                description: "脖子僵直。",
+                expiresAtDay: 3,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const states = store.loadAdventure(started.sessionId).branchState.states;
+    const playerState = states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.playerCharacterId,
+    );
+    assert.deepEqual(playerState.state.statuses, [
+      {
+        id: "shenyan-lamp-dust",
+        name: "灯尘入体",
+        kind: "debuff",
+        hidden: true,
+        description: "沈砚自己尚未察觉。",
+        expiresAtDay: 12,
+      },
+    ]);
+    const mainState = states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.equal(mainState.state.statuses, undefined);
+    const additionalState = states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.additionalCharacterIds[0],
+    );
+    assert.deepEqual(additionalState.state.statuses, [
+      {
+        id: "milo-stiff",
+        name: "落枕",
+        kind: "debuff",
+        description: "脖子僵直。",
+        expiresAtDay: 3,
+      },
+    ]);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("creates and restores a complete opening adventure", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-opening-"));
   const databasePath = join(temporaryDirectory, "story.sqlite");
