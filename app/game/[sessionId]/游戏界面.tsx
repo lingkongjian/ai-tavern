@@ -91,6 +91,7 @@ const stateLabels: Record<LoadedStateChange["entityType"], string> = {
   location: "地点",
   session_state: "场景状态",
   source_document: "原文进度",
+  appointment: "约定",
 };
 
 const operationLabels: Record<LoadedStateChange["operation"], string> = {

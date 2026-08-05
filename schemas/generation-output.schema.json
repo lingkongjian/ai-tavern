@@ -220,6 +220,17 @@
         "$ref": "#/$defs/plotTriggerUpdate"
       }
     },
+    "appointments": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/appointmentList"
+        }
+      ],
+      "description": "可选：剧情中角色约定的未来时间点（会面、交易、交付、赴考等剧情内事件，区别于剧本包预埋任务的 deadlineDay）。完整数组替换语义：null 清除全部约定，省略表示约定保持不变，数组为完整替换。"
+    },
     "storyDirectionEvaluation": {
           "oneOf": [
             {
@@ -578,6 +589,41 @@
         },
         "context": {
           "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "appointmentList": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/appointment"
+      }
+    },
+    "appointment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "description", "atDay"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "characterIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "atDay": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "游戏内约定日期（第 N 天，正整数 ≥1；五回合一天模式下同样按天计算，一天 = 5 个回合）。"
         }
       }
     },

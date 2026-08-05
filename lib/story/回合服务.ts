@@ -1200,6 +1200,76 @@ function createStateMutations(input: {
     }
   }
 
+  // 约定（appointments）完整数组替换语义：
+  // - 新数组中的约定以 replace 物化为 appointment 实体（status=pending，
+  //   首次登记回合记入 sourceTurnId，后续更新保留原来源回合）；
+  // - 旧数组中存在而新数组中缺失的约定标记 status="cancelled"（保留历史实体，
+  //   供审计与回看，不物理删除），被取消的约定不再进入上下文注入；
+  // - appointments=null（清除全部）与数组走同一替换逻辑；undefined（未提供）
+  //   表示约定保持不变，不产生任何变化。
+  // 约定到期（atDay ≤ 当前游戏内日期）不自动改状态：到期由上下文
+  // dueAppointments 以"约定日已到"硬事实提示，兑现/错过/变故的结果由模型
+  // 在剧情中体现并同步更新 appointments 数组（与任务 deadline 的 expired
+  // 终态、触发器 deadline 的强制 fire 区分）。
+  const previousAppointments = adventure.branchState.states.filter(
+    (state) => state.entityType === "appointment",
+  );
+  if (generated.stateCommit.appointments !== undefined) {
+    const nextAppointments = generated.stateCommit.appointments ?? [];
+    const nextIds = new Set(
+      nextAppointments.map((appointment) => appointment.id),
+    );
+    const previousById = new Map(
+      previousAppointments.map((state) => [
+        readText(state.state.appointmentId),
+        state,
+      ]),
+    );
+    for (const appointment of nextAppointments) {
+      const previous = previousById.get(appointment.id);
+      const previousSourceTurnId = readText(previous?.state.sourceTurnId);
+      mutations.push({
+        entityType: "appointment",
+        entityId: `appointment:${appointment.id}`,
+        operation: "replace",
+        value: {
+          appointmentId: appointment.id,
+          title: appointment.title,
+          description: appointment.description,
+          ...(appointment.characterIds !== undefined &&
+          appointment.characterIds.length > 0
+            ? { characterIds: appointment.characterIds }
+            : {}),
+          atDay: appointment.atDay,
+          status: "pending",
+          ...(previousSourceTurnId
+            ? { sourceTurnId: previousSourceTurnId }
+            : { sourceTurnId: turnId }),
+        },
+        reason: previous
+          ? `更新约定「${appointment.title}」`
+          : `剧情中达成了约定「${appointment.title}」`,
+        evidence: [firstEvidenceId ?? turnId],
+      });
+    }
+    for (const previous of previousAppointments) {
+      const appointmentId = readText(previous.state.appointmentId);
+      if (nextIds.has(appointmentId)) continue;
+      if (readText(previous.state.status) === "cancelled") continue;
+      mutations.push({
+        entityType: "appointment",
+        entityId: previous.entityId,
+        operation: "merge",
+        value: {
+          status: "cancelled",
+          cancelledAtTurnId: turnId,
+        },
+        reason: `约定「${readText(previous.state.title)}」未出现在本轮约定数组中，按剧情取消（已兑现、已解除或重新约定）`,
+        evidence: [firstEvidenceId ?? turnId],
+      });
+    }
+  }
+
   const sessionStateForDay = adventure.branchState.states.find(
     (state) => state.entityType === "session_state" && state.entityId === "core",
   );

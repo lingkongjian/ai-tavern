@@ -8,6 +8,7 @@ import { openLocalDatabase } from "../db/index.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
 import {
   dayPhaseOf,
+  GeneratedTurnValidationError,
   normalizeGeneratedTurnVersion,
   parsePlayerTurnRequest,
   validateGeneratedTurn,
@@ -19,6 +20,10 @@ import {
   AdventureInputError,
   parseStartAdventureInput,
 } from "../lib/story/开局.ts";
+import {
+  exportCompleteAdventure,
+  importCompleteAdventure,
+} from "../lib/import/完整存档.ts";
 
 const migrationsDir = join(
   fileURLToPath(new URL("..", import.meta.url)),
@@ -1476,6 +1481,660 @@ test("旧会话兼容：缺失 timeMode/phaseOffset 字段按 story 模式处理
       validated.warnings.some((warning) => warning.includes("时间流逝短语")),
       "缺失 timeMode 时校验按 story 模式处理，跨日短语警告保留",
     );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function appointmentTurn(started, scene, appointments, options = {}) {
+  const content = turnContent(started, scene, options);
+  content.stateCommit.appointments = appointments;
+  return content;
+}
+
+function findAppointment(adventure, appointmentId) {
+  return adventure.branchState.states.find(
+    (state) =>
+      state.entityType === "appointment" &&
+      state.entityId === `appointment:${appointmentId}`,
+  );
+}
+
+test("appointments 协议校验：结构、重复 id、非法 atDay、未知角色、null 清除", () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    const adventure = store.loadAdventure(started.sessionId);
+
+    // 合法约定：id/title/description/characterIds/atDay 全部通过
+    const valid = validateGeneratedTurn(
+      normalizeGeneratedTurnVersion(
+        appointmentTurn(started, "守钟人约旅人三日后在李府会面。", [
+          {
+            id: "meet-li",
+            title: "李府会面",
+            description: "三日后在李府见面，商谈铜钟逆流之事。",
+            characterIds: [started.mainCharacterId],
+            atDay: 4,
+          },
+        ], { eventId: "event-appt-valid", evidenceId: "event-appt-valid" }),
+      ),
+      adventure,
+      "turn-appt-valid",
+    );
+    assert.equal(valid.stateCommit.appointments.length, 1);
+    assert.equal(valid.stateCommit.appointments[0].id, "meet-li");
+    assert.equal(valid.stateCommit.appointments[0].atDay, 4);
+    assert.deepEqual(valid.stateCommit.appointments[0].characterIds, [
+      started.mainCharacterId,
+    ]);
+
+    // 重复 id 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          normalizeGeneratedTurnVersion(
+            appointmentTurn(started, "两次约定。", [
+              { id: "dup", title: "甲约", description: "第一次约定。", atDay: 2 },
+              { id: "dup", title: "乙约", description: "第二次约定。", atDay: 3 },
+            ], { eventId: "event-appt-dup", evidenceId: "event-appt-dup" }),
+          ),
+          adventure,
+          "turn-appt-dup",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("重复")),
+    );
+
+    // 非法 atDay（0、小数、非数字）拒绝
+    for (const badAtDay of [0, 2.5, "三天后"]) {
+      assert.throws(
+        () =>
+          validateGeneratedTurn(
+            normalizeGeneratedTurnVersion(
+              appointmentTurn(started, "约定。", [
+                { id: "a1", title: "约定", description: "约定内容。", atDay: badAtDay },
+              ], { eventId: "event-appt-atday", evidenceId: "event-appt-atday" }),
+            ),
+            adventure,
+            "turn-appt-atday",
+          ),
+        (error) =>
+          error instanceof GeneratedTurnValidationError &&
+          error.issues.some((issue) => issue.includes("atDay")),
+        `atDay=${JSON.stringify(badAtDay)} 应被拒绝`,
+      );
+    }
+
+    // 未知角色拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          normalizeGeneratedTurnVersion(
+            appointmentTurn(started, "约定。", [
+              { id: "a2", title: "约定", description: "约定内容。", characterIds: ["ghost"], atDay: 3 },
+            ], { eventId: "event-appt-char", evidenceId: "event-appt-char" }),
+          ),
+          adventure,
+          "turn-appt-char",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("不存在的角色")),
+    );
+
+    // null 清除全部约定
+    const cleared = validateGeneratedTurn(
+      normalizeGeneratedTurnVersion(
+        appointmentTurn(started, "取消约定。", null, {
+          eventId: "event-appt-null",
+          evidenceId: "event-appt-null",
+        }),
+      ),
+      adventure,
+      "turn-appt-null",
+    );
+    assert.equal(cleared.stateCommit.appointments, null);
+
+    // 省略字段（undefined）→ 约定保持不变
+    const omitted = validateGeneratedTurn(
+      normalizeGeneratedTurnVersion(
+        turnContent(started, "没有新约定。", {
+          eventId: "event-appt-omitted",
+          evidenceId: "event-appt-omitted",
+        }),
+      ),
+      adventure,
+      "turn-appt-omitted",
+    );
+    assert.equal(omitted.stateCommit.appointments, undefined);
+
+    // 非数组非 null 拒绝
+    assert.throws(
+      () => {
+        const badContent = turnContent(started, "约定。", {
+          eventId: "event-appt-bad",
+          evidenceId: "event-appt-bad",
+        });
+        badContent.stateCommit.appointments = "oops";
+        return validateGeneratedTurn(
+          normalizeGeneratedTurnVersion(badContent),
+          adventure,
+          "turn-appt-bad",
+        );
+      },
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("appointments")),
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("约定物化：登记 → pending 实体与来源回合；更新改 atDay/描述；移除标记 cancelled", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    async function advanceWithAppointments(appointments, options) {
+      const before = store.loadAdventure(started.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: options.idempotencyKey,
+          customChoice: options.choice,
+        }),
+        createTurnId: () => options.turnId,
+        generate: async () => ({
+          content: appointmentTurn(started, options.scene, appointments, {
+            eventId: options.eventId,
+            evidenceId: options.eventId,
+            sceneTransition: options.sceneTransition,
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+      return store.loadAdventure(started.sessionId);
+    }
+
+    // 登记：pending + 来源回合 + 角色 + atDay
+    let after = await advanceWithAppointments(
+      [
+        {
+          id: "meet-li",
+          title: "李府会面",
+          description: "三日后在李府见面。",
+          characterIds: [started.mainCharacterId],
+          atDay: 4,
+        },
+      ],
+      {
+        idempotencyKey: "request-appt-register",
+        turnId: "turn-appt-register",
+        eventId: "event-appt-register",
+        scene: "守钟人与旅人约定三日后李府会面。",
+        choice: "答应三日后赴约。",
+      },
+    );
+    let appointment = findAppointment(after, "meet-li");
+    assert.ok(appointment, "约定应物化为 appointment 实体");
+    assert.equal(appointment.state.status, "pending");
+    assert.equal(appointment.state.sourceTurnId, "turn-appt-register");
+    assert.equal(appointment.state.atDay, 4);
+    assert.deepEqual(appointment.state.characterIds, [started.mainCharacterId]);
+
+    // 更新：改 atDay 与描述，id 不变，首次登记回合保留
+    after = await advanceWithAppointments(
+      [
+        {
+          id: "meet-li",
+          title: "李府会面",
+          description: "改到五日后在李府见面。",
+          characterIds: [started.mainCharacterId],
+          atDay: 6,
+        },
+      ],
+      {
+        idempotencyKey: "request-appt-update",
+        turnId: "turn-appt-update",
+        eventId: "event-appt-update",
+        scene: "守钟人把会面推迟到五日后。",
+        choice: "同意推迟。",
+      },
+    );
+    appointment = findAppointment(after, "meet-li");
+    assert.equal(appointment.state.status, "pending");
+    assert.equal(appointment.state.atDay, 6);
+    assert.match(appointment.state.description, /五日后/);
+    assert.equal(
+      appointment.state.sourceTurnId,
+      "turn-appt-register",
+      "更新保留首次登记回合",
+    );
+
+    // 移除：新数组不含该约定 → status=cancelled（保留历史实体）
+    after = await advanceWithAppointments([], {
+      idempotencyKey: "request-appt-cancel",
+      turnId: "turn-appt-cancel",
+      eventId: "event-appt-cancel",
+      scene: "守钟人取消了这次会面。",
+      choice: "取消会面。",
+    });
+    appointment = findAppointment(after, "meet-li");
+    assert.equal(appointment.state.status, "cancelled");
+    assert.equal(appointment.state.cancelledAtTurnId, "turn-appt-cancel");
+    assert.equal(appointment.state.atDay, 6, "取消后实体内容保留");
+
+    // 后续回合不再重复改写已取消约定
+    after = await advanceWithAppointments([], {
+      idempotencyKey: "request-appt-cancel2",
+      turnId: "turn-appt-cancel2",
+      eventId: "event-appt-cancel2",
+      scene: "风平浪静。",
+      choice: "继续调查。",
+    });
+    assert.equal(findAppointment(after, "meet-li").state.status, "cancelled");
+    const cancel2Changes = after.branchState.recentTurns
+      .find((turn) => turn.id === "turn-appt-cancel2")
+      .stateChanges.filter((change) => change.entityType === "appointment");
+    assert.equal(
+      cancel2Changes.length,
+      0,
+      "已取消约定不产生重复状态变更",
+    );
+
+    // appointments=null（清除全部）：与空数组同语义，已取消保持 cancelled
+    after = await advanceWithAppointments(null, {
+      idempotencyKey: "request-appt-null",
+      turnId: "turn-appt-null",
+      eventId: "event-appt-null",
+      scene: "所有约定都取消了。",
+      choice: "确认。",
+    });
+    assert.equal(findAppointment(after, "meet-li").state.status, "cancelled");
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("约定到期提示：未到期注入 appointments（含剩余天数），到期后注入 dueAppointments 硬事实", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    // 第 1 日登记约定 atDay=3
+    const before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-appt-due0",
+        customChoice: "答应三日后赴约。",
+      }),
+      createTurnId: () => "turn-appt-due0",
+      generate: async () => ({
+        content: appointmentTurn(started, "守钟人约旅人三日后李府会面。", [
+          {
+            id: "meet-li",
+            title: "李府会面",
+            description: "三日后在李府见面。",
+            characterIds: [started.mainCharacterId],
+            atDay: 3,
+          },
+        ], { eventId: "event-appt-due0", evidenceId: "event-appt-due0" }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+
+    // 未到期（第 1 日，atDay=3 > 1）：appointments 注入含 daysRemaining，无 dueAppointments
+    const prompt = createStoryGenerationPrompt({
+      adventure: store.loadAdventure(started.sessionId),
+      turnId: "turn-appt-prompt1",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人继续调查。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    const userContext = prompt.messages[1].content;
+    assert.match(userContext, /"appointments"/);
+    assert.doesNotMatch(userContext, /dueAppointments/);
+    assert.match(userContext, /"daysRemaining":2/);
+    assert.match(userContext, /"atDay":3/);
+    assert.match(userContext, /李府会面/);
+
+    // 到期（第 3 日，atDay=3 ≤ 当前日）：dueAppointments 注入，未到期列表不再包含
+    const adventure = store.loadAdventure(started.sessionId);
+    const dueAdventure = {
+      ...adventure,
+      branchState: {
+        ...adventure.branchState,
+        states: adventure.branchState.states.map((state) =>
+          state.entityType === "session_state" && state.entityId === "core"
+            ? { ...state, state: { ...state.state, gameTimeDay: 3 } }
+            : state,
+        ),
+      },
+    };
+    const duePrompt = createStoryGenerationPrompt({
+      adventure: dueAdventure,
+      turnId: "turn-appt-prompt2",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人前往李府。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    const dueUserContext = duePrompt.messages[1].content;
+    assert.match(dueUserContext, /"dueAppointments"/);
+    assert.doesNotMatch(dueUserContext, /"daysRemaining"/, "到期约定不再带剩余天数");
+    assert.match(dueUserContext, /meet-li/);
+    const dueSystem = duePrompt.messages[0].content;
+    assert.match(dueSystem, /约定日已到/);
+    assert.match(dueSystem, /dueAppointments/);
+    assert.match(dueSystem, /如期赴约|错过约定|变故推迟|重新约定/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("端到端：日期推进跨过约定日后，下一回合提示注入 dueAppointments", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+
+    // 第 1 日登记约定 atDay=3，随后两回合各推进一天（第 3 日到期）
+    for (const [index, turn] of [
+      {
+        idempotencyKey: "request-appt-e2e-register",
+        turnId: "turn-appt-e2e-register",
+        eventId: "event-appt-e2e-register",
+        scene: "守钟人约旅人三日后李府会面。",
+        choice: "答应赴约。",
+        appointments: [
+          {
+            id: "meet-li",
+            title: "李府会面",
+            description: "三日后在李府见面。",
+            characterIds: [started.mainCharacterId],
+            atDay: 3,
+          },
+        ],
+      },
+      {
+        idempotencyKey: "request-appt-e2e-day2",
+        turnId: "turn-appt-e2e-day2",
+        eventId: "event-appt-e2e-day2",
+        scene: "次日，旅人在城中采买。",
+        choice: "采买备礼。",
+        appointments: [
+          {
+            id: "meet-li",
+            title: "李府会面",
+            description: "三日后在李府见面。",
+            characterIds: [started.mainCharacterId],
+            atDay: 3,
+          },
+        ],
+        sceneTransition: { timeAdvance: "one_day" },
+      },
+      {
+        idempotencyKey: "request-appt-e2e-day3",
+        turnId: "turn-appt-e2e-day3",
+        eventId: "event-appt-e2e-day3",
+        scene: "约定之日，旅人收拾妥当准备赴约。",
+        choice: "前往李府。",
+        appointments: [
+          {
+            id: "meet-li",
+            title: "李府会面",
+            description: "三日后在李府见面。",
+            characterIds: [started.mainCharacterId],
+            atDay: 3,
+          },
+        ],
+        sceneTransition: { timeAdvance: "one_day" },
+      },
+    ].entries()) {
+      const before = store.loadAdventure(started.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: turn.idempotencyKey,
+          customChoice: turn.choice,
+        }),
+        createTurnId: () => turn.turnId,
+        generate: async () => ({
+          content: appointmentTurn(started, turn.scene, turn.appointments, {
+            eventId: turn.eventId,
+            evidenceId: turn.eventId,
+            sceneTransition: turn.sceneTransition,
+          }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+    }
+
+    const core = findCore(store.loadAdventure(started.sessionId)).state;
+    assert.equal(core.gameTimeDay, 3, "两回合 one_day 推进后应到第 3 日");
+    const appointment = findAppointment(
+      store.loadAdventure(started.sessionId),
+      "meet-li",
+    );
+    assert.equal(
+      appointment.state.status,
+      "pending",
+      "到期约定状态仍为 pending（系统不自动改状态，由模型在剧情中体现）",
+    );
+
+    // 下一回合提示：dueAppointments 注入，规则要求剧情体现赴约/错过/变故
+    const duePrompt = createStoryGenerationPrompt({
+      adventure: store.loadAdventure(started.sessionId),
+      turnId: "turn-appt-e2e-prompt",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人敲响李府大门。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    const dueUserContext = duePrompt.messages[1].content;
+    assert.match(dueUserContext, /"dueAppointments"/);
+    assert.match(dueUserContext, /李府会面/);
+    assert.doesNotMatch(dueUserContext, /"daysRemaining"/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("五回合一天：约定 atDay 按游戏内天数到期（第 5 回合结束进入第 2 天）", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store, { timeMode: "turn_based" });
+
+    // 第 1 回合登记约定 atDay=2
+    let before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-appt-tb-register",
+        customChoice: "答应两日后赴约。",
+      }),
+      createTurnId: () => "turn-appt-tb-register",
+      generate: async () => ({
+        content: appointmentTurn(started, "守钟人约旅人两日后在渡口会面。", [
+          {
+            id: "ferry-meet",
+            title: "渡口会面",
+            description: "两日后在渡口碰头。",
+            characterIds: [started.mainCharacterId],
+            atDay: 2,
+          },
+        ], { eventId: "event-appt-tb-register", evidenceId: "event-appt-tb-register" }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+
+    // 第 2~4 回合（仍在第 1 天）：约定未到期
+    for (const index of [2, 3, 4]) {
+      before = store.loadAdventure(started.sessionId);
+      await advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: before.branchState.branch.headTurnId,
+          idempotencyKey: `request-appt-tb-${index}`,
+          customChoice: "继续调查。",
+        }),
+        createTurnId: () => `turn-appt-tb-${index}`,
+        generate: async () => ({
+          content: appointmentTurn(started, "旅人在钟楼调查。", [
+            {
+              id: "ferry-meet",
+              title: "渡口会面",
+              description: "两日后在渡口碰头。",
+              characterIds: [started.mainCharacterId],
+              atDay: 2,
+            },
+          ], { eventId: `event-appt-tb-${index}`, evidenceId: `event-appt-tb-${index}` }),
+          model: "deepseek-v4-flash",
+          usage: {},
+        }),
+      });
+    }
+    let adventure = store.loadAdventure(started.sessionId);
+    assert.equal(findCore(adventure).state.gameTimeDay, 1, "前 4 回合仍在第 1 天");
+    let prompt = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-appt-tb-prompt1",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人继续调查。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    assert.doesNotMatch(prompt.messages[1].content, /dueAppointments/);
+    assert.match(prompt.messages[1].content, /"daysRemaining":1/);
+
+    // 第 5 回合结束进入第 2 天（atDay=2 当天到期）：dueAppointments 注入
+    before = store.loadAdventure(started.sessionId);
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: before.branchState.branch.headTurnId,
+        idempotencyKey: "request-appt-tb-5",
+        customChoice: "前往渡口。",
+      }),
+      createTurnId: () => "turn-appt-tb-5",
+      generate: async () => ({
+        content: appointmentTurn(started, "约定之日，旅人赶往渡口。", [
+          {
+            id: "ferry-meet",
+            title: "渡口会面",
+            description: "两日后在渡口碰头。",
+            characterIds: [started.mainCharacterId],
+            atDay: 2,
+          },
+        ], { eventId: "event-appt-tb-5", evidenceId: "event-appt-tb-5" }),
+        model: "deepseek-v4-flash",
+        usage: {},
+      }),
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    assert.equal(findCore(adventure).state.gameTimeDay, 2, "第 5 回合结束进入第 2 天");
+    const duePrompt = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-appt-tb-prompt2",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "旅人在渡口等候。",
+        effectiveStoryDirection: "找到解药。",
+        previousStoryDirection: "找到解药。",
+      },
+    });
+    assert.match(duePrompt.messages[1].content, /"dueAppointments"/);
+    assert.match(duePrompt.messages[1].content, /渡口会面/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("完整存档往返：appointment 实体保留状态与来源回合", () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startP1Adventure(store);
+    const before = store.loadAdventure(started.sessionId);
+    store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: before.branchState.branch.id,
+      expectedHeadTurnId: before.branchState.branch.headTurnId,
+      idempotencyKey: "archive-appt-root",
+      playerInput: { roleplay: { mode: "action", content: "答应三日后赴约" } },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "约定达成。" },
+      summaryPatch: "旅人答应三日后赴约。",
+      events: [{ id: "archive-appt-event", eventType: "appointment_made", summary: "约定达成" }],
+      stateMutations: [
+        {
+          entityType: "appointment",
+          entityId: "appointment:meet-li",
+          operation: "replace",
+          value: {
+            appointmentId: "meet-li",
+            title: "李府会面",
+            description: "三日后在李府见面。",
+            characterIds: [started.mainCharacterId],
+            atDay: 4,
+            status: "pending",
+            sourceTurnId: "archive-appt-root",
+          },
+          reason: "剧情中达成了约定「李府会面」",
+          evidence: ["archive-appt-event"],
+        },
+      ],
+    });
+
+    const archive = exportCompleteAdventure(database, started.sessionId);
+    assert.equal(
+      archive.data.materialized_states.some(
+        (row) =>
+          row.entity_type === "appointment" &&
+          row.entity_id === "appointment:meet-li",
+      ),
+      true,
+      "完整存档应包含 appointment 实体",
+    );
+
+    const imported = importCompleteAdventure(database, archive);
+    const importedAdventure = store.loadAdventure(imported.sessionId);
+    const appointment = findAppointment(importedAdventure, "meet-li");
+    assert.ok(appointment, "导入后 appointment 实体保留");
+    assert.equal(appointment.state.status, "pending");
+    assert.equal(appointment.state.atDay, 4);
+    assert.equal(appointment.state.sourceTurnId, "archive-appt-root");
+    assert.deepEqual(appointment.state.characterIds, [started.mainCharacterId]);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

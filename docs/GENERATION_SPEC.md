@@ -288,6 +288,8 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 `session_state.core.gameTimeDay` 表示游戏内第几天，开局为第 1 日。游戏内时间只由剧情推进驱动：`sceneTransition` 可以通过 `gameTimeDayNext`（可选整数，本回合结束日期，不得小于当前日）**显式声明**本回合结束时的日期，或通过 `timeAdvance`（`moment`/`hours`/`one_day`/`several_days`）声明时间幅度——两者都提供时日期一律以 `gameTimeDayNext` 为准（实际推进 = `gameTimeDayNext − 当前日`），语义冲突只产生警告不拒绝回合；只提供 `timeAdvance` 沿用既有语义；都不提供时日期不变（相当于 `moment`）。跨日剧情（正文出现"次日""数日后"等时间流逝）必须声明日期，正文时间短语与日期一致。任务 `deadlineDay` 到期后，`expiredDeadlines` 作为导演级硬事实注入上下文，模型必须让期限后果在本轮显现；期限只会在剧情时间实际推进到该日之后到期。
 
+**剧情约定（appointments）**：剧情中角色之间明确约定的未来时间点（会面、交易、交付、赴考等剧情内事件，区别于剧本包预埋任务的 `deadlineDay`）由模型在 `stateCommit.appointments` 登记：`{ id, title, description, characterIds?, atDay }`（完整数组替换，`null` 清除全部，省略保持不变）。物化为 `appointment` 状态实体（pending）。未到期（`atDay` 大于当前日期）的约定进入上下文 `appointments`（含剩余天数），剧情可自然引用；到期（`atDay` 不超过当前日期）且未处理的约定以 `dueAppointments`“约定日已到”硬事实注入，模型必须在剧情中体现兑现或失效（如期赴约、错过、变故、重新约定）并同步更新；五回合一天模式下 `atDay` 同样按游戏内日期计算（一天 = 5 个回合）。
+
 `session_state.core.timeMode` 选择时间推进方式（缺省 `story`，**新建剧本时确定**——开局表单单选或剧本包 `adventure.timeMode` 可选声明预填，开局后不可切换）：`story` 为剧情驱动（上述语义）；`turn_based` 为五回合一天——每个回合固定推进一个时段（早上→上午→中午→下午→晚上，按 `phaseOffset % 5` 取 `DAY_PHASES`），每 5 个回合进入下一天（`gameTimeDay +1`），模型不得声明 `timeAdvance`/`gameTimeDayNext`（会被忽略），时间短语一致性警告在 `turn_based` 下不触发；任务期限与状态词条到期按天自动生效（一天 = 5 个回合）。上下文在 `turn_based` 下注入 `currentDayPhase` 与 `timeMode`。切换模式保留当前游戏内日期，切换后从"早上"开始重新计时。
 
 校验会产生**时间短语一致性警告**（`normalizationWarning`，不拒绝回合）：正文或事件摘要出现"次日/翌日/数日后/几天后"等时间短语而本轮未声明日期推进（`gameTimeDayNext` 缺省且 `timeAdvance` 为 moment/hours/缺省）时触发，提示模型用 `gameTimeDayNext` 声明结束日期；"数小时后"类不视为跨日。

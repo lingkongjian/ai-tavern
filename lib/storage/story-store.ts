@@ -47,7 +47,8 @@ export type StateEntityType =
   | "plot_check"
   | "location"
   | "session_state"
-  | "source_document";
+  | "source_document"
+  | "appointment";
 
 export type StateMutationOperation =
   | "merge"
@@ -8167,6 +8168,7 @@ export class LocalStoryStore {
       "plot_check",
       "location",
       "session_state",
+      "appointment",
     ]);
     return parsed.states.map((value) => {
       if (!isJsonObject(value)) {

@@ -414,6 +414,48 @@ export function createStoryGenerationPrompt(input: {
       deadlineDay: module.deadlineDay,
       objective: module.objective.slice(0, 300),
     }));
+  // 剧情约定（appointments）：status=pending 的约定实体按到期状态分流——
+  // 未到期（atDay > 当前游戏内日期）进入 appointments（含剩余天数 daysRemaining），
+  // 已到期（atDay ≤ 当前游戏内日期）进入 dueAppointments（"约定日已到"硬事实，
+  // 类似 expiredDeadlines）。约定是剧情内信息，正常注入；cancelled 约定不注入。
+  const pendingAppointments = usableStateRecords.filter(
+    (state) =>
+      state.entityType === "appointment" &&
+      readText(state.state.status) === "pending",
+  );
+  const appointmentSummary = (state: (typeof pendingAppointments)[number]) => {
+    const characterIds = readArray(state.state.characterIds)
+      .filter((item): item is string => typeof item === "string")
+      .slice(0, 8);
+    return {
+      id: readText(state.state.appointmentId),
+      title: readText(state.state.title),
+      description: readText(state.state.description).slice(0, 500),
+      atDay: typeof state.state.atDay === "number" ? state.state.atDay : 0,
+      ...(characterIds.length > 0 ? { characterIds } : {}),
+    };
+  };
+  const upcomingAppointments = pendingAppointments
+    .filter(
+      (state) =>
+        (typeof state.state.atDay === "number" ? state.state.atDay : 0) >
+        gameTimeDay,
+    )
+    .map((state) => {
+      const atDay = typeof state.state.atDay === "number" ? state.state.atDay : 0;
+      return { ...appointmentSummary(state), daysRemaining: atDay - gameTimeDay };
+    })
+    .sort((left, right) => left.atDay - right.atDay)
+    .slice(0, 10);
+  const dueAppointments = pendingAppointments
+    .filter(
+      (state) =>
+        (typeof state.state.atDay === "number" ? state.state.atDay : 0) <=
+        gameTimeDay,
+    )
+    .map(appointmentSummary)
+    .sort((left, right) => left.atDay - right.atDay)
+    .slice(0, 10);
   const storyModulesForGeneration = storyModules
     .filter(
       (module) =>
@@ -484,7 +526,10 @@ export function createStoryGenerationPrompt(input: {
       .map((character) => character.id),
   );
   const rankedStates = usableStateRecords
-    .filter((state) => state.entityType !== "story_module")
+    .filter(
+      (state) =>
+        state.entityType !== "story_module" && state.entityType !== "appointment",
+    )
     .map((state) => {
       const searchable = JSON.stringify(state.state);
       const overlaps = extractMemoryTerms(searchable).filter((term) =>
@@ -669,6 +714,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 31. 玩家角色言行（说话/动作/言行输入）是当前回合最高优先级的故事事实：本轮剧情必须严格承接玩家角色言行——玩家角色说话时，在场 AI 角色必须回应其说的话（对话、反应、态度），玩家角色行动时，必须呈现该动作的结果（事件、状态变化、世界反应）。玩家角色言行优先于 AI 候选选项与剧情走向：不得忽略、淡化或改写玩家角色言行，不得让剧情走向或后续剧本锚点覆盖玩家角色明确表达的行为。与规则 19 的边界：剧情走向仍是导演目标，但只能在承接玩家言行之后推进，不能替代对玩家言行的回应。近期回合中玩家角色言行保持延续：历史言行仍是角色关系、局势与人物记忆的依据，不得与已表达的行为前后矛盾。
 32. 承接顺序：玩家回应后的回合，scene 必须先完整呈现玩家回应的直接后果——NPC 对玩家言行与选择做出的反应、动作的结果、场景随之发生的变化，然后再推进新的信息或事件。不得在玩家回应的结果被呈现之前，引入打断性新事件、新角色、新冲突或新选项；新信息（新线索、新事件、新角色）应作为玩家回应结果的延续自然展开，而不是脱离玩家回应的独立插入。与规则 31 的边界：承接玩家言行是起点而非全部——直接后果呈现完毕后，本轮仍要继续推进剧情，不能只停留在回应上。
 33. 候选选项实质差异：本轮 decision.choices 与最近 2-3 回合的候选项应有实质差异——不得连续多轮生成语义相似的选项（如反复"继续调查/观望/保持现状"这类近似选项）。选项应随剧情进展与玩家回应结果变化：上一轮的选择及其结果已经改变局势，本轮选项必须体现这种变化，给出新的行动空间、新的代价或新的方向，而不是同一批措辞换着说法重出。与规则 6 的边界：规则 6 要求本轮内部选项彼此有差异，本规则要求与近期回合的选项拉开差异；对话持续推进时选项可以自然演变，但每轮仍应让人看出局势在变。
+34. 约定（stateCommit.appointments）：剧情中角色之间明确约定未来的具体时间点（会面、交易、交付、赴考、委托时限等剧情内事件，区别于剧本包预埋任务的 deadlineDay）时，在本轮 stateCommit.appointments 中登记：{"id":"稳定唯一ID","title":"约定标题","description":"约定内容（何时、何地、何事）","characterIds":["参与角色ID"],"atDay":游戏内约定日期}。appointments 是完整数组替换：新登记、修改（改 title/description/characterIds/atDay，id 不变）、兑现或取消约定（从新数组中移除该 id）时，必须提供包含全部现存约定的新数组；stateCommit.appointments=null 表示清除全部约定；省略该字段表示约定保持不变。不得把角色随口一提或尚未谈成的话写成约定。上下文中的 appointments 是尚未到期的约定（含 daysRemaining 剩余天数），剧情可自然引用；dueAppointments 是约定日已到（atDay ≤ 当前游戏内日期）且仍未处理的约定，这是导演级硬事实：本轮剧情必须体现约定的兑现或失效（如期赴约、错过约定、变故推迟、当面重新约定等），并同步更新 appointments（已兑现/已失效的约定从新数组中移除，重新约定的更新 atDay），不能假装约定不存在或时间没有流逝。约定与任务期限互不替代：deadlineDay 是剧本包预埋任务的时间约束，约定是剧情动态产生的时间承诺，两者都不需要通过状态词条维护；五回合一天模式下 atDay 同样按游戏内日期计算（一天 = 5 个回合）。
 
 返回结构必须完整：
 {
@@ -691,6 +737,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
     "worldBookChanges": [],
     "plotThreadUpdates": [],
     "plotTriggerUpdates": [],
+    "appointments": [{"id":"约定ID","title":"约定标题","description":"约定内容（何时、何地、何事）","characterIds":["参与角色ID"],"atDay":游戏内约定日期}],
     "storyDirectionEvaluation": {"status":"active 或 completed","reason":"评估原因","evidence":["完成时必须有证据"],"continuity":"aligned、diverged 或 uncertain","continuityReason":"与预埋剧本的连续性判定","recommendedModuleId":null,"suggestedNextDirection":null,"divergenceState":null},
     "summaryPatch": "用于后续上下文的简短摘要"
   },
@@ -705,7 +752,7 @@ worldBookChanges 按需使用以下结构之一：
 - update：{"operation":"update","targetEntryId":"现有条目ID","patch":{"content":"更新后的事实"},"sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 - deactivate：{"operation":"deactivate","targetEntryId":"现有条目ID","sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 
-没有某类变化时必须返回空数组。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
+没有某类变化时必须返回空数组；stateCommit.appointments 按规则 34 使用：剧情中角色明确约定未来时间点（会面、交易、交付等，非剧本包任务期限）时登记（完整数组替换，null 清除全部约定，省略表示约定保持不变），dueAppointments（约定日已到）出现时本轮必须体现赴约/错过/变故并同步更新 appointments。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
 
   const context: JsonObject = {
     ...(latestPlayerRoleplay ? { latestPlayerRoleplay } : {}),
@@ -741,6 +788,12 @@ worldBookChanges 按需使用以下结构之一：
       : {}),
     ...(plotTriggersForGeneration.length > 0
       ? { plotTriggers: plotTriggersForGeneration }
+      : {}),
+    ...(upcomingAppointments.length > 0
+      ? { appointments: upcomingAppointments }
+      : {}),
+    ...(dueAppointments.length > 0
+      ? { dueAppointments, currentGameTimeDay: gameTimeDay }
       : {}),
     activeStates,
     recentTurns: compactRecentTurns(
@@ -832,6 +885,7 @@ worldBookChanges 按需使用以下结构之一：
     ["人物目录", context.characterDirectory],
     ["剧情任务", { modules: context.storyModules, progress: context.storyModuleProgress }],
     ["伏笔与触发器", { threads: context.plotThreads ?? [], triggers: context.plotTriggers ?? [] }],
+    ["约定", { upcoming: context.appointments ?? [], due: context.dueAppointments ?? [] }],
     ["当前状态", context.activeStates],
     ...(hiddenCharacterStatuses.length > 0
       ? [["未察觉状态", context.hiddenCharacterStatuses] as const]

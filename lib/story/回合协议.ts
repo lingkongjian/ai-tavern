@@ -143,6 +143,20 @@ export interface GeneratedPlotTriggerUpdate {
   evidence: string[];
 }
 
+/**
+ * 剧情约定：剧情中角色明确约定的未来时间点（会面、交易、交付、赴考等
+ * 剧情内事件，区别于剧本包预埋任务的 deadlineDay）。
+ * atDay 为游戏内约定日期（第 N 天，正整数 ≥1），到期（≤ 当前 gameTimeDay）
+ * 后由上下文 dueAppointments 以"约定日已到"硬事实注入。
+ */
+export interface GeneratedAppointment {
+  id: string;
+  title: string;
+  description: string;
+  characterIds?: string[];
+  atDay: number;
+}
+
 export interface GeneratedSceneTransition {
   locationId: string;
   locationName?: string;
@@ -232,6 +246,8 @@ export interface ValidatedGeneratedTurn {
     worldBookChanges: GeneratedWorldBookChange[];
     plotThreadUpdates: GeneratedPlotThreadUpdate[];
     plotTriggerUpdates: GeneratedPlotTriggerUpdate[];
+    /** 剧情约定：undefined=未提供（约定保持不变）、null=清除全部、数组=完整替换。 */
+    appointments: GeneratedAppointment[] | null | undefined;
     storyDirectionEvaluation: {
       status: "active" | "completed";
       reason: string;
@@ -564,6 +580,95 @@ export function validateStatusesArray(
       item.expiresAtDay >= 1
         ? { expiresAtDay: item.expiresAtDay }
         : {}),
+    });
+  });
+  return result;
+}
+
+/**
+ * 校验剧情约定数组（stateCommit.appointments）。
+ * - undefined：未提供，约定保持不变（不做任何变化）；
+ * - null：显式清除全部约定；
+ * - 数组：完整数组替换语义，逐项校验 id（非空、限长、数组内唯一）、
+ *   title/description 限长、characterIds 为存在角色 ID 数组（可选）、
+ *   atDay 正整数（≥1）。
+ * 返回规范化后的约定列表（null 表示清除全部，undefined 表示未提供）。
+ */
+export function validateAppointmentsArray(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+  knownCharacterIds: Set<string>,
+): GeneratedAppointment[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!Array.isArray(value)) {
+    issues.push(`${path} 必须是数组（完整替换）或 null（清除全部约定）。`);
+    return null;
+  }
+  if (value.length > 20) issues.push(`${path} 最多登记 20 项约定。`);
+  const result: GeneratedAppointment[] = [];
+  const ids = new Set<string>();
+  value.slice(0, 20).forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    if (!isObject(item)) {
+      issues.push(`${itemPath} 必须是对象。`);
+      return;
+    }
+    const id = readString(item.id).trim();
+    if (!id) {
+      issues.push(`${itemPath}.id 不能为空。`);
+    } else if (id.length > 120) {
+      issues.push(`${itemPath}.id 不能超过 120 个字符。`);
+    } else if (ids.has(id)) {
+      issues.push(`${itemPath}.id 约定 ID ${id} 重复。`);
+    } else {
+      ids.add(id);
+    }
+    const title = readString(item.title).trim();
+    if (!title) {
+      issues.push(`${itemPath}.title 不能为空。`);
+    } else if (title.length > 120) {
+      issues.push(`${itemPath}.title 不能超过 120 个字符。`);
+    }
+    const description = readString(item.description).trim();
+    if (!description) {
+      issues.push(`${itemPath}.description 不能为空。`);
+    } else if (description.length > 2_000) {
+      issues.push(`${itemPath}.description 不能超过 2000 个字符。`);
+    }
+    const atDay = typeof item.atDay === "number" ? item.atDay : Number.NaN;
+    if (!Number.isInteger(atDay) || atDay < 1) {
+      issues.push(`${itemPath}.atDay 必须是大于等于 1 的整数（游戏内约定日期）。`);
+    }
+    let characterIds: string[] | undefined;
+    if (item.characterIds !== undefined) {
+      if (!Array.isArray(item.characterIds)) {
+        issues.push(`${itemPath}.characterIds 必须是数组。`);
+      } else {
+        const seen = new Set<string>();
+        characterIds = [];
+        item.characterIds.slice(0, 20).forEach((itemValue, charIndex) => {
+          const characterId = readString(itemValue).trim();
+          if (!characterId) {
+            issues.push(`${itemPath}.characterIds[${charIndex}] 不能为空。`);
+          } else if (characterId.length > 120) {
+            issues.push(`${itemPath}.characterIds[${charIndex}] 不能超过 120 个字符。`);
+          } else if (!knownCharacterIds.has(characterId)) {
+            issues.push(`约定引用了不存在的角色 ${characterId}。`);
+          } else if (!seen.has(characterId)) {
+            seen.add(characterId);
+            characterIds!.push(characterId);
+          }
+        });
+      }
+    }
+    result.push({
+      id: id || `appointment-${index}`,
+      title: title || `约定${index + 1}`,
+      description: description || "",
+      ...(characterIds !== undefined ? { characterIds } : {}),
+      atDay: Number.isInteger(atDay) && atDay >= 1 ? atDay : 1,
     });
   });
   return result;
@@ -1796,6 +1901,13 @@ export function validateGeneratedTurn(
     );
   })();
 
+  const appointments = validateAppointmentsArray(
+    stateCommit.appointments,
+    "stateCommit.appointments",
+    issues,
+    characterIds,
+  );
+
   let storyDirectionEvaluation: ValidatedGeneratedTurn["stateCommit"]["storyDirectionEvaluation"] = null;
   if (stateCommit.storyDirectionEvaluation !== null) {
     const evaluation = requiredObject(
@@ -2154,6 +2266,7 @@ export function validateGeneratedTurn(
       worldBookChanges,
       plotThreadUpdates,
       plotTriggerUpdates,
+      appointments,
       storyDirectionEvaluation,
       summaryPatch,
     },
