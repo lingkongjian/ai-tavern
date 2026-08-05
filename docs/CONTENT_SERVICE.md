@@ -34,6 +34,7 @@
 | `domain` | 支持的 `operation` | 主要内容 |
 | --- | --- | --- |
 | `characters` | `create`、`update`、`set_presence`、`set_active`、`set_restriction`、`set_statuses` | 人物卡、角色当前状态、在场状态、行动受限与状态词条 |
+| `relationships` | `update` | 角色关系手动修改（五维度数值、关系类型、描述；`syncReverse` 可同步反向，默认仅修改一个方向） |
 | `locations` | `create`、`update`、`set_current`、`set_active` | 地点资料、当前位置与默认登场人物 |
 | `story_modules` | `create`、`update`、`set_active` | 任务目标、完成条件、前置关系与启停 |
 | `foreshadowing` | `create`、`update`、`delete` | 伏笔（关键词、出现/回收条件、回收概要） |

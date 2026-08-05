@@ -6,6 +6,7 @@ import {
   LocationManagementError,
   PlotThreadManagementError,
   PlotTriggerManagementError,
+  RelationshipManagementError,
   StoryModuleManagementError,
   type StateAuditDashboard,
   WorldBookManagementError,
@@ -25,6 +26,10 @@ import {
   LocationManagementInputError,
   parseLocationManagementInput,
 } from "../story/地点管理.ts";
+import {
+  parseRelationshipManagementInput,
+  RelationshipManagementInputError,
+} from "../story/关系管理.ts";
 import {
   parseStoryModuleManagementInput,
   StoryModuleManagementInputError,
@@ -48,6 +53,7 @@ export const STORY_CONTENT_SERVICE_SCHEMA_VERSION = "1.0.0" as const;
 export type StoryContentDomain =
   | "characters"
   | "locations"
+  | "relationships"
   | "story_modules"
   | "world_book"
   | "foreshadowing"
@@ -94,6 +100,10 @@ type ParsedStoryContentCommand =
       input: ReturnType<typeof parseLocationManagementInput>;
     }
   | {
+      domain: "relationships";
+      input: ReturnType<typeof parseRelationshipManagementInput>;
+    }
+  | {
       domain: "story_modules";
       input: ReturnType<typeof parseStoryModuleManagementInput>;
     }
@@ -117,6 +127,7 @@ type ParsedStoryContentCommand =
 const domains = new Set<StoryContentDomain>([
   "characters",
   "locations",
+  "relationships",
   "story_modules",
   "world_book",
   "foreshadowing",
@@ -326,6 +337,14 @@ export function parseStoryContentCommand(input: {
             value: { ...command, actionId },
           }),
         };
+      case "relationships":
+        return {
+          domain: selectedDomain,
+          input: parseRelationshipManagementInput({
+            sessionId: input.sessionId,
+            value: { ...command, actionId },
+          }),
+        };
       case "story_modules":
         return {
           domain: selectedDomain,
@@ -471,6 +490,7 @@ export function parseStoryContentCommand(input: {
     if (
       error instanceof CharacterManagementInputError ||
       error instanceof LocationManagementInputError ||
+      error instanceof RelationshipManagementInputError ||
       error instanceof StoryModuleManagementInputError ||
       error instanceof PlotElementManagementInputError ||
       error instanceof WorldBookManagementInputError ||
@@ -548,6 +568,17 @@ export function executeStoryContentCommand(input: {
       };
       break;
     }
+    case "relationships": {
+      const managed = input.store.manageRelationship(command.input);
+      result = {
+        actionId: managed.actionId,
+        domain: command.domain,
+        operation: managed.operation,
+        targetId: managed.entityId,
+        reused: managed.reused,
+      };
+      break;
+    }
     case "story_modules": {
       const managed = input.store.manageStoryModule(command.input);
       result = {
@@ -617,6 +648,7 @@ export function isStoryContentManagementError(error: unknown) {
   return (
     error instanceof CharacterManagementError ||
     error instanceof LocationManagementError ||
+    error instanceof RelationshipManagementError ||
     error instanceof StoryModuleManagementError ||
     error instanceof PlotThreadManagementError ||
     error instanceof PlotTriggerManagementError ||

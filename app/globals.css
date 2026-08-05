@@ -2688,6 +2688,7 @@ a {
 
 .field input,
 .field textarea,
+.field select,
 .game-input input,
 .game-input textarea,
 .game-input select {
@@ -2699,7 +2700,8 @@ a {
   transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
 }
 
-.field input {
+.field input,
+.field select {
   min-height: 45px;
   padding: 0 13px;
 }
@@ -2713,6 +2715,7 @@ a {
 
 .field input:focus,
 .field textarea:focus,
+.field select:focus,
 .game-input input:focus,
 .game-input textarea:focus,
 .game-input select:focus {
@@ -4977,6 +4980,103 @@ a {
   color: #8d8177;
   font-family: ui-monospace, monospace;
   font-size: 0.62rem;
+}
+
+.relationship-actions {
+  display: flex;
+  margin-top: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relationship-actions small {
+  color: #6f6660;
+  font-size: 0.6rem;
+}
+
+.relationship-actions button {
+  padding: 6px 11px;
+  border: 1px solid rgb(212 124 69 / 24%);
+  border-radius: 3px;
+  color: #c98d66;
+  background: rgb(74 40 34 / 24%);
+  cursor: pointer;
+  font-size: 0.62rem;
+}
+
+.relationship-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.relationship-editor {
+  margin-top: 16px;
+}
+
+.relationship-editor-heading h3 span {
+  color: #5a6f66;
+}
+
+.relationship-editor-heading p {
+  margin: 8px 0 0;
+  color: #766d66;
+  font-size: 0.64rem;
+  line-height: 1.6;
+}
+
+.relationship-editor-grid {
+  display: grid;
+  gap: 0 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.relationship-editor-grid .full-width-field {
+  grid-column: 1 / -1;
+}
+
+.relationship-editor-sync {
+  grid-column: 1 / -1;
+}
+
+.relationship-editor-sync > small {
+  color: #6f6660;
+  font-size: 0.6rem;
+}
+
+.relationship-editor-checkbox {
+  display: flex;
+  min-height: 42px;
+  padding: 0 13px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 3px;
+  background: rgb(10 8 9 / 56%);
+  align-items: center;
+  gap: 10px;
+}
+
+.relationship-editor-checkbox input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: #c97a45;
+}
+
+.relationship-editor-checkbox span {
+  color: #b5a79f;
+  font-size: 0.7rem;
+  font-weight: 400;
+}
+
+.relationship-editor .character-manager-error {
+  margin-top: 14px;
+}
+
+@media (max-width: 680px) {
+  .relationship-editor-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .character-manager-error {

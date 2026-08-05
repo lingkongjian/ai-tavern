@@ -409,6 +409,7 @@ interface HistoryTurnResponse {
 type StoryContentDomain =
   | "characters"
   | "locations"
+  | "relationships"
   | "story_modules"
   | "world_book"
   | "foreshadowing"
@@ -461,6 +462,20 @@ type ReasonPromptState =
       fieldPath: string;
       locked: boolean;
     };
+
+/** 关系面板编辑草稿：五维度用字符串输入，保存时解析为 -100~100 数字。 */
+interface RelationshipEditorDraft {
+  sourceId: string;
+  targetId: string;
+  trust: string;
+  affinity: string;
+  fear: string;
+  hostility: string;
+  respect: string;
+  relationshipType: string;
+  summary: string;
+  syncReverse: boolean;
+}
 
 interface SavePointResponse {
   recoveryPoints?: AdventureRecoveryPoint[];
@@ -792,6 +807,10 @@ export function GameInterface({
   const [characterForm, setCharacterForm] = useState(emptyCharacterForm);
   const [characterManagerError, setCharacterManagerError] = useState("");
   const [savingCharacter, setSavingCharacter] = useState(false);
+  const [relationshipEditor, setRelationshipEditor] =
+    useState<RelationshipEditorDraft | null>(null);
+  const [savingRelationship, setSavingRelationship] = useState(false);
+  const [relationshipEditorError, setRelationshipEditorError] = useState("");
   const [restrictionEditorCharacterId, setRestrictionEditorCharacterId] =
     useState<string | null>(null);
   const [restrictionForm, setRestrictionForm] = useState({
@@ -2237,6 +2256,98 @@ export function GameInterface({
       character: characterForm,
     });
     if (saved) setEditingCharacterId(null);
+  }
+
+  function startRelationshipEditor(
+    pair: (typeof mergedRelationships)[number],
+  ) {
+    const left = relationshipStates.find(
+      (relationship) =>
+        relationship.sourceId === pair.sourceId &&
+        relationship.targetId === pair.targetId,
+    );
+    if (!left) return;
+    setRelationshipEditor({
+      sourceId: pair.sourceId,
+      targetId: pair.targetId,
+      trust: String(left.trust),
+      affinity: String(left.affinity),
+      fear: String(left.fear),
+      hostility: String(left.hostility),
+      respect: String(left.respect),
+      relationshipType: left.relationshipType,
+      summary: left.summary,
+      syncReverse: false,
+    });
+    setRelationshipEditorError("");
+  }
+
+  async function submitRelationshipForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!relationshipEditor || savingRelationship) return;
+    const dimensions: Record<string, number> = {};
+    const fields: Array<{
+      draftKey: "trust" | "affinity" | "fear" | "hostility" | "respect";
+      label: string;
+      apiKey: "trust" | "affection" | "fear" | "hostility" | "respect";
+      storageKey: "trust" | "affinity" | "fear" | "hostility" | "respect";
+    }> = [
+      { draftKey: "trust", label: "信任", apiKey: "trust", storageKey: "trust" },
+      { draftKey: "affinity", label: "好感", apiKey: "affection", storageKey: "affinity" },
+      { draftKey: "fear", label: "恐惧", apiKey: "fear", storageKey: "fear" },
+      { draftKey: "hostility", label: "敌意", apiKey: "hostility", storageKey: "hostility" },
+      { draftKey: "respect", label: "敬意", apiKey: "respect", storageKey: "respect" },
+    ];
+    const original = relationshipStates.find(
+      (relationship) =>
+        relationship.sourceId === relationshipEditor.sourceId &&
+        relationship.targetId === relationshipEditor.targetId,
+    );
+    let dimensionChanged = false;
+    for (const { draftKey, label, apiKey, storageKey } of fields) {
+      const raw = relationshipEditor[draftKey].trim();
+      if (!raw) continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < -100 || value > 100) {
+        setRelationshipEditorError(`${label}必须是 -100 到 100 之间的数字。`);
+        return;
+      }
+      dimensions[apiKey] = value;
+      if (original?.[storageKey] !== value) dimensionChanged = true;
+    }
+    const trimmedSummary = relationshipEditor.summary.trim();
+    const summaryChanged =
+      trimmedSummary.length > 0 && trimmedSummary !== original?.summary.trim();
+    const typeChanged =
+      relationshipEditor.relationshipType !== original?.relationshipType;
+    if (!dimensionChanged && !summaryChanged && !typeChanged) {
+      setRelationshipEditorError("没有检测到修改内容，请调整维度、类型或描述后保存。");
+      return;
+    }
+    setSavingRelationship(true);
+    setRelationshipEditorError("");
+    try {
+      await sendStoryContentCommand(
+        "relationships",
+        {
+          operation: "update",
+          sourceCharacterId: relationshipEditor.sourceId,
+          targetCharacterId: relationshipEditor.targetId,
+          dimensions,
+          relationshipType: relationshipEditor.relationshipType,
+          summary: trimmedSummary || undefined,
+          syncReverse: relationshipEditor.syncReverse,
+        },
+        "保存关系修改失败。",
+      );
+      setRelationshipEditor(null);
+    } catch (error) {
+      setRelationshipEditorError(
+        error instanceof Error ? error.message : "保存关系修改失败。",
+      );
+    } finally {
+      setSavingRelationship(false);
+    }
   }
 
   async function setCharacterPresence(characterId: string, present: boolean) {
@@ -7158,11 +7269,156 @@ export function GameInterface({
                             : ""}
                         </span>
                       </div>
+                      <div className="relationship-actions">
+                        <small>
+                          {relationship.symmetric
+                            ? "双向独立记录，可只改一个方向"
+                            : "仅有单向记录，可编辑该方向"}
+                        </small>
+                        <button
+                          type="button"
+                          disabled={savingRelationship}
+                          onClick={() => startRelationshipEditor(relationship)}
+                        >
+                          编辑关系
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
               )}
             </section>
+
+            {relationshipEditor ? (
+              <form
+                className="character-editor relationship-editor"
+                onSubmit={submitRelationshipForm}
+              >
+                <div className="character-editor-heading">
+                  <div>
+                    <small>剧本工作台 · 角色关系</small>
+                    <h3>
+                      {characterNameById.get(relationshipEditor.sourceId) ??
+                        relationshipEditor.sourceId}
+                      <span aria-hidden="true"> ↔ </span>
+                      {characterNameById.get(relationshipEditor.targetId) ??
+                        relationshipEditor.targetId}
+                    </h3>
+                    <p>
+                      修改立即写入角色关系状态，不会改写过去的剧情；默认只修改这一个方向，勾选后可同步反向。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={savingRelationship}
+                    onClick={() => setRelationshipEditor(null)}
+                  >
+                    取消
+                  </button>
+                </div>
+                <div className="relationship-editor-grid">
+                  {(
+                    [
+                      ["trust", "信任", "信任"],
+                      ["affinity", "好感", "好感"],
+                      ["fear", "恐惧", "恐惧"],
+                      ["hostility", "敌意", "敌意"],
+                      ["respect", "敬意", "敬意"],
+                    ] as const
+                  ).map(([draftKey, label]) => (
+                    <label className="field" key={draftKey}>
+                      <span>{label}（-100 ~ 100）</span>
+                      <input
+                        type="number"
+                        min={-100}
+                        max={100}
+                        step={1}
+                        value={relationshipEditor[draftKey]}
+                        onChange={(event) =>
+                          setRelationshipEditor((current) =>
+                            current
+                              ? { ...current, [draftKey]: event.target.value }
+                              : current,
+                          )
+                        }
+                      />
+                    </label>
+                  ))}
+                  <label className="field">
+                    <span>关系类型</span>
+                    <select
+                      value={relationshipEditor.relationshipType}
+                      onChange={(event) =>
+                        setRelationshipEditor((current) =>
+                          current
+                            ? {
+                                ...current,
+                                relationshipType: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      {Object.entries(relationshipTypeLabels).map(
+                        ([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                  <label className="field relationship-editor-sync">
+                    <span>反向同步</span>
+                    <label className="relationship-editor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={relationshipEditor.syncReverse}
+                        onChange={(event) =>
+                          setRelationshipEditor((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  syncReverse: event.target.checked,
+                                }
+                              : current,
+                          )
+                        }
+                      />
+                      <span>同步反向数值</span>
+                    </label>
+                    <small>勾选后同一组数值、类型与描述也会应用到反向关系记录。</small>
+                  </label>
+                  <label className="field full-width-field">
+                    <span>关系描述</span>
+                    <textarea
+                      rows={3}
+                      maxLength={500}
+                      value={relationshipEditor.summary}
+                      onChange={(event) =>
+                        setRelationshipEditor((current) =>
+                          current
+                            ? { ...current, summary: event.target.value }
+                            : current,
+                        )
+                      }
+                      placeholder="这段关系当前的形态、状态或背景说明……"
+                    />
+                  </label>
+                </div>
+                {relationshipEditorError ? (
+                  <div className="character-manager-error" role="alert">
+                    {relationshipEditorError}
+                  </div>
+                ) : null}
+                <footer>
+                  <p>保存后从下一次 AI 生成开始生效，修改会进入“修改记录与恢复”。</p>
+                  <button type="submit" disabled={savingRelationship}>
+                    {savingRelationship ? "正在保存……" : "保存关系修改"}
+                  </button>
+                </footer>
+              </form>
+            ) : null}
 
             {characterManagerError ? (
               <div className="character-manager-error" role="alert">

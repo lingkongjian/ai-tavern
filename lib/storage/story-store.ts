@@ -258,6 +258,7 @@ export interface StateAuditAction {
     | "plot_thread_management"
     | "plot_trigger_management"
     | "world_book_management"
+    | "relationship_management"
     | "rollback";
   title: string;
   sequence: number;
@@ -509,6 +510,38 @@ export interface ManagedLocationResult {
   actionId: string;
   locationId: string;
   operation: LocationManagementInput["operation"];
+  reused: boolean;
+}
+
+export type RelationshipManagementInput = {
+  actionId: string;
+  sessionId: string;
+  operation: "update";
+  sourceCharacterId: string;
+  targetCharacterId: string;
+  /** 五维度数值（协议字段名 affection，存储边界转为 affinity），只更新提供的维度。 */
+  dimensions?: {
+    trust?: number;
+    affection?: number;
+    fear?: number;
+    hostility?: number;
+    respect?: number;
+  };
+  /** 关系定性类型（枚举见回合协议 RELATIONSHIP_TYPES）。 */
+  relationshipType?: RelationshipType;
+  /** 关系描述（≤500 字符）。 */
+  summary?: string;
+  /** 是否同步应用到反向记录（默认仅修改声明的方向）。 */
+  syncReverse?: boolean;
+};
+
+export interface ManagedRelationshipResult {
+  actionId: string;
+  /** 关系记录实体 ID（`${sourceCharacterId}:${targetCharacterId}`）。 */
+  entityId: string;
+  sourceCharacterId: string;
+  targetCharacterId: string;
+  operation: RelationshipManagementInput["operation"];
   reused: boolean;
 }
 
@@ -1167,6 +1200,13 @@ export class LocationManagementError extends Error {
   }
 }
 
+export class RelationshipManagementError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RelationshipManagementError";
+  }
+}
+
 export class StoryModuleManagementError extends Error {
   constructor(message: string) {
     super(message);
@@ -1284,6 +1324,10 @@ function parseArrayValue(value: string): JsonValue[] {
 
 function readString(value: JsonValue | undefined) {
   return typeof value === "string" ? value : "";
+}
+
+function readNumber(value: JsonValue | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function readObject(value: JsonValue | undefined) {
@@ -5598,6 +5642,331 @@ export class LocalStoryStore {
     }
   }
 
+  manageRelationship(input: RelationshipManagementInput): ManagedRelationshipResult {
+    requireText(input.actionId, "actionId");
+    requireText(input.sessionId, "sessionId");
+    const now = new Date().toISOString();
+
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      // 幂等：同一 actionId 不重复执行（关系修改审计复用 state_control_changes 通道）。
+      const reused = this.database
+        .prepare(`
+          SELECT entity_id
+          FROM state_control_changes
+          WHERE session_id = ? AND action_id = ?
+          ORDER BY ordinal
+          LIMIT 1
+        `)
+        .get(input.sessionId, input.actionId) as
+        | { entity_id: string }
+        | undefined;
+      if (reused) {
+        this.database.exec("COMMIT");
+        return {
+          actionId: input.actionId,
+          entityId: reused.entity_id,
+          sourceCharacterId: input.sourceCharacterId,
+          targetCharacterId: input.targetCharacterId,
+          operation: input.operation,
+          reused: true,
+        };
+      }
+
+      const branch = this.database
+        .prepare(`
+          SELECT branches.id, branches.head_turn_id
+          FROM branches
+          JOIN sessions ON sessions.id = branches.session_id
+          WHERE sessions.id = ? AND branches.id = sessions.active_branch_id
+          LIMIT 1
+        `)
+        .get(input.sessionId) as
+        | { id: string; head_turn_id: string | null }
+        | undefined;
+      if (!branch) throw new StoryNotFoundError();
+      if (!branch.head_turn_id) {
+        throw new RelationshipManagementError("剧情尚未建立开场回合，无法修改关系。");
+      }
+      if (input.sourceCharacterId === input.targetCharacterId) {
+        throw new RelationshipManagementError("关系起止角色不能是同一个角色。");
+      }
+
+      const cardRows = this.database
+        .prepare(`
+          SELECT entity_id, state_json, is_active
+          FROM materialized_states
+          WHERE session_id = ? AND branch_id = ?
+            AND entity_type = 'character_card'
+        `)
+        .all(input.sessionId, branch.id) as unknown as Array<{
+        entity_id: string;
+        state_json: string;
+        is_active: number;
+      }>;
+      const cards = cardRows.map((row) => ({
+        id: row.entity_id,
+        state: parseObject(row.state_json),
+        isActive: row.is_active === 1,
+      }));
+      const sourceCard = cards.find((card) => card.id === input.sourceCharacterId);
+      const targetCard = cards.find((card) => card.id === input.targetCharacterId);
+      if (!sourceCard) throw new StoryNotFoundError("没有找到关系起点角色。");
+      if (!targetCard) throw new StoryNotFoundError("没有找到关系终点角色。");
+      if (!sourceCard.isActive || !targetCard.isActive) {
+        throw new RelationshipManagementError(
+          "已停用角色的关系不能直接修改，请先重新启用角色。",
+        );
+      }
+
+      const entityId = `${input.sourceCharacterId}:${input.targetCharacterId}`;
+      const forwardRow = this.database
+        .prepare(`
+          SELECT state_json, is_active
+          FROM materialized_states
+          WHERE session_id = ? AND branch_id = ?
+            AND entity_type = 'relationship' AND entity_id = ?
+        `)
+        .get(input.sessionId, branch.id, entityId) as
+        | { state_json: string; is_active: number }
+        | undefined;
+      if (!forwardRow) {
+        throw new StoryNotFoundError("没有找到要修改的关系记录。");
+      }
+      if (forwardRow.is_active !== 1) {
+        throw new RelationshipManagementError("已停用关系不能直接修改，请先重新启用角色。");
+      }
+      const forwardState = parseObject(forwardRow.state_json);
+
+      const dimensionValues = input.dimensions ?? {};
+      const hasAnyChange =
+        Object.keys(dimensionValues).length > 0 ||
+        input.relationshipType !== undefined ||
+        input.summary !== undefined;
+      if (!hasAnyChange) {
+        throw new RelationshipManagementError("至少需要修改一项关系内容。");
+      }
+
+      const storageValue: JsonObject = {
+        sourceCharacterId: input.sourceCharacterId,
+        targetCharacterId: input.targetCharacterId,
+        ...(dimensionValues.trust !== undefined ? { trust: dimensionValues.trust } : {}),
+        ...(dimensionValues.affection !== undefined
+          ? { affinity: dimensionValues.affection }
+          : {}),
+        ...(dimensionValues.fear !== undefined ? { fear: dimensionValues.fear } : {}),
+        ...(dimensionValues.hostility !== undefined
+          ? { hostility: dimensionValues.hostility }
+          : {}),
+        ...(dimensionValues.respect !== undefined
+          ? { respect: dimensionValues.respect }
+          : {}),
+        ...(input.relationshipType !== undefined
+          ? { relationshipType: input.relationshipType }
+          : {}),
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      };
+
+      const dimensionLabel = (key: keyof typeof dimensionValues) =>
+        key === "trust"
+          ? "信任"
+          : key === "affection"
+            ? "好感"
+            : key === "fear"
+              ? "恐惧"
+              : key === "hostility"
+                ? "敌意"
+                : "敬意";
+      const storageKey = (key: keyof typeof dimensionValues) =>
+        key === "affection" ? "affinity" : key;
+      const diffParts: string[] = [];
+      for (const key of Object.keys(dimensionValues) as (keyof typeof dimensionValues)[]) {
+        const before = readNumber(forwardState[storageKey(key)]);
+        diffParts.push(
+          `${dimensionLabel(key)} ${before}→${dimensionValues[key]}`,
+        );
+      }
+      if (input.relationshipType !== undefined) {
+        diffParts.push(
+          `类型 ${readString(forwardState.relationshipType) || "acquaintances"}→${input.relationshipType}`,
+        );
+      }
+      if (input.summary !== undefined) {
+        diffParts.push("描述已更新");
+      }
+      const forwardReason = `关系已手动修改：${diffParts.join("、")}`;
+
+      const insertAudit = this.database.prepare(`
+        INSERT INTO state_control_changes (
+          id, action_id, session_id, branch_id, reference_turn_id,
+          ordinal, source_change_id, entity_type, entity_id,
+          operation, payload_json, result_active, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const upsertState = this.database.prepare(`
+        INSERT INTO materialized_states (
+          session_id, branch_id, entity_type, entity_id,
+          state_json, is_active, version, updated_turn_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, branch_id, entity_type, entity_id)
+        DO UPDATE SET
+          state_json = excluded.state_json,
+          is_active = excluded.is_active,
+          version = excluded.version,
+          updated_turn_id = excluded.updated_turn_id,
+          updated_at = excluded.updated_at
+      `);
+      let nextOrdinal = 0;
+      const writeMutation = (mutation: {
+        entityId: string;
+        operation: "merge" | "replace";
+        value: JsonObject;
+        reason: string;
+      }) => {
+        const current = this.database
+          .prepare(`
+            SELECT state_json, is_active, version
+            FROM materialized_states
+            WHERE session_id = ? AND branch_id = ?
+              AND entity_type = 'relationship' AND entity_id = ?
+          `)
+          .get(input.sessionId, branch.id, mutation.entityId) as
+          | { state_json: string; is_active: number; version: number }
+          | undefined;
+        const nextState =
+          mutation.operation === "replace"
+            ? structuredClone(mutation.value)
+            : applyStateMergePatch(
+                current ? parseObject(current.state_json) : {},
+                mutation.value,
+              );
+        const auditId = randomUUID();
+        const ordinal = nextOrdinal;
+        nextOrdinal += 1;
+        insertAudit.run(
+          auditId,
+          input.actionId,
+          input.sessionId,
+          branch.id,
+          branch.head_turn_id,
+          ordinal,
+          // 手动关系修改标记：source_change_id 自引用本行 id，
+          // 审计仪表盘据此把该行归类为 relationship_management 而非 rollback。
+          auditId,
+          "relationship",
+          mutation.entityId,
+          mutation.operation,
+          stringifyJson(mutation.value),
+          1,
+          mutation.reason,
+          now,
+        );
+        upsertState.run(
+          input.sessionId,
+          branch.id,
+          "relationship",
+          mutation.entityId,
+          stringifyJson(nextState),
+          1,
+          (current?.version ?? 0) + 1,
+          branch.head_turn_id,
+          now,
+        );
+      };
+
+      writeMutation({
+        entityId,
+        operation: "merge",
+        value: storageValue,
+        reason: forwardReason,
+      });
+
+      if (input.syncReverse === true) {
+        const reverseId = `${input.targetCharacterId}:${input.sourceCharacterId}`;
+        const reverseRow = this.database
+          .prepare(`
+            SELECT state_json, is_active
+            FROM materialized_states
+            WHERE session_id = ? AND branch_id = ?
+              AND entity_type = 'relationship' AND entity_id = ?
+          `)
+          .get(input.sessionId, branch.id, reverseId) as
+          | { state_json: string; is_active: number }
+          | undefined;
+        const reverseReason = `关系已手动修改（同步反向）：${diffParts.join("、")}`;
+        if (reverseRow) {
+          if (reverseRow.is_active !== 1) {
+            throw new RelationshipManagementError(
+              "反向关系已停用，无法同步修改；请先重新启用相关角色。",
+            );
+          }
+          writeMutation({
+            entityId: reverseId,
+            operation: "merge",
+            value: {
+              sourceCharacterId: input.targetCharacterId,
+              targetCharacterId: input.sourceCharacterId,
+              ...(dimensionValues.trust !== undefined
+                ? { trust: dimensionValues.trust }
+                : {}),
+              ...(dimensionValues.affection !== undefined
+                ? { affinity: dimensionValues.affection }
+                : {}),
+              ...(dimensionValues.fear !== undefined
+                ? { fear: dimensionValues.fear }
+                : {}),
+              ...(dimensionValues.hostility !== undefined
+                ? { hostility: dimensionValues.hostility }
+                : {}),
+              ...(dimensionValues.respect !== undefined
+                ? { respect: dimensionValues.respect }
+                : {}),
+              ...(input.relationshipType !== undefined
+                ? { relationshipType: input.relationshipType }
+                : {}),
+              ...(input.summary !== undefined ? { summary: input.summary } : {}),
+            },
+            reason: reverseReason,
+          });
+        } else {
+          // 反向记录此前不存在：replace 补建完整记录（五维度、类型、描述）。
+          writeMutation({
+            entityId: reverseId,
+            operation: "replace",
+            value: {
+              sourceCharacterId: input.targetCharacterId,
+              targetCharacterId: input.sourceCharacterId,
+              trust: dimensionValues.trust ?? 0,
+              affinity: dimensionValues.affection ?? 0,
+              fear: dimensionValues.fear ?? 0,
+              hostility: dimensionValues.hostility ?? 0,
+              respect: dimensionValues.respect ?? 0,
+              relationshipType: input.relationshipType ?? "acquaintances",
+              summary: input.summary ?? "关系尚未建立",
+            },
+            reason: `${reverseReason}（反向记录此前不存在，已补建）`,
+          });
+        }
+      }
+
+      this.database
+        .prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
+        .run(now, input.sessionId);
+      this.database.exec("COMMIT");
+      return {
+        actionId: input.actionId,
+        entityId,
+        sourceCharacterId: input.sourceCharacterId,
+        targetCharacterId: input.targetCharacterId,
+        operation: input.operation,
+        reused: false,
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   manageWorldBook(input: WorldBookManagementInput): ManagedWorldBookResult {
     requireText(input.actionId, "actionId");
     requireText(input.sessionId, "sessionId");
@@ -6580,7 +6949,8 @@ export class LocalStoryStore {
                turns.sequence AS sequence, 2 AS source_order,
                state_control_changes.action_id AS action_id,
                state_control_changes.ordinal AS ordinal,
-               'rollback' AS source,
+               CASE WHEN state_control_changes.source_change_id = state_control_changes.id
+                 THEN 'relationship_management' ELSE 'rollback' END AS source,
                state_control_changes.entity_type AS entity_type,
                state_control_changes.entity_id AS entity_id,
                state_control_changes.operation AS operation,
@@ -6660,8 +7030,10 @@ export class LocalStoryStore {
                     ? `回合 ${row.sequence} 后 · 伏笔管理`
                     : row.source === "plot_trigger_management"
                       ? `回合 ${row.sequence} 后 · 偏离触发器管理`
-                      : row.source === "world_book_management"
-                        ? `回合 ${row.sequence} 后 · 世界书管理`
+                    : row.source === "world_book_management"
+                      ? `回合 ${row.sequence} 后 · 世界书管理`
+                      : row.source === "relationship_management"
+                        ? `回合 ${row.sequence} 后 · 关系已手动修改`
                         : `回合 ${row.sequence} 后 · 状态回滚`;
         action = {
           id: actionKey,
