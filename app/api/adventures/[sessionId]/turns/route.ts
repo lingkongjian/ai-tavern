@@ -37,18 +37,8 @@ function sseEvent(controller: ReadableStreamDefaultController<Uint8Array>, event
   );
 }
 
-// 响应流被取消时（客户端断连/中止读取）触发；TS 的 ReadableStreamDefaultController
-// 类型尚未包含 signal 属性，运行时（Node 18+ / 浏览器）始终可用。
-function streamCancelledSignal(
-  controller: ReadableStreamDefaultController<Uint8Array>,
-) {
-  return (
-    controller as ReadableStreamDefaultController<Uint8Array> & {
-      signal: AbortSignal;
-    }
-  ).signal;
-}
-
+// 客户端断连/中止读取时由 ReadableStream 的 cancel 回调标记取消；
+// request.signal 在部分运行时可能缺失，监听一律使用可选链保护。
 function errorStatus(error: unknown) {
   if (error instanceof PlayerTurnInputError) return 400;
   if (error instanceof StoryNotFoundError) return 404;
@@ -141,15 +131,14 @@ export async function POST(
       });
     }
 
+    let cancelled = false;
+    const markCancelled = () => {
+      cancelled = true;
+    };
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
-        let cancelled = false;
-        const markCancelled = () => {
-          cancelled = true;
-        };
         // 前端中断（abort）或响应流被取消时，生成完成后不再提交回合
-        request.signal.addEventListener("abort", markCancelled);
-        streamCancelledSignal(controller).addEventListener("abort", markCancelled);
+        request.signal?.addEventListener?.("abort", markCancelled);
         try {
           const result = await advanceAdventureTurn({
             store: new LocalStoryStore(getDb()),
@@ -181,10 +170,7 @@ export async function POST(
         } catch (error) {
           if (error instanceof TurnCancelledError) {
             // 客户端已中断，不提交也不发送 error 事件；连接尚存时回一个 cancelled 事件
-            if (
-              !request.signal.aborted &&
-              !streamCancelledSignal(controller).aborted
-            ) {
+            if (!cancelled && !request.signal?.aborted) {
               sseEvent(controller, "cancelled", { cancelled: true });
             }
             return;
@@ -206,6 +192,9 @@ export async function POST(
             // 客户端已断开，流已不可用
           }
         }
+      },
+      cancel() {
+        cancelled = true;
       },
     });
 
