@@ -795,6 +795,18 @@ export function GameInterface({
   const [triggerForm, setTriggerForm] = useState(emptyTriggerForm);
   const [triggerError, setTriggerError] = useState("");
   const [savingTrigger, setSavingTrigger] = useState(false);
+  const [foreshadowingFilter, setForeshadowingFilter] = useState<
+    "all" | "dormant" | "seeded" | "paid_off"
+  >("all");
+  const [expandedForeshadowingId, setExpandedForeshadowingId] = useState<
+    string | null
+  >(null);
+  const [triggerFilter, setTriggerFilter] = useState<"all" | "armed" | "fired">(
+    "all",
+  );
+  const [expandedTriggerId, setExpandedTriggerId] = useState<string | null>(
+    null,
+  );
   const worldBookManagerOpen = storyWorkbenchTab === "world_book";
   const setWorldBookManagerOpen = (open: boolean) =>
     setStoryWorkbenchTab(open ? "world_book" : null);
@@ -2461,17 +2473,43 @@ export function GameInterface({
 
   const plotTriggers = adventure.branchState.states
     .filter((state) => state.entityType === "plot_trigger" && state.isActive)
-    .map((state) => ({
-      id: text(state.state.triggerId, state.entityId),
-      when: text(state.state.when),
-      consequence: text(state.state.consequence),
-      deadlineDay:
-        typeof state.state.deadlineDay === "number"
-          ? state.state.deadlineDay
-          : null,
-      status: text(state.state.status, "armed"),
-      firedAtTurnId: text(state.state.firedAtTurnId),
-    }));
+    .map((state) => {
+      const stateEffects =
+        state.state.stateEffects !== null &&
+        typeof state.state.stateEffects === "object" &&
+        !Array.isArray(state.state.stateEffects)
+          ? (state.state.stateEffects as Record<string, unknown>)
+          : {};
+      return {
+        id: text(state.state.triggerId, state.entityId),
+        when: text(state.state.when),
+        consequence: text(state.state.consequence),
+        deadlineDay:
+          typeof state.state.deadlineDay === "number"
+            ? state.state.deadlineDay
+            : null,
+        status: text(state.state.status, "armed"),
+        firedAtTurnId: text(state.state.firedAtTurnId),
+        relationsCount: Array.isArray(stateEffects.relations)
+          ? stateEffects.relations.length
+          : 0,
+        attributesCount: Array.isArray(stateEffects.attributes)
+          ? stateEffects.attributes.length
+          : 0,
+        hasBadEnd: Array.isArray(stateEffects.flags)
+          ? stateEffects.flags.includes("bad_end")
+          : false,
+      };
+    });
+
+  const visiblePlotThreads = plotThreads.filter(
+    (thread) =>
+      foreshadowingFilter === "all" || thread.status === foreshadowingFilter,
+  );
+  const visiblePlotTriggers = plotTriggers.filter(
+    (trigger) =>
+      triggerFilter === "all" || trigger.status === triggerFilter,
+  );
 
   function startAddingTrigger() {
     setEditingTriggerId("__new__");
@@ -5701,11 +5739,54 @@ export function GameInterface({
               onSelect={selectStoryWorkbenchTab}
             />
 
-            <div className="character-manager-toolbar">
-              <span>
-                {plotThreads.filter((thread) => thread.status !== "paid_off").length}{" "}
-                个未回收 · {plotThreads.length}/30 个已保存
-              </span>
+            <div className="character-manager-toolbar plot-toolbar">
+              <div className="plot-toolbar-left">
+                <span>
+                  {plotThreads.filter((thread) => thread.status !== "paid_off").length}{" "}
+                  个未回收 · {plotThreads.length}/30 个已保存
+                </span>
+                <div
+                  className="plot-filter-options"
+                  role="group"
+                  aria-label="按伏笔状态筛选"
+                >
+                  <button
+                    type="button"
+                    className={foreshadowingFilter === "all" ? "active" : ""}
+                    onClick={() => setForeshadowingFilter("all")}
+                  >
+                    全部 {plotThreads.length}
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      foreshadowingFilter === "dormant" ? "active" : ""
+                    }
+                    onClick={() => setForeshadowingFilter("dormant")}
+                  >
+                    未埋入{" "}
+                    {plotThreads.filter((thread) => thread.status === "dormant").length}
+                  </button>
+                  <button
+                    type="button"
+                    className={foreshadowingFilter === "seeded" ? "active" : ""}
+                    onClick={() => setForeshadowingFilter("seeded")}
+                  >
+                    已埋入{" "}
+                    {plotThreads.filter((thread) => thread.status === "seeded").length}
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      foreshadowingFilter === "paid_off" ? "active" : ""
+                    }
+                    onClick={() => setForeshadowingFilter("paid_off")}
+                  >
+                    已回收{" "}
+                    {plotThreads.filter((thread) => thread.status === "paid_off").length}
+                  </button>
+                </div>
+              </div>
               <button
                 type="button"
                 disabled={savingForeshadowing || plotThreads.length >= 30}
@@ -5830,6 +5911,7 @@ export function GameInterface({
                         characters: event.target.value,
                       }))
                     }
+                    placeholder="如：艾莉、老钟匠"
                   />
                 </label>
                 <footer className="character-editor-actions">
@@ -5839,57 +5921,133 @@ export function GameInterface({
                 </footer>
               </form>
             ) : (
-              <div className="story-task-tree">
-                {plotThreads.map((thread) => (
-                  <article
-                    key={thread.id}
-                    className="module-completed"
-                  >
-                    <div className="story-task-rail">
-                      <span />
-                    </div>
-                    <div className="story-task-copy">
-                      <strong>{thread.id}</strong>
-                      <p>
-                        {thread.status === "seeded"
-                          ? "已埋入剧情，等待回收"
-                          : thread.status === "paid_off"
-                            ? "已回收"
-                            : `未埋入 · 关键词：${thread.keywords.join("、") || "无"}`}
-                      </p>
-                      <small>
-                        出现：{thread.seedCondition.slice(0, 60)}
-                        {thread.seedCondition.length > 60 ? "…" : ""}
-                      </small>
-                    </div>
-                    <div className="managed-character-actions">
-                      {thread.status === "paid_off" ? (
-                        <span className="story-task-locked">已锁定</span>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            disabled={savingForeshadowing}
-                            onClick={() => startEditingForeshadowing(thread.id)}
-                          >
-                            编辑
-                          </button>
-                          <button
-                            type="button"
-                            disabled={savingForeshadowing}
-                            onClick={() => void deleteForeshadowing(thread.id)}
-                          >
-                            删除
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </article>
-                ))}
+              <div className="plot-card-list">
+                {visiblePlotThreads.map((thread) => {
+                  const expanded = expandedForeshadowingId === thread.id;
+                  return (
+                    <article
+                      key={thread.id}
+                      className={`plot-card plot-thread-card status-${thread.status}${expanded ? " expanded" : ""}`}
+                    >
+                      <header
+                        className="plot-card-head"
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={expanded}
+                        title={expanded ? "收起详情" : "展开详情"}
+                        onClick={() =>
+                          setExpandedForeshadowingId(expanded ? null : thread.id)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setExpandedForeshadowingId(
+                              expanded ? null : thread.id,
+                            );
+                          }
+                        }}
+                      >
+                        <span
+                          className={`status-badge status-${thread.status}`}
+                        >
+                          {thread.status === "seeded"
+                            ? "已埋入 · 等待回收"
+                            : thread.status === "paid_off"
+                              ? "已回收"
+                              : "未埋入"}
+                        </span>
+                        {thread.status === "paid_off" ? (
+                          <span className="lock-badge">已锁定</span>
+                        ) : null}
+                        <strong className="plot-card-id">{thread.id}</strong>
+                        <span className="plot-expand-indicator">
+                          {expanded ? "收起 ▲" : "展开 ▼"}
+                        </span>
+                      </header>
+                      {thread.keywords.length > 0 ? (
+                        <div className="plot-card-chips" aria-label="关键词">
+                          {thread.keywords.map((keyword) => (
+                            <span key={keyword} className="keyword-chip">
+                              {keyword}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="plot-card-sections">
+                        <div className="plot-card-section">
+                          <span className="plot-card-section-label">
+                            出现条件
+                          </span>
+                          <p>{thread.seedCondition || "（未填写）"}</p>
+                        </div>
+                        <div className="plot-card-section">
+                          <span className="plot-card-section-label">
+                            回收条件
+                          </span>
+                          <p>{thread.payoffCondition || "（未填写）"}</p>
+                        </div>
+                        <div className="plot-card-section">
+                          <span className="plot-card-section-label">
+                            回收概要
+                          </span>
+                          <p>{thread.payoffSummary || "（未填写）"}</p>
+                        </div>
+                        {thread.characters.length > 0 ? (
+                          <div className="plot-card-section">
+                            <span className="plot-card-section-label">
+                              相关角色
+                            </span>
+                            <div className="plot-card-characters">
+                              {thread.characters.map((character) => (
+                                <span
+                                  key={character}
+                                  className="character-chip"
+                                >
+                                  {character}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                      <footer className="managed-character-actions">
+                        {thread.status === "paid_off" ? (
+                          <span className="story-task-locked">已锁定</span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              disabled={savingForeshadowing}
+                              onClick={() =>
+                                startEditingForeshadowing(thread.id)
+                              }
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              disabled={savingForeshadowing}
+                              onClick={() =>
+                                void deleteForeshadowing(thread.id)
+                              }
+                            >
+                              删除
+                            </button>
+                          </>
+                        )}
+                      </footer>
+                    </article>
+                  );
+                })}
                 {plotThreads.length === 0 ? (
                   <div className="story-task-empty">
                     <strong>还没有伏笔</strong>
                     <p>伏笔可以跨章节保持目的，不会像剧情任务一样被短上下文遗忘。</p>
+                  </div>
+                ) : visiblePlotThreads.length === 0 ? (
+                  <div className="story-task-empty">
+                    <strong>该状态下暂无伏笔</strong>
+                    <p>切换上方状态筛选，或新增一条伏笔。</p>
                   </div>
                 ) : null}
               </div>
@@ -5943,11 +6101,42 @@ export function GameInterface({
               onSelect={selectStoryWorkbenchTab}
             />
 
-            <div className="character-manager-toolbar">
-              <span>
-                {plotTriggers.filter((trigger) => trigger.status !== "fired").length}{" "}
-                个待触发 · {plotTriggers.length}/30 个已保存
-              </span>
+            <div className="character-manager-toolbar plot-toolbar">
+              <div className="plot-toolbar-left">
+                <span>
+                  {plotTriggers.filter((trigger) => trigger.status !== "fired").length}{" "}
+                  个待触发 · {plotTriggers.length}/30 个已保存
+                </span>
+                <div
+                  className="plot-filter-options"
+                  role="group"
+                  aria-label="按触发器状态筛选"
+                >
+                  <button
+                    type="button"
+                    className={triggerFilter === "all" ? "active" : ""}
+                    onClick={() => setTriggerFilter("all")}
+                  >
+                    全部 {plotTriggers.length}
+                  </button>
+                  <button
+                    type="button"
+                    className={triggerFilter === "armed" ? "active" : ""}
+                    onClick={() => setTriggerFilter("armed")}
+                  >
+                    待触发{" "}
+                    {plotTriggers.filter((trigger) => trigger.status === "armed").length}
+                  </button>
+                  <button
+                    type="button"
+                    className={triggerFilter === "fired" ? "active" : ""}
+                    onClick={() => setTriggerFilter("fired")}
+                  >
+                    已触发{" "}
+                    {plotTriggers.filter((trigger) => trigger.status === "fired").length}
+                  </button>
+                </div>
+              </div>
               <button
                 type="button"
                 disabled={savingTrigger || plotTriggers.length >= 30}
@@ -6102,7 +6291,7 @@ export function GameInterface({
                   <small>属性只能是力量/敏捷/感知/意志/魅力/智力/体质，数值 0-100。</small>
                 </label>
                 <label>
-                  <span>期限（deadlineDay，游戏内第几天前必须生效，可选）</span>
+                  <span>期限（deadline，游戏内第几天前必须生效，可选）</span>
                   <input
                     type="number"
                     min={1}
@@ -6124,57 +6313,116 @@ export function GameInterface({
                 </footer>
               </form>
             ) : (
-              <div className="story-task-tree">
-                {plotTriggers.map((trigger) => (
-                  <article
-                    key={trigger.id}
-                    className="module-completed"
-                  >
-                    <div className="story-task-rail">
-                      <span />
-                    </div>
-                    <div className="story-task-copy">
-                      <strong>{trigger.id}</strong>
-                      <p>
-                        {trigger.status === "fired"
-                          ? "已触发"
-                          : trigger.deadlineDay !== null
-                            ? `待触发 · 第 ${trigger.deadlineDay} 天前生效`
-                            : "待触发"}
-                      </p>
-                      <small>
-                        条件：{trigger.when.slice(0, 60)}
-                        {trigger.when.length > 60 ? "…" : ""}
-                      </small>
-                    </div>
-                    <div className="managed-character-actions">
-                      {trigger.status === "fired" ? (
-                        <span className="story-task-locked">已锁定</span>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            disabled={savingTrigger}
-                            onClick={() => startEditingTrigger(trigger.id)}
-                          >
-                            编辑
-                          </button>
-                          <button
-                            type="button"
-                            disabled={savingTrigger}
-                            onClick={() => void deleteTrigger(trigger.id)}
-                          >
-                            删除
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </article>
-                ))}
+              <div className="plot-card-list">
+                {visiblePlotTriggers.map((trigger) => {
+                  const expanded = expandedTriggerId === trigger.id;
+                  const stateEffectsSummary = [
+                    trigger.relationsCount > 0
+                      ? `关系变化 ${trigger.relationsCount} 项`
+                      : null,
+                    trigger.attributesCount > 0
+                      ? `属性调整 ${trigger.attributesCount} 项`
+                      : null,
+                    trigger.hasBadEnd ? "坏结局标志" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <article
+                      key={trigger.id}
+                      className={`plot-card plot-trigger-card status-${trigger.status}${expanded ? " expanded" : ""}${trigger.hasBadEnd ? " has-bad-end" : ""}`}
+                    >
+                      <header
+                        className="plot-card-head"
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={expanded}
+                        title={expanded ? "收起详情" : "展开详情"}
+                        onClick={() =>
+                          setExpandedTriggerId(expanded ? null : trigger.id)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setExpandedTriggerId(expanded ? null : trigger.id);
+                          }
+                        }}
+                      >
+                        <span className={`status-badge status-${trigger.status}`}>
+                          {trigger.status === "fired" ? "已触发" : "待触发"}
+                        </span>
+                        {trigger.status === "fired" ? (
+                          <span className="lock-badge">已锁定</span>
+                        ) : null}
+                        {trigger.hasBadEnd ? (
+                          <span className="bad-end-badge">坏结局</span>
+                        ) : null}
+                        <strong className="plot-card-id">{trigger.id}</strong>
+                        <span className="plot-expand-indicator">
+                          {expanded ? "收起 ▲" : "展开 ▼"}
+                        </span>
+                      </header>
+                      <div className="plot-card-sections">
+                        <div className="plot-card-section">
+                          <span className="plot-card-section-label">
+                            触发条件
+                          </span>
+                          <p>{trigger.when || "（未填写）"}</p>
+                        </div>
+                        <div className="plot-card-section">
+                          <span className="plot-card-section-label">后果</span>
+                          <p>{trigger.consequence || "（未填写）"}</p>
+                        </div>
+                        {trigger.deadlineDay !== null ||
+                        stateEffectsSummary ? (
+                          <div className="plot-card-meta">
+                            {trigger.deadlineDay !== null ? (
+                              <span className="plot-card-meta-item">
+                                期限：第 {trigger.deadlineDay} 天前生效
+                              </span>
+                            ) : null}
+                            {stateEffectsSummary ? (
+                              <span className="plot-card-meta-item">
+                                状态影响：{stateEffectsSummary}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                      <footer className="managed-character-actions">
+                        {trigger.status === "fired" ? (
+                          <span className="story-task-locked">已锁定</span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              disabled={savingTrigger}
+                              onClick={() => startEditingTrigger(trigger.id)}
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              disabled={savingTrigger}
+                              onClick={() => void deleteTrigger(trigger.id)}
+                            >
+                              删除
+                            </button>
+                          </>
+                        )}
+                      </footer>
+                    </article>
+                  );
+                })}
                 {plotTriggers.length === 0 ? (
                   <div className="story-task-empty">
                     <strong>还没有偏离触发器</strong>
                     <p>触发器让“偏离主线”有真实的代价，例如强闯反派地盘会提前招来强敌。</p>
+                  </div>
+                ) : visiblePlotTriggers.length === 0 ? (
+                  <div className="story-task-empty">
+                    <strong>该状态下暂无触发器</strong>
+                    <p>切换上方状态筛选，或新增一条触发器。</p>
                   </div>
                 ) : null}
               </div>

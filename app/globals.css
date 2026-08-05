@@ -6574,6 +6574,287 @@ a {
   font-size: 0.64rem;
 }
 
+/* ---------- 伏笔与触发器卡片（剧本工作台） ---------- */
+
+.plot-card-list {
+  display: grid;
+  margin-top: 18px;
+  gap: 10px;
+}
+
+.plot-card {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid rgb(148 102 151 / 15%);
+  border-radius: 4px;
+  background: linear-gradient(110deg, rgb(42 27 45 / 48%), rgb(12 9 11 / 28%));
+}
+
+.plot-card.status-paid_off {
+  border-color: rgb(95 132 111 / 24%);
+  background: linear-gradient(110deg, rgb(30 42 34 / 44%), rgb(12 9 11 / 28%));
+}
+
+.plot-card.status-fired {
+  border-color: rgb(150 80 84 / 28%);
+  background: linear-gradient(110deg, rgb(46 27 30 / 46%), rgb(12 9 11 / 28%));
+}
+
+.plot-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.plot-card-head:focus-visible {
+  border-radius: 3px;
+  outline: 1px solid rgb(195 143 190 / 45%);
+  outline-offset: 2px;
+}
+
+.plot-card-id {
+  min-width: 0;
+  overflow: hidden;
+  color: #c3b2bc;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plot-expand-indicator {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 3px 7px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 3px;
+  color: #8f7d8b;
+  background: rgb(31 24 26 / 66%);
+  font-size: 0.56rem;
+  white-space: nowrap;
+}
+
+.plot-card:hover .plot-expand-indicator {
+  border-color: rgb(195 143 190 / 30%);
+  color: #b49db0;
+}
+
+/* 状态徽章 */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.56rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.status-badge.status-dormant {
+  border-color: rgb(155 145 155 / 26%);
+  color: #9a8d99;
+  background: rgb(140 130 140 / 14%);
+}
+
+.status-badge.status-seeded {
+  border-color: rgb(110 165 200 / 34%);
+  color: #8fb8d0;
+  background: rgb(90 140 175 / 16%);
+}
+
+.status-badge.status-paid_off {
+  border-color: rgb(111 148 132 / 38%);
+  color: #7f9e84;
+  background: rgb(95 148 120 / 16%);
+}
+
+.status-badge.status-armed {
+  border-color: rgb(212 124 69 / 40%);
+  color: #c09174;
+  background: rgb(200 140 80 / 14%);
+}
+
+.status-badge.status-fired {
+  border-color: rgb(171 78 85 / 40%);
+  color: #b0787c;
+  background: rgb(175 85 90 / 14%);
+}
+
+.lock-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid rgb(155 145 155 / 24%);
+  border-radius: 999px;
+  color: #8f838d;
+  background: rgb(120 110 120 / 12%);
+  font-size: 0.54rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.bad-end-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid rgb(200 90 80 / 42%);
+  border-radius: 999px;
+  color: #cf8b84;
+  background: rgb(160 60 55 / 18%);
+  font-size: 0.54rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* 关键词 chip 与角色 chip */
+.plot-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  gap: 6px;
+}
+
+.keyword-chip {
+  padding: 2px 8px;
+  border: 1px solid rgb(148 102 151 / 26%);
+  border-radius: 999px;
+  color: #a58ea2;
+  background: rgb(148 102 151 / 10%);
+  font-size: 0.56rem;
+}
+
+.plot-card-characters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.character-chip {
+  padding: 2px 8px;
+  border: 1px solid rgb(111 148 132 / 28%);
+  border-radius: 999px;
+  color: #86a08e;
+  background: rgb(95 148 120 / 10%);
+  font-size: 0.56rem;
+}
+
+/* 信息分区与截断展开 */
+.plot-card-sections {
+  display: grid;
+  margin-top: 10px;
+  gap: 8px;
+}
+
+.plot-card-section {
+  min-width: 0;
+}
+
+.plot-card-section-label {
+  display: block;
+  margin-bottom: 3px;
+  color: #6f616d;
+  font-size: 0.54rem;
+  letter-spacing: 0.04em;
+}
+
+.plot-card-section p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #9a8a96;
+  font-size: 0.62rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.plot-card.expanded .plot-card-section p {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+
+.plot-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed rgb(148 102 151 / 14%);
+  gap: 6px 14px;
+}
+
+.plot-card-meta-item {
+  color: #7d6f7a;
+  font-size: 0.58rem;
+}
+
+/* 卡片操作区 */
+.plot-card > .managed-character-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+}
+
+.plot-card > .managed-character-actions .story-task-locked {
+  align-self: center;
+  padding: 7px 10px;
+}
+
+/* 工具栏状态筛选 */
+.plot-toolbar {
+  align-items: flex-end;
+}
+
+.plot-toolbar-left {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 10px;
+}
+
+.plot-toolbar-left > span {
+  white-space: nowrap;
+}
+
+.plot-filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plot-filter-options button {
+  padding: 4px 9px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 999px;
+  color: #8a7c85;
+  background: rgb(31 24 26 / 76%);
+  cursor: pointer;
+  font-size: 0.58rem;
+}
+
+.plot-filter-options button:hover:not(.active) {
+  border-color: rgb(195 143 190 / 36%);
+  color: #b49db0;
+}
+
+.plot-filter-options button.active {
+  border-color: rgb(195 143 190 / 42%);
+  color: #e3d2e0;
+  background: rgb(148 102 151 / 18%);
+}
+
 .source-manager {
   background:
     radial-gradient(circle at 90% 0, rgb(45 87 69 / 25%), transparent 24rem),
@@ -7626,6 +7907,38 @@ a {
   .story-task-tree .managed-character-actions {
     grid-column: 2;
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .plot-toolbar,
+  .plot-toolbar-left {
+    align-items: stretch;
+  }
+
+  .plot-toolbar > button {
+    width: 100%;
+  }
+
+  .plot-filter-options {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    width: 100%;
+  }
+
+  .plot-card-head {
+    flex-wrap: wrap;
+  }
+
+  .plot-expand-indicator {
+    margin-left: auto;
+  }
+
+  .plot-card > .managed-character-actions {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .plot-card > .managed-character-actions button {
+    flex: 1 1 auto;
   }
 
   .branch-list footer,
