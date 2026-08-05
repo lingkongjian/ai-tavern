@@ -256,6 +256,19 @@
           "minLength": 1,
           "maxLength": 80
         },
+        "type": {
+          "enum": [
+            "family",
+            "romantic",
+            "friends",
+            "rivals",
+            "colleagues",
+            "allies",
+            "acquaintances",
+            "other"
+          ],
+          "description": "关系定性类型（可选，缺省 acquaintances：初识/普通关系；不做复杂推断）"
+        },
         "dimensions": {
           "type": "object",
           "properties": {

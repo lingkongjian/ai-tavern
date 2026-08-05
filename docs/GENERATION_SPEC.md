@@ -371,7 +371,7 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 ### 10.4 关系变化（relationshipChanges）
 
-`stateCommit.relationshipChanges` 更新角色之间的关系数值：每项包含 `sourceCharacterId`、`targetCharacterId`（均为已存在角色）、`dimension`（`trust`/`affection`/`fear`/`hostility`/`respect`）、`delta`（-100 ~ 100）、`reason` 与 `evidence`。后端按维度对累加并钳制到 -100 ~ 100，自动建立或更新双向关系记录。`evidence` 至少 1 条且必须指向本轮或历史真实事件/对话 ID。关系变化必须**明确区分维度**（规则 37）：信任（trust：托付秘密、可靠承诺、守约）与好感（affection：心动、亲近、思念）是不同维度，情侣/暧昧关系深化时必须判断本次加深的是信任、好感还是两者兼有（兼有时分别登记两条变化，各自 `delta` 与 `reason`），不得笼统"关系加深"；`reason` 必须指向具体事件或对话依据。
+`stateCommit.relationshipChanges` 更新角色之间的关系数值与定性类型：每项包含 `sourceCharacterId`、`targetCharacterId`（均为已存在角色）、`dimension`（`trust`/`affection`/`fear`/`hostility`/`respect`）、`delta`（-100 ~ 100，纯定性转化项可省略、缺省 0）、`reason` 与 `evidence`，可选 `typeChange`（`{ to, reason, note? }`，`to` 为 `RELATIONSHIP_TYPES` 枚举：`family`/`romantic`/`friends`/`rivals`/`colleagues`/`allies`/`acquaintances`/`other`）。后端按维度对累加并钳制到 -100 ~ 100，自动建立或更新双向关系记录。`evidence` 至少 1 条且必须指向本轮或历史真实事件/对话 ID。**关系定性转化**（规则 39）：`typeChange` 表达关系定性变化（如姐弟经调查发现无血缘后转为朋友、后续发展为情侣）——必须伴随真实剧情事件（写入 events）；转化后角色互动方式随之改变（姐弟相处 vs 情侣相处）；转化历史保持（审计记录 from→to，不抹去"曾是姐弟"）；转化与数值可同步可解耦（typeChange 不自动改五维度数值）；`reason` 必须指向具体依据。剧本包 `initialRelationships` 每项可选 `type`（枚举，缺省 `acquaintances`），开局物化为 `relationshipType`；转化后上下文注入当前类型（如"关系类型：情侣"）。关系变化必须**明确区分维度**（规则 37）：信任（trust：托付秘密、可靠承诺、守约）与好感（affection：心动、亲近、思念）是不同维度，情侣/暧昧关系深化时必须判断本次加深的是信任、好感还是两者兼有（兼有时分别登记两条变化，各自 `delta` 与 `reason`），不得笼统"关系加深"；`reason` 必须指向具体事件或对话依据。
 
 ## 11. 角色卡演化变更
 

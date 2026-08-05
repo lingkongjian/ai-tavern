@@ -201,6 +201,7 @@
       {
         "sourceCharacterName": "记录员",
         "targetCharacterName": "林雾",
+        "type": "colleagues",
         "dimensions": {
           "trust": 55,
           "affection": 60,

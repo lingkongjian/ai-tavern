@@ -39,6 +39,7 @@ import {
   GeneratedTurnValidationError,
   dayPhaseOf,
   normalizeGeneratedTurnVersion,
+  type GeneratedRelationshipTypeChange,
   type GeneratedSceneTransition,
   type PlayerTurnRequest,
   type RegenerateRewriteMode,
@@ -251,6 +252,27 @@ function readText(value: JsonValue | undefined) {
 
 function clampRelationship(value: number) {
   return Math.max(-100, Math.min(100, value));
+}
+
+/**
+ * 关系定性转化（typeChange）的状态值：更新 relationshipType 并记录
+ * 转化来源（typeChangeFrom，审计 from→to）、转化回合与可选说明。
+ * 转化与五维度数值解耦：不自动增减任何维度。
+ */
+function relationshipTypeChangeValue(input: {
+  typeChange: GeneratedRelationshipTypeChange | undefined;
+  currentState: JsonObject | undefined;
+  turnId: string;
+}): JsonObject | null {
+  const { typeChange, currentState, turnId } = input;
+  if (!typeChange) return null;
+  const from = readText(currentState?.relationshipType) || "acquaintances";
+  return {
+    relationshipType: typeChange.to,
+    typeChangedAtTurnId: turnId,
+    typeChangeFrom: from,
+    ...(typeChange.note ? { typeNote: typeChange.note } : {}),
+  };
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -1087,19 +1109,53 @@ function createStateMutations(input: {
     const nextValue = clampRelationship(
       asNumber(current?.state[storageDimension]) + change.delta,
     );
+    const typeChangeValue = relationshipTypeChangeValue({
+      typeChange: change.typeChange,
+      currentState: current?.state,
+      turnId,
+    });
+    const value: JsonObject = {
+      sourceCharacterId: change.sourceCharacterId,
+      targetCharacterId: change.targetCharacterId,
+      [storageDimension]: nextValue,
+      lastChange: change.delta,
+      ...(typeChangeValue ?? {}),
+    };
+    if (!current) {
+      // replace 创建新关系记录时补全五维度缺省 0，保证状态完整。
+      for (const dimension of relationshipStorageDimensions) {
+        if (!(dimension in value)) value[dimension] = 0;
+      }
+    }
     mutations.push({
       entityType: "relationship",
       entityId,
       operation: current ? "merge" : "replace",
-      value: {
-        sourceCharacterId: change.sourceCharacterId,
-        targetCharacterId: change.targetCharacterId,
-        [storageDimension]: nextValue,
-        lastChange: change.delta,
-      },
+      value,
       reason: change.reason,
       evidence: change.evidence,
     });
+    if (typeChangeValue) {
+      // 定性转化同步到反向记录：关系性质是双方共同的定性，双向保持一致；
+      // 反向实体的五维度数值仍按各自方向独立（不随类型转化自动增减）。
+      const reverseId = `${change.targetCharacterId}:${change.sourceCharacterId}`;
+      const reverse = adventure.branchState.states.find(
+        (state) =>
+          state.entityType === "relationship" && state.entityId === reverseId,
+      );
+      mutations.push({
+        entityType: "relationship",
+        entityId: reverseId,
+        operation: reverse ? "merge" : "replace",
+        value: {
+          sourceCharacterId: change.targetCharacterId,
+          targetCharacterId: change.sourceCharacterId,
+          ...typeChangeValue,
+        },
+        reason: change.reason,
+        evidence: change.evidence,
+      });
+    }
   }
 
   for (const change of generated.stateCommit.characterCardChanges) {

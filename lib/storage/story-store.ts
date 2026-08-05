@@ -27,6 +27,7 @@ import {
   resolveAttributeChecks,
   type AttributeCheckRequest,
 } from "../story/判定服务.ts";
+import type { RelationshipType } from "../story/回合协议.ts";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -677,6 +678,8 @@ export interface AdventureRelationshipInput {
     hostility?: number;
     respect?: number;
   };
+  /** 关系定性类型（缺省 acquaintances），枚举见回合协议 RELATIONSHIP_TYPES。 */
+  type?: RelationshipType;
   summary?: string;
 }
 
@@ -2290,6 +2293,7 @@ export class LocalStoryStore {
           fear: 0,
           hostility: 0,
           respect: 0,
+          relationshipType: "acquaintances",
           summary: "关系尚未建立",
         },
         reason: "建立角色之间的初始关系",
@@ -2312,6 +2316,8 @@ export class LocalStoryStore {
           affinity: 0,
           fear: 0,
           hostility: 0,
+          respect: 0,
+          relationshipType: "acquaintances",
           summary: "关系尚未建立",
         },
         reason: "建立玩家与其他角色的初始关系",
@@ -2352,6 +2358,7 @@ export class LocalStoryStore {
         fear: clampDimension(dimensions.fear, 0),
         hostility: clampDimension(dimensions.hostility, 0),
         respect: clampDimension(dimensions.respect, 0),
+        relationshipType: relationship.type ?? "acquaintances",
         summary: relationship.summary?.trim() || "关系尚未建立",
       };
       const pushRelationship = (

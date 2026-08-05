@@ -214,6 +214,8 @@ DeepSeek 每轮返回 `sceneTransition`，其中包含回合结束时的地点�
 
 `character_state.knownFacts`（可选）记录角色已知的重要信息（`id` + `content`，完整数组替换、`null` 清除），随实体序列化、存档版本不变；角色已登记的信息在后续剧情中不重复生成获知表述。
 
+`relationship` 实体含定性类型：`relationshipType`（枚举 `family`/`romantic`/`friends`/`rivals`/`colleagues`/`allies`/`acquaintances`/`other`，缺省 `acquaintances`）、`typeChangedAtTurnId`、`typeChangeFrom`、`typeNote?`——剧本包 `initialRelationships.type` 开局物化；回合 `relationshipChanges.typeChange` 更新类型并写审计（from→to/reason/evidence/turnId），双向同步、与五维度数值解耦。
+
 `minor_character` 状态实体记录剧情中提及的次要人物名录（`name`/`relation?`/`description?`/`firstMentionedTurnId`/`lastMentionedTurnId`，entityId `npc:<name>`），由回合输出 `stateCommit.minorCharacterUpdates` 增量登记（add/update，重复 add 按更新保留首次提及），随分支与完整存档整体序列化；名录不进入可扮演角色列表。
 
 `appointment` 状态实体记录剧情中动态产生的约定（`appointmentId`/`title`/`description`/`characterIds`/`atDay`/`status: pending`/`sourceTurnId`），由回合输出 `stateCommit.appointments` 完整数组替换驱动（新增 replace、移除的标记 cancelled 保留历史），随分支与完整存档整体序列化；到期（`atDay` ≤ 当前日期）未处理的约定以 `dueAppointments` 导演提示注入，剧情体现兑现或失效。

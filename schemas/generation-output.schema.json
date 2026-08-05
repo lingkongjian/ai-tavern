@@ -404,7 +404,6 @@
         "sourceCharacterId",
         "targetCharacterId",
         "dimension",
-        "delta",
         "reason",
         "evidence"
       ],
@@ -428,6 +427,39 @@
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
+        },
+        "typeChange": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "to",
+            "reason"
+          ],
+          "properties": {
+            "to": {
+              "enum": [
+                "family",
+                "romantic",
+                "friends",
+                "rivals",
+                "colleagues",
+                "allies",
+                "acquaintances",
+                "other"
+              ],
+              "description": "转化后的关系定性类型"
+            },
+            "reason": {
+              "$ref": "#/$defs/nonEmptyString",
+              "maxLength": 300,
+              "description": "转化原因，必须指向本轮或历史中具体的事件/对话依据"
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "转化补充说明（可选）"
+            }
+          }
         }
       }
     },

@@ -21,6 +21,10 @@ import {
 import { createStoryGenerationMessages, createStoryGenerationPrompt, collectMinorCharacters } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 import { sceneSimilarity } from "../lib/story/重复检测.ts";
+import {
+  exportCompleteAdventure,
+  importCompleteAdventure,
+} from "../lib/import/完整存档.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
 
@@ -4664,5 +4668,370 @@ test("次要人物名录预算：超 2400 字符时先省略 relation 再截断�
     400,
     "截断只丢弃最早录入的人物，不重复计数",
   );
+});
+
+test("relationshipChanges.typeChange 校验：to 枚举、reason 必填限长、note 限长", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-typechange-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "关系定性校验");
+    const adventure = store.loadAdventure(started.sessionId);
+    const eventId = "event-typechange-protocol";
+    const base = statusesTestTurn(started, eventId, "核对族谱。");
+    const withChanges = (relationshipChanges) => ({
+      ...base,
+      stateCommit: {
+        ...base.stateCommit,
+        relationshipChanges,
+      },
+    });
+    const validEntry = {
+      sourceCharacterId: started.mainCharacterId,
+      targetCharacterId: started.playerCharacterId,
+      dimension: "trust",
+      delta: 0,
+      reason: "核对了族谱。",
+      evidence: [eventId],
+    };
+
+    // 合法 typeChange（含 note）通过
+    validateGeneratedTurn(
+      withChanges([
+        {
+          ...validEntry,
+          typeChange: {
+            to: "friends",
+            reason: "族谱核对后确认并非血亲，关系从家人转为旧识。",
+            note: "不再以姐弟相称。",
+          },
+        },
+      ]),
+      adventure,
+      "typechange-valid-1",
+    );
+
+    // to 非枚举 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withChanges([
+            {
+              ...validEntry,
+              typeChange: { to: "siblings", reason: "查证发现并无血缘。" },
+            },
+          ]),
+          adventure,
+          "typechange-invalid-to",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("typeChange.to")),
+    );
+
+    // reason 缺失 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withChanges([
+            {
+              ...validEntry,
+              typeChange: { to: "friends" },
+            },
+          ]),
+          adventure,
+          "typechange-missing-reason",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("typeChange.reason")),
+    );
+
+    // reason 超过 300 字符 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withChanges([
+            {
+              ...validEntry,
+              typeChange: { to: "friends", reason: "因".repeat(301) },
+            },
+          ]),
+          adventure,
+          "typechange-long-reason",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("typeChange.reason")),
+    );
+
+    // note 超过 200 字符 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withChanges([
+            {
+              ...validEntry,
+              typeChange: {
+                to: "friends",
+                reason: "族谱核对后确认并非血亲。",
+                note: "注".repeat(201),
+              },
+            },
+          ]),
+          adventure,
+          "typechange-long-note",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("typeChange.note")),
+    );
+
+    // 纯定性转化（无 delta 有 typeChange）通过，且 delta 归一为 0
+    const pureChange = validateGeneratedTurn(
+      withChanges([
+        {
+          sourceCharacterId: started.mainCharacterId,
+          targetCharacterId: started.playerCharacterId,
+          dimension: "trust",
+          reason: "关系定性转变。",
+          evidence: [eventId],
+          typeChange: { to: "friends", reason: "族谱核对后确认并非血亲。" },
+        },
+      ]),
+      adventure,
+      "typechange-pure-1",
+    );
+    assert.equal(pureChange.stateCommit.relationshipChanges[0].delta, 0);
+    assert.equal(
+      pureChange.stateCommit.relationshipChanges[0].typeChange?.to,
+      "friends",
+    );
+
+    // 既无 delta 也无 typeChange → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withChanges([
+            {
+              sourceCharacterId: started.mainCharacterId,
+              targetCharacterId: started.playerCharacterId,
+              dimension: "trust",
+              reason: "没有数值与类型变化。",
+              evidence: [eventId],
+            },
+          ]),
+          adventure,
+          "typechange-noop",
+        ),
+      GeneratedTurnValidationError,
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("关系定性转化端到端：物化双向同步、审计 from→to、数值解耦、上下文注入与存档往返", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-typechange-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "关系类型端到端");
+
+    // 回合 1：姐弟（acquaintances 缺省）→ 发现并无血缘 → friends，纯定性转化（数值不变）
+    const event1 = "event-typechange-1";
+    const turn1 = statusesTestTurn(started, event1, "旅人与守钟人核对族谱，确认并无血缘关系。");
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "typechange-e2e-1",
+        selectedChoiceId: "opening-neutral",
+      }),
+      createTurnId: () => "turn-typechange-1",
+      generate: async () => ({
+        content: {
+          ...turn1,
+          stateCommit: {
+            ...turn1.stateCommit,
+            relationshipChanges: [
+              {
+                sourceCharacterId: started.mainCharacterId,
+                targetCharacterId: started.playerCharacterId,
+                dimension: "trust",
+                delta: 0,
+                reason: "族谱核对后确认并非血亲。",
+                evidence: [event1],
+                typeChange: {
+                  to: "friends",
+                  reason: "族谱核对后确认并无血缘关系，从家人转为旧识。",
+                  note: "虽不再以姐弟相称，仍保留多年情谊。",
+                },
+              },
+            ],
+          },
+        },
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    let adventure = store.loadAdventure(started.sessionId);
+    const findRelationship = (sourceId, targetId) =>
+      adventure.branchState.states.find(
+        (state) =>
+          state.entityType === "relationship" &&
+          state.entityId === `${sourceId}:${targetId}`,
+      );
+    const forward = findRelationship(
+      started.mainCharacterId,
+      started.playerCharacterId,
+    );
+    assert.equal(forward.state.relationshipType, "friends");
+    assert.equal(forward.state.typeChangeFrom, "acquaintances");
+    assert.equal(forward.state.typeChangedAtTurnId, "turn-typechange-1");
+    assert.equal(
+      forward.state.typeNote,
+      "虽不再以姐弟相称，仍保留多年情谊。",
+    );
+    // 数值解耦：delta 0 时五维度数值不变
+    assert.equal(forward.state.trust, 0);
+    assert.equal(forward.state.affinity, 0);
+    // 双向同步：反向记录同样更新类型
+    const reverse = findRelationship(
+      started.playerCharacterId,
+      started.mainCharacterId,
+    );
+    assert.equal(reverse.state.relationshipType, "friends");
+    assert.equal(reverse.state.typeChangeFrom, "acquaintances");
+    assert.equal(reverse.state.typeNote, "虽不再以姐弟相称，仍保留多年情谊。");
+
+    // 审计记录：state_changes 保存 from→to 与原因
+    const turnChanges = adventure.branchState.recentTurns.at(-1).stateChanges;
+    const typeChangeAudit = turnChanges.find(
+      (change) =>
+        change.entityType === "relationship" &&
+        change.payload.typeChangeFrom !== undefined,
+    );
+    assert.ok(typeChangeAudit, "typeChange 应写入状态审计记录");
+    assert.equal(typeChangeAudit.payload.typeChangeFrom, "acquaintances");
+    assert.equal(typeChangeAudit.payload.relationshipType, "friends");
+    assert.equal(typeChangeAudit.payload.typeChangedAtTurnId, "turn-typechange-1");
+    assert.equal(typeChangeAudit.reason, "族谱核对后确认并非血亲。");
+
+    // 回合 2：friends → romantic（再次转化，from 为最近一次转化前类型 friends）
+    const event2 = "event-typechange-2";
+    const turn2 = statusesTestTurn(started, event2, "守钟人坦白心意，两人确立情侣关系。");
+    const second = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: "turn-typechange-1",
+        idempotencyKey: "typechange-e2e-2",
+        selectedChoiceId: "choice-1",
+      }),
+      createTurnId: () => "turn-typechange-2",
+      generate: async () => ({
+        content: {
+          ...turn2,
+          stateCommit: {
+            ...turn2.stateCommit,
+            relationshipChanges: [
+              {
+                sourceCharacterId: started.mainCharacterId,
+                targetCharacterId: started.playerCharacterId,
+                dimension: "affection",
+                delta: 20,
+                reason: "守钟人坦白心意并得到回应。",
+                evidence: [event2],
+                typeChange: {
+                  to: "romantic",
+                  reason: "双方告白并互许承诺，从旧识发展为情侣。",
+                },
+              },
+            ],
+          },
+        },
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    assert.equal(second.committedTurn.sequence, 3);
+    adventure = store.loadAdventure(started.sessionId);
+    const romanticForward = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "relationship" &&
+        state.entityId === `${started.mainCharacterId}:${started.playerCharacterId}`,
+    );
+    assert.equal(romanticForward.state.relationshipType, "romantic");
+    assert.equal(romanticForward.state.typeChangeFrom, "friends");
+    assert.equal(romanticForward.state.typeChangedAtTurnId, "turn-typechange-2");
+    // 维度变化与类型转化可同步：affection 按 delta 单独增减
+    assert.equal(romanticForward.state.affinity, 20);
+
+    // 下一回合上下文注入：relationshipType + 中文标签 + 规则 39
+    const snapshot = createStoryGenerationPrompt({
+      adventure: store.loadAdventure(started.sessionId),
+      turnId: "turn-typechange-3",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    assert.match(snapshot.snapshot.systemPrompt, /39\. 关系定性转化/);
+    assert.match(snapshot.snapshot.systemPrompt, /typeChange 只改变定性类型/);
+    assert.match(snapshot.snapshot.systemPrompt, /姐弟相处与情侣相处/);
+    const context = parseStoryContext(snapshot.messages[1].content);
+    const injected = context.activeStates.find(
+      (state) =>
+        state.entityType === "relationship" &&
+        state.entityId === `${started.mainCharacterId}:${started.playerCharacterId}`,
+    );
+    assert.ok(injected, "关系状态应注入上下文");
+    assert.equal(injected.state.relationshipType, "romantic");
+    assert.equal(injected.state.relationshipTypeText, "情侣");
+    assert.equal(injected.state.typeChangeFrom, "friends");
+
+    // 存档往返：relationshipType 与转化字段随实体序列化保留；
+    // 转化回合引用被重映射为导入副本中对应的回合 id
+    const archive = exportCompleteAdventure(database, started.sessionId);
+    const imported = importCompleteAdventure(database, archive);
+    const importedAdventure = store.loadAdventure(imported.sessionId);
+    const importedRelationship = importedAdventure.branchState.states.find(
+      (state) =>
+        state.entityType === "relationship" &&
+        state.entityId === `${started.mainCharacterId}:${started.playerCharacterId}`,
+    );
+    assert.equal(importedRelationship.state.relationshipType, "romantic");
+    assert.equal(importedRelationship.state.typeChangeFrom, "friends");
+    assert.equal(importedRelationship.state.affinity, 20);
+    const importedTurnIds = importedAdventure.branchState.recentTurns.map(
+      (turn) => turn.id,
+    );
+    assert.ok(
+      importedTurnIds.includes(importedRelationship.state.typeChangedAtTurnId),
+      "导入后转化回合引用应指向新副本中的对应回合",
+    );
+    // 反向记录的类型同样随存档往返保留
+    const importedReverse = importedAdventure.branchState.states.find(
+      (state) =>
+        state.entityType === "relationship" &&
+        state.entityId === `${started.playerCharacterId}:${started.mainCharacterId}`,
+    );
+    assert.equal(importedReverse.state.relationshipType, "romantic");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 

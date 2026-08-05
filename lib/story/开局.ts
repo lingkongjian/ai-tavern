@@ -17,7 +17,10 @@ import {
   ATTRIBUTE_WHITELIST,
   isAttributeName,
 } from "./判定服务.ts";
-import { validateStatusesArray } from "./回合协议.ts";
+import {
+  RELATIONSHIP_TYPES,
+  validateStatusesArray,
+} from "./回合协议.ts";
 
 const limits = {
   short: 80,
@@ -642,11 +645,27 @@ export function parseStartAdventureInput(
           limits.description,
           issues,
         );
+        let relationshipType: AdventureRelationshipInput["type"];
+        if (item.type !== undefined) {
+          if (
+            typeof item.type !== "string" ||
+            !RELATIONSHIP_TYPES.includes(
+              item.type as (typeof RELATIONSHIP_TYPES)[number],
+            )
+          ) {
+            issues.push(
+              `初始关系 ${index + 1} 的 type 必须是 ${RELATIONSHIP_TYPES.join("、")} 之一。`,
+            );
+          } else {
+            relationshipType = item.type as AdventureRelationshipInput["type"];
+          }
+        }
         if (sourceCharacterName && targetCharacterName) {
           initialRelationships.push({
             sourceCharacterName,
             targetCharacterName,
             ...(Object.keys(dimensions).length > 0 ? { dimensions } : {}),
+            ...(relationshipType ? { type: relationshipType } : {}),
             ...(summary ? { summary } : {}),
           });
         }

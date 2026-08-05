@@ -219,6 +219,33 @@ export interface GeneratedOffstageUpdate {
   reason: string;
 }
 
+/**
+ * 关系定性类型（relationshipType）：关系的性质而非数值维度。
+ * 单一权威枚举：story-store 开局物化、回合物化、人物管理与剧本包声明复用。
+ * 缺省 acquaintances（初识/普通关系），不做复杂推断。
+ */
+export const RELATIONSHIP_TYPES = [
+  "family",
+  "romantic",
+  "friends",
+  "rivals",
+  "colleagues",
+  "allies",
+  "acquaintances",
+  "other",
+] as const;
+
+export type RelationshipType = (typeof RELATIONSHIP_TYPES)[number];
+
+export interface GeneratedRelationshipTypeChange {
+  /** 转化后的关系类型。 */
+  to: RelationshipType;
+  /** 转化原因（≤300 字符），必须指向本轮或历史中具体的事件/对话依据。 */
+  reason: string;
+  /** 补充说明（≤200 字符），可选。 */
+  note?: string;
+}
+
 export interface GeneratedRelationshipChange {
   sourceCharacterId: string;
   targetCharacterId: string;
@@ -226,6 +253,8 @@ export interface GeneratedRelationshipChange {
   delta: number;
   reason: string;
   evidence: string[];
+  /** 本轮该关系的定性转化（如姐弟发现并无血缘关系后转为旧识，或进一步发展为情侣）。 */
+  typeChange?: GeneratedRelationshipTypeChange;
 }
 
 export interface GeneratedCharacterCardChange {
@@ -1816,9 +1845,71 @@ export function validateGeneratedTurn(
     if (sourceCharacterId === targetCharacterId) {
       issues.push("关系变化的来源角色和目标角色不能相同。");
     }
-    const delta = typeof change.delta === "number" ? change.delta : Number.NaN;
-    if (!Number.isFinite(delta) || delta < -100 || delta > 100) {
-      issues.push("关系变化 delta 必须位于 -100 到 100。 ");
+    const typeChangeRaw = change.typeChange;
+    let typeChange: GeneratedRelationshipTypeChange | undefined;
+    if (typeChangeRaw !== undefined) {
+      if (!isObject(typeChangeRaw)) {
+        issues.push(
+          `stateCommit.relationshipChanges[${index}].typeChange 必须是对象。`,
+        );
+      } else {
+        const to = oneOf(
+          typeChangeRaw.to,
+          RELATIONSHIP_TYPES,
+          `stateCommit.relationshipChanges[${index}].typeChange.to`,
+          issues,
+        );
+        const typeReasonRaw = typeChangeRaw.reason;
+        const typeReason = requiredText(
+          typeReasonRaw,
+          `stateCommit.relationshipChanges[${index}].typeChange.reason`,
+          issues,
+          300,
+        );
+        if (typeof typeReasonRaw === "string" && typeReasonRaw.trim().length > 300) {
+          issues.push(
+            `stateCommit.relationshipChanges[${index}].typeChange.reason 不能超过 300 个字符。`,
+          );
+        }
+        let note: string | undefined;
+        if (typeChangeRaw.note !== undefined) {
+          if (typeof typeChangeRaw.note !== "string" || !typeChangeRaw.note.trim()) {
+            issues.push(
+              `stateCommit.relationshipChanges[${index}].typeChange.note 必须是字符串。`,
+            );
+          } else {
+            const trimmedNote = typeChangeRaw.note.trim();
+            if (trimmedNote.length > 200) {
+              issues.push(
+                `stateCommit.relationshipChanges[${index}].typeChange.note 不能超过 200 个字符。`,
+              );
+            }
+            note = trimmedNote.slice(0, 200);
+          }
+        }
+        typeChange = { to, reason: typeReason, ...(note ? { note } : {}) };
+      }
+    }
+    const deltaRaw = change.delta;
+    let delta = 0;
+    if (deltaRaw === undefined) {
+      // 纯定性转化（typeChange 且无维度数值变化）：转化与数值解耦。
+      if (!typeChange) {
+        issues.push(
+          `stateCommit.relationshipChanges[${index}] 缺少 delta（无数值变化时必须提供 typeChange）。`,
+        );
+      }
+    } else if (
+      typeof deltaRaw !== "number" ||
+      !Number.isFinite(deltaRaw) ||
+      deltaRaw < -100 ||
+      deltaRaw > 100
+    ) {
+      issues.push(
+        `stateCommit.relationshipChanges[${index}] 的 delta 必须是 -100 到 100 之间的数值。`,
+      );
+    } else {
+      delta = deltaRaw;
     }
     return {
       sourceCharacterId,
@@ -1829,7 +1920,7 @@ export function validateGeneratedTurn(
         `stateCommit.relationshipChanges[${index}].dimension`,
         issues,
       ),
-      delta: Number.isFinite(delta) ? delta : 0,
+      delta,
       reason: requiredText(
         change.reason,
         `stateCommit.relationshipChanges[${index}].reason`,
@@ -1843,6 +1934,7 @@ export function validateGeneratedTurn(
         issues,
         1,
       ),
+      ...(typeChange ? { typeChange } : {}),
     };
   });
 

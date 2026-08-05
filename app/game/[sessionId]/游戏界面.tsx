@@ -106,6 +106,24 @@ const operationLabels: Record<LoadedStateChange["operation"], string> = {
   deactivate: "已停用",
 };
 
+/** 关系定性类型（relationshipType）中文标签，用于面板与修改记录展示。 */
+const relationshipTypeLabels: Record<string, string> = {
+  family: "家人",
+  romantic: "情侣",
+  friends: "好友",
+  rivals: "对手",
+  colleagues: "同事",
+  allies: "盟友",
+  acquaintances: "初识",
+  other: "其他",
+};
+
+function relationshipTypeText(value: unknown) {
+  return typeof value === "string"
+    ? (relationshipTypeLabels[value] ?? value)
+    : "初识";
+}
+
 const contextFieldLabels: Record<string, string> = {
   nextTurnId: "目标回合",
   campaign: "剧本资料",
@@ -143,6 +161,10 @@ const fieldLabels: Record<string, string> = {
   fear: "恐惧",
   hostility: "敌意",
   respect: "尊重",
+  relationshipType: "关系类型",
+  typeChangeFrom: "转化前类型",
+  typeNote: "转化说明",
+  typeChangedAtTurnId: "转化回合",
   beliefs: "新增认知",
   secrets: "秘密",
   goals: "长期目标",
@@ -287,11 +309,23 @@ function stateChangeDetail(change: LoadedStateChange) {
     "shadowsEntryId",
     "layer",
     "lastChange",
+    "typeChangeFrom",
+    "typeNote",
+    "typeChangedAtTurnId",
   ]);
   const fields = Object.entries(change.payload).filter(
     ([key]) => !ignoredFields.has(key),
   );
   if (change.entityType === "relationship") {
+    const typeFrom = change.payload.typeChangeFrom;
+    const typeTo = change.payload.relationshipType;
+    if (typeof typeFrom === "string" && typeof typeTo === "string" && typeFrom !== typeTo) {
+      const note =
+        typeof change.payload.typeNote === "string" && change.payload.typeNote
+          ? `（${change.payload.typeNote}）`
+          : "";
+      return `关系类型 ${relationshipTypeText(typeFrom)} → ${relationshipTypeText(typeTo)}${note}`;
+    }
     const delta = change.payload.lastChange;
     const dimension = fields.find(
       ([key, value]) => typeof value === "number" && key !== "lastChange",
@@ -1168,6 +1202,7 @@ export function GameInterface({
         fear: number("fear"),
         hostility: number("hostility"),
         respect: number("respect"),
+        relationshipType: text(state.state.relationshipType, "acquaintances"),
         summary: text(state.state.summary),
       };
     });
@@ -1195,6 +1230,10 @@ export function GameInterface({
         targetId: left.targetId,
         symmetric: pair.length === 2,
         summary: right ? (left.summary || right.summary) : left.summary,
+        relationshipType:
+          left.relationshipType !== "acquaintances"
+            ? left.relationshipType
+            : (right?.relationshipType ?? "acquaintances"),
         trust: value("trust"),
         affinity: value("affinity"),
         fear: value("fear"),
@@ -7065,7 +7104,7 @@ export function GameInterface({
               <header>
                 <div>
                   <strong id="character-relationships-title">角色关系</strong>
-                  <small>当前各角色之间的信任、好感、恐惧、敌意与敬意（-100 ~ 100）</small>
+                  <small>关系类型与各角色之间的信任、好感、恐惧、敌意与敬意（-100 ~ 100）</small>
                 </div>
               </header>
               {mergedRelationships.length === 0 ? (
@@ -7080,6 +7119,9 @@ export function GameInterface({
                           <span aria-hidden="true">↔</span>
                           {characterNameById.get(relationship.targetId) ?? relationship.targetId}
                         </strong>
+                        <small className="relationship-type-label">
+                          关系类型：{relationshipTypeText(relationship.relationshipType)}
+                        </small>
                         {relationship.summary ? (
                           <small>{relationship.summary}</small>
                         ) : null}

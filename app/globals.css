@@ -4961,6 +4961,11 @@ a {
   text-align: right;
 }
 
+.relationship-heading .relationship-type-label {
+  color: #a8b5a0;
+  white-space: nowrap;
+}
+
 .relationship-dims {
   display: flex;
   flex-wrap: wrap;

@@ -24,6 +24,18 @@ function isObject(value: JsonValue | undefined): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** 关系定性类型（relationshipType）的中文标签，随关系状态注入上下文。 */
+const RELATIONSHIP_TYPE_LABELS: Record<string, string> = {
+  family: "家人",
+  romantic: "情侣",
+  friends: "好友",
+  rivals: "对手",
+  colleagues: "同事",
+  allies: "盟友",
+  acquaintances: "初识",
+  other: "其他",
+};
+
 function readText(value: JsonValue | undefined) {
   return typeof value === "string" ? value : "";
 }
@@ -709,6 +721,23 @@ export function createStoryGenerationPrompt(input: {
     stateTokens += item.cost;
   }
   const activeStates = selectedStateRecords.map((state) => {
+    if (state.entityType === "relationship") {
+      // 关系状态注入带关系定性类型（relationshipType）与中文标签，
+      // 如 relationshipTypeText：情侣；typeChangeFrom 保留最近一次转化来源。
+      const relationshipType =
+        readText(state.state.relationshipType) || "acquaintances";
+      return {
+        entityType: state.entityType,
+        entityId: state.entityId,
+        version: state.version,
+        state: {
+          ...state.state,
+          relationshipType,
+          relationshipTypeText:
+            RELATIONSHIP_TYPE_LABELS[relationshipType] ?? relationshipType,
+        },
+      };
+    }
     if (state.entityType !== "character_state") {
       return {
         entityType: state.entityType,
@@ -856,6 +885,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 36. 角色已知信息（character_state.knownFacts）：角色获知重要信息（对话告知、信件、发现、偷听、亲眼所见等）时，在本轮 characterStateChanges 的 patch.knownFacts 中登记：{"id":"稳定唯一ID","content":"该角色已经知道的信息（约 300 字内）"}。knownFacts 是完整数组替换：新增、修改（id 不变）或移除时必须提供包含全部现存条目的新数组；patch.knownFacts=null 表示清除该角色全部已知信息。上下文 characterDirectory 中的 knownFacts 是“该角色已经知道的信息”，按角色隔离：A 已知不等于 B 已知，除非 B 也通过剧情获知并登记。已登记的信息，后续剧情不得重复生成“首次获知/得知该信息”的表述——剧本推进到相关情节时应体现角色已经掌握该信息（基于信息行动、决策、回应），而不是重新交代获知过程；首次获知本身（何时、从哪里得知）仍应在发生时通过剧情呈现，并同步登记。角色想法（规则 35）可以基于其已知信息生成。
 37. 关系变化维度区分：relationshipChanges 必须明确区分维度——信任（trust：托付秘密、可靠承诺、守约、值得依赖）与好感（affection：心动、亲近、思念、情感依恋）是不同的维度，恐惧（fear）、敌意（hostility）、敬意（respect）同理各自独立。尤其在情侣或暧昧关系深化时，必须判断本次加深的究竟是信任、好感还是两者兼有：两类都加深时分别登记两条变化（各自标注 delta 与 reason），不得笼统写“关系加深”或只改一个维度敷衍了事；每个变化的 reason 必须指向本轮或历史中具体的事件/对话依据（与规则 8 的证据要求一致），不得使用无依据的泛化理由。
 38. 次要人物名录（stateCommit.minorCharacterUpdates）：剧情提到新的次要人物（随口提到的亲人、邻居、路人等未建立人物卡的背景 NPC；主角、主要角色与已建立人物卡的 NPC 不在此登记）时，在本轮 stateCommit.minorCharacterUpdates 中登记：{"operation":"add","name":"名字","relation":"与谁的关系（如 主角二舅）","description":"补充描述（可选）"}。name 不超过 40 字、relation 不超过 80 字、description 不超过 200 字；同轮数组内 name 不得重复。已登记的人物再次被提及或补充信息时用 update 更新（{"operation":"update","name":"原名","relation":"...","description":"..."}，可只带要更新的字段）。上下文 minorCharacters 是剧情中已出现的次要人物名录（只含 name 与 relation），其旁的 minorCharacterNote 与名录同为本轮约束：重提已登记人物时必须沿用名录中的原名，不得改名、混用或张冠李戴（防止长上下文后早期提及被挤出导致名字漂移）；名字变化若剧情需要（化名、改名、隐瞒身份）必须要有事件依据，并在本轮用 update 登记原名与新名字，正文不得直接改用新名字。
+39. 关系定性转化（stateCommit.relationshipChanges[].typeChange）：relationshipType 是关系的定性类型（family 家人、romantic 情侣/恋人、friends 好友、rivals 对手、colleagues 同事/同门、allies 盟友、acquaintances 初识/普通关系、other 其他），区别于 trust/affection 等数值维度（数值维度变化仍按规则 37）。定性转化必须伴随真实剧情事件（写入本轮 events，如调查发现并无血缘关系、告白确立关系、决裂转为对手），不得无事件凭空改写类型。typeChange 结构：{"to":"转化后类型","reason":"转化原因（≤300 字符，必须指向本轮或历史中具体的事件/对话依据，与规则 8 的证据要求一致）","note":"补充说明（可选，≤200 字符）"}。转化后互动方式随之改变：姐弟相处与情侣相处的言谈、边界与亲近尺度不同，须按新类型呈现后续互动；转化历史保持——"曾是姐弟"等既往关系性质不因转化被抹去，人物记忆、关系 summary 与后续互动仍可体现。转化与数值变化可同步也可解耦：typeChange 只改变定性类型，系统不会自动增减信任/好感等数值；需要数值变化时仍须按规则 37 单独登记维度变化。
 
 返回结构必须完整：
 {
@@ -874,7 +904,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
   "stateCommit": {
     "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"moment（缺省即时间基本不变；仅剧情实际经过数小时/次日/数日时填 hours/one_day/several_days）","gameTimeDayNext":"跨日剧情必填：本回合结束时的游戏内日期（整数，≥ 当前 gameTimeDay，不得回退；与 timeAdvance 同时提供时以此为准），未跨日省略","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
     "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60},"statuses":[{"id":"wound-1","name":"受伤","kind":"debuff","description":"左臂刀伤未愈合","expiresAtDay":5}],"knownFacts":[{"id":"fact-1","content":"该角色已经知道的信息（约 300 字内）"}]},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
-    "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"]}],
+    "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"],"typeChange":{"to":"friends","reason":"定性转化原因","note":"补充说明（可选）"}}],
     "characterCardChanges": [{"characterId":"角色ID","operation":"add","path":"允许路径","value":{},"reason":"原因","evidence":["事件或对话ID"],"sourceTurnId":"${turnId}"}],
     "worldBookChanges": [],
     "plotThreadUpdates": [],

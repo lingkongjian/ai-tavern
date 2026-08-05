@@ -119,6 +119,51 @@ test("accepts legacy affinity alias as affection for initial relationships", () 
   );
 });
 
+test("initial relationship type: enum validation and acquaintances default", () => {
+  // 合法类型透传
+  const withType = parseStartAdventureInput({
+    ...validInput,
+    initialRelationships: [
+      {
+        sourceCharacterName: "沈砚",
+        targetCharacterName: "伊芙琳",
+        type: "family",
+      },
+    ],
+  });
+  assert.equal(withType.initialRelationships?.[0].type, "family");
+
+  // 缺省：不输出 type（物化时按 acquaintances 处理）
+  const withoutType = parseStartAdventureInput({
+    ...validInput,
+    initialRelationships: [
+      {
+        sourceCharacterName: "沈砚",
+        targetCharacterName: "伊芙琳",
+      },
+    ],
+  });
+  assert.equal(withoutType.initialRelationships?.[0].type, undefined);
+
+  // 非法枚举拒绝
+  assert.throws(
+    () =>
+      parseStartAdventureInput({
+        ...validInput,
+        initialRelationships: [
+          {
+            sourceCharacterName: "沈砚",
+            targetCharacterName: "伊芙琳",
+            type: "siblings",
+          },
+        ],
+      }),
+    (error) =>
+      error instanceof AdventureInputError &&
+      error.issues.some((issue) => issue.includes("type")),
+  );
+});
+
 test("validates and materializes initial statuses for each character", () => {
   const withStatuses = parseStartAdventureInput({
     ...validInput,
@@ -708,6 +753,66 @@ test("开局物化 initialRelationships：玩家→其他角色声明值不被�
     assert.equal(playerMain.trust, 0);
     assert.equal(playerMain.affinity, 0);
     assert.equal(playerMain.summary, "关系尚未建立");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("initial relationships materialize relationshipType: declared type and default acquaintances", async () => {
+  const temporaryDirectory = mkdtempSync(
+    join(tmpdir(), "ai-tavern-opening-relation-types-"),
+  );
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure(
+      parseStartAdventureInput({
+        ...validInput,
+        additionalCharacters: [
+          ...validInput.additionalCharacters,
+          { name: "陆远", role: "酒馆常客", personality: "沉默寡言。" },
+        ],
+        initialRelationships: [
+          {
+            sourceCharacterName: "沈砚",
+            targetCharacterName: "米洛",
+            type: "family",
+            dimensions: { trust: 45 },
+            summary: "多年姐弟，虽失散却仍有亲情。",
+          },
+        ],
+      }),
+    );
+    const states = store.loadAdventure(started.sessionId).branchState.states;
+    const byPair = new Map(
+      states
+        .filter((state) => state.entityType === "relationship")
+        .map((state) => [
+          `${state.state.sourceCharacterId}:${state.state.targetCharacterId}`,
+          state.state,
+        ]),
+    );
+    const miloId = started.additionalCharacterIds[0];
+    const luYuanId = started.additionalCharacterIds[1];
+
+    // 声明方向与自动补建的反向：类型一致（family）
+    const playerMilo = byPair.get(`${started.playerCharacterId}:${miloId}`);
+    assert.equal(playerMilo.relationshipType, "family");
+    const miloPlayer = byPair.get(`${miloId}:${started.playerCharacterId}`);
+    assert.equal(miloPlayer.relationshipType, "family");
+
+    // 未声明的零值关系（玩家→陆远、玩家→主要角色）：缺省 acquaintances
+    const playerLuYuan = byPair.get(`${started.playerCharacterId}:${luYuanId}`);
+    assert.equal(playerLuYuan.relationshipType, "acquaintances");
+    const playerMain = byPair.get(
+      `${started.playerCharacterId}:${started.mainCharacterId}`,
+    );
+    assert.equal(playerMain.relationshipType, "acquaintances");
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
