@@ -1857,7 +1857,7 @@ test("端到端：日期推进跨过约定日后，下一回合提示注入 dueA
     const started = startP1Adventure(store);
 
     // 第 1 日登记约定 atDay=3，随后两回合各推进一天（第 3 日到期）
-    for (const [index, turn] of [
+    for (const [, turn] of [
       {
         idempotencyKey: "request-appt-e2e-register",
         turnId: "turn-appt-e2e-register",

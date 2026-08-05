@@ -718,6 +718,9 @@ export function GameInterface({
   const [regenerationError, setRegenerationError] = useState("");
   const [regenerationPanelOpen, setRegenerationPanelOpen] = useState(false);
   const [regenerationFeedback, setRegenerationFeedback] = useState("");
+  const [regenerationMode, setRegenerationMode] = useState<
+    "standard" | "time_fix"
+  >("standard");
   const [viewedTurn, setViewedTurn] = useState<LoadedTurn | null>(
     initialAdventure.branchState.recentTurns.at(-1) ?? null,
   );
@@ -855,6 +858,7 @@ export function GameInterface({
     turnId: string;
     actionId: string;
     feedback: string;
+    mode: "standard" | "time_fix";
   } | null>(null);
   const pendingContentActions = useRef<
     Partial<
@@ -1411,6 +1415,7 @@ export function GameInterface({
       setRoleplayInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
+      setRegenerationMode("standard");
       pendingRegenerationAction.current = null;
       pendingIdempotencyKey.current = null;
       const nextDirection = body.adventure.branchState.states.find(
@@ -1439,18 +1444,21 @@ export function GameInterface({
       return;
     }
     const feedback = regenerationFeedback.trim();
-    if (!feedback) {
+    const mode = regenerationMode;
+    if (mode === "standard" && !feedback) {
       setRegenerationError("请先说明不满意的地方，或写下希望 AI 如何修改。");
       return;
     }
     if (
       pendingRegenerationAction.current?.turnId !== latestTurn.id ||
-      pendingRegenerationAction.current.feedback !== feedback
+      pendingRegenerationAction.current.feedback !== feedback ||
+      pendingRegenerationAction.current.mode !== mode
     ) {
       pendingRegenerationAction.current = {
         turnId: latestTurn.id,
         actionId: crypto.randomUUID(),
         feedback,
+        mode,
       };
     }
     setRegenerating(true);
@@ -1464,6 +1472,7 @@ export function GameInterface({
           expectedHeadTurnId: latestTurn.id,
           actionId: pendingRegenerationAction.current.actionId,
           feedback,
+          mode,
         },
         (text) => setStreamingChars((current) => current + text.length),
         (profileName) =>
@@ -1498,6 +1507,7 @@ export function GameInterface({
       setRoleplayInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
+      setRegenerationMode("standard");
       pendingRegenerationAction.current = null;
       const nextDirection = body.adventure.branchState.states.find(
         (state) => state.entityType === "story_direction" && state.isActive,
@@ -1577,6 +1587,7 @@ export function GameInterface({
       setRoleplayInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
+      setRegenerationMode("standard");
       pendingRegenerationAction.current = null;
       pendingIdempotencyKey.current = null;
       const nextDirection = body.adventure.branchState.states.find(
@@ -1650,6 +1661,7 @@ export function GameInterface({
     setRoleplayInput("");
     setRegenerationPanelOpen(false);
     setRegenerationFeedback("");
+    setRegenerationMode("standard");
     pendingIdempotencyKey.current = null;
     pendingRegenerationAction.current = null;
     const nextDirection = body.adventure.branchState.states.find(
@@ -3319,10 +3331,49 @@ export function GameInterface({
                 void regenerateLatestTurn();
               }}
             >
+              <div className="regeneration-mode" role="radiogroup" aria-label="重写模式">
+                <label>
+                  <input
+                    type="radio"
+                    name="regeneration-mode"
+                    checked={regenerationMode === "standard"}
+                    disabled={regenerating}
+                    onChange={() => {
+                      setRegenerationMode("standard");
+                      setRegenerationError("");
+                    }}
+                  />
+                  标准重写
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="regeneration-mode"
+                    checked={regenerationMode === "time_fix"}
+                    disabled={regenerating}
+                    onChange={() => {
+                      setRegenerationMode("time_fix");
+                      setRegenerationError("");
+                    }}
+                  />
+                  日期修正
+                </label>
+              </div>
+              {regenerationMode === "time_fix" ? (
+                <p className="regeneration-mode-hint">
+                  正文暗示时间流逝（次日、数日后等）但游戏内日期未推进时使用：系统会专门引导重写修正日期推进，修改意见可留空。
+                </p>
+              ) : null}
               <label htmlFor="regeneration-feedback">
-                <strong>希望 AI 怎样修改？</strong>
+                <strong>
+                  {regenerationMode === "time_fix"
+                    ? "补充修改意见（可选）"
+                    : "希望 AI 怎样修改？"}
+                </strong>
                 <span>
-                  可具体调整本轮中 AI 控制角色的动作、台词、反应、情节结果、叙述风格或候选选项。
+                  {regenerationMode === "time_fix"
+                    ? "可补充细节，留空则仅修正日期推进。"
+                    : "可具体调整本轮中 AI 控制角色的动作、台词、反应、情节结果、叙述风格或候选选项。"}
                 </span>
               </label>
               <textarea
@@ -3332,7 +3383,11 @@ export function GameInterface({
                 rows={4}
                 disabled={regenerating}
                 autoFocus
-                placeholder="例如：不要让馆长立刻离开。改成她关上门、留下继续盘问玩家，并让旁观者保持沉默。"
+                placeholder={
+                  regenerationMode === "time_fix"
+                    ? "可留空；例如：修正为次日清晨继续调查。"
+                    : "例如：不要让馆长立刻离开。改成她关上门、留下继续盘问玩家，并让旁观者保持沉默。"
+                }
                 onChange={(event) => {
                   setRegenerationFeedback(event.target.value);
                   setRegenerationError("");
@@ -3353,6 +3408,7 @@ export function GameInterface({
                     onClick={() => {
                       setRegenerationPanelOpen(false);
                       setRegenerationFeedback("");
+                      setRegenerationMode("standard");
                       setRegenerationError("");
                       pendingRegenerationAction.current = null;
                     }}
@@ -3362,10 +3418,17 @@ export function GameInterface({
                   <button
                     type="submit"
                     disabled={
-                      submitting || regenerating || !regenerationFeedback.trim()
+                      submitting ||
+                      regenerating ||
+                      (regenerationMode === "standard" &&
+                        !regenerationFeedback.trim())
                     }
                   >
-                    {regenerating ? "正在按意见重写……" : "按此意见重新生成"}
+                    {regenerating
+                      ? "正在按意见重写……"
+                      : regenerationMode === "time_fix"
+                        ? "按日期修正重写"
+                        : "按此意见重新生成"}
                   </button>
                 </div>
               </footer>

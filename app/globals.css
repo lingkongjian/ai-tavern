@@ -3174,6 +3174,29 @@ a {
   font-weight: 500;
 }
 
+.regeneration-mode {
+  display: flex;
+  gap: 16px;
+}
+
+.regeneration-mode > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #a08b7c;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.regeneration-mode > label input[type="radio"] {
+  accent-color: #dc9360;
+}
+
+.regeneration-mode-hint {
+  color: #b9926f !important;
+  margin-top: -6px !important;
+}
+
 .regeneration-panel > label span,
 .regeneration-panel > p,
 .regeneration-panel > footer small {

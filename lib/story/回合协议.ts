@@ -23,6 +23,15 @@ export type RoleplayMode = "speech" | "action" | "mixed";
  */
 export type TimeMode = "story" | "turn_based";
 
+/**
+ * 重生成（重写）模式：
+ * - "standard"（缺省）：普通重写，玩家必须提供修改意见 feedback；
+ * - "time_fix"：日期修正模式——玩家发现正文暗示时间流逝（次日、数日后等）
+ *   但游戏内日期未推进时使用，feedback 允许为空；系统注入日期修正指令，
+ *   并把正文时间短语一致性警告升级为校验错误，确保重写真正解决时间问题。
+ */
+export type RegenerateRewriteMode = "standard" | "time_fix";
+
 /** 五回合一天模式的五个时段（按顺序每回合推进一个）。 */
 export const DAY_PHASES = ["早上", "上午", "中午", "下午", "晚上"] as const;
 
@@ -79,6 +88,7 @@ export interface RegenerateTurnRequest {
   expectedHeadTurnId: string;
   actionId: string;
   feedback: string;
+  mode: RegenerateRewriteMode;
 }
 
 export interface GeneratedEvent {
@@ -401,11 +411,23 @@ export function parseRegenerateTurnRequest(value: unknown): RegenerateTurnReques
   const expectedHeadTurnId = trimText(value.expectedHeadTurnId, 120);
   const actionId = trimText(value.actionId, 120);
   const feedback = trimText(value.feedback, 1_000);
+  let mode: RegenerateRewriteMode = "standard";
+  if (value.mode === undefined || value.mode === null || value.mode === "standard") {
+    mode = "standard";
+  } else if (value.mode === "time_fix") {
+    mode = "time_fix";
+  } else {
+    issues.push("重写模式 mode 必须是 standard 或 time_fix。");
+  }
   if (!expectedHeadTurnId) issues.push("缺少要重新生成的最新回合 ID。");
   if (!actionId) issues.push("缺少重新生成请求标识。");
-  if (!feedback) issues.push("请说明对当前剧情不满意的地方或希望如何修改。");
+  // standard 模式必须提供修改意见；time_fix 模式本身说明问题（日期应变更但没变更），
+  // 修改意见可留空（可补充细节），为空时系统按纯日期修正目标重写。
+  if (mode !== "time_fix" && !feedback) {
+    issues.push("请说明对当前剧情不满意的地方或希望如何修改。");
+  }
   if (issues.length > 0) throw new RegenerateTurnInputError(issues);
-  return { expectedHeadTurnId, actionId, feedback };
+  return { expectedHeadTurnId, actionId, feedback, mode };
 }
 
 function requiredObject(
@@ -870,19 +892,21 @@ function collectTimePhraseConsistencyWarnings(input: {
     sceneTransition?.timeAdvance === "several_days";
   if (dateDeclared) return warnings;
 
-  let matchedPhrase: string | undefined;
-  for (const pattern of DAY_CROSSING_TIME_PHRASE_PATTERNS) {
-    const match = pattern.exec(narrativeText);
-    if (match) {
-      matchedPhrase = match[0];
-      break;
-    }
-  }
+  const matchedPhrase = findDayCrossingTimePhrase(narrativeText);
   if (!matchedPhrase) return warnings;
   warnings.push(
     `正文出现时间流逝短语「${matchedPhrase}」但本轮游戏内日期未推进（sceneTransition 未提供 gameTimeDayNext 且 timeAdvance 为 moment/hours/缺省）。若剧情确实跨日（如"次日""数日后"），请通过 sceneTransition.gameTimeDayNext 显式声明本回合结束日期（整数，≥ 当前游戏内日期），或改用 timeAdvance 表示时间幅度；若只是同日内的时间描写，可忽略本提醒。`,
   );
   return warnings;
+}
+
+/** 在正文（scene + 事件摘要）中寻找跨日时间流逝短语，返回命中的短语原文；未命中返回 undefined。 */
+function findDayCrossingTimePhrase(narrativeText: string): string | undefined {
+  for (const pattern of DAY_CROSSING_TIME_PHRASE_PATTERNS) {
+    const match = pattern.exec(narrativeText);
+    if (match) return match[0];
+  }
+  return undefined;
 }
 
 /**
@@ -986,7 +1010,7 @@ export function validateGeneratedTurn(
   value: JsonObject,
   adventure: LoadedAdventure,
   turnId: string,
-  options: { timeMode?: TimeMode } = {},
+  options: { timeMode?: TimeMode; rewriteMode?: RegenerateRewriteMode } = {},
 ): ValidatedGeneratedTurn {
   const issues: string[] = [];
   const normalizationWarnings: string[] = [];
@@ -2131,15 +2155,28 @@ export function validateGeneratedTurn(
     normalizationWarnings.push(warning);
   }
 
-  // 时间短语一致性检测（警告级）：正文暗示跨日/跨夜但本轮未声明日期推进 → 提醒，不拒绝回合。
+  // 时间短语一致性检测：正文暗示跨日/跨夜但本轮未声明日期推进 → 提醒，不拒绝回合。
   // 五回合一天模式下日期由系统按回合推导（模型声明会被忽略），该警告没有意义，不触发。
+  // 日期修正重写（rewriteMode=time_fix）专为"正文暗示时间流逝但日期未推进"而生，
+  // 若重写结果仍触发该警告，说明时间问题没有被解决，升级为校验错误走修复重试。
   if (options.timeMode !== "turn_based") {
-    for (const warning of collectTimePhraseConsistencyWarnings({
+    const timeWarnings = collectTimePhraseConsistencyWarnings({
       scene,
       events,
       sceneTransition,
-    })) {
-      normalizationWarnings.push(warning);
+    });
+    if (options.rewriteMode === "time_fix" && timeWarnings.length > 0) {
+      const matchedPhrase =
+        findDayCrossingTimePhrase(
+          [scene, ...events.map((event) => event.summary)].join("\n"),
+        ) ?? "次日/数日后";
+      issues.push(
+        `日期修正重写失败：正文仍出现时间流逝短语「${matchedPhrase}」但游戏内日期未推进（sceneTransition 未提供 gameTimeDayNext 且 timeAdvance 为 moment/hours/缺省）。本次重写的专项目标就是修正时间推进：若剧情确实跨日，必须设置 sceneTransition.gameTimeDayNext（整数，≥ 当前第 ${currentGameTimeDay} 天）使正文时间描写与游戏内日期一致（如正文写"次日"则 gameTimeDayNext = 当前日 + 1）；若正文本不应有时间流逝，必须改写正文，移除或修正该时间流逝短语。`,
+      );
+    } else {
+      for (const warning of timeWarnings) {
+        normalizationWarnings.push(warning);
+      }
     }
   }
 

@@ -92,8 +92,9 @@ export async function POST(
         expectedHeadTurnId: input.expectedHeadTurnId,
         actionId: input.actionId,
         feedback: input.feedback,
+        mode: input.mode,
       });
-      return noStoreJson(result, { status: 200 });
+      return noStoreJson({ ...result, mode: input.mode }, { status: 200 });
     }
 
     const stream = new ReadableStream<Uint8Array>({
@@ -105,12 +106,14 @@ export async function POST(
             expectedHeadTurnId: input.expectedHeadTurnId,
             actionId: input.actionId,
             feedback: input.feedback,
+            mode: input.mode,
             onStreamDelta: (text) => sseEvent(controller, "delta", { text }),
             onFailover: (profileName) =>
               sseEvent(controller, "failover", { profileName }),
           });
           sseEvent(controller, "result", {
             status: 200,
+            mode: input.mode,
             adventure: result.adventure,
             replacedTurn: result.replacedTurn,
             generation: result.generation,
