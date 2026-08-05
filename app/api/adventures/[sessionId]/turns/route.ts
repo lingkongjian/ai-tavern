@@ -134,8 +134,11 @@ export async function POST(
             sessionId,
             input,
             onStreamDelta: (text) => sseEvent(controller, "delta", { text }),
-            onFailover: (profileName) =>
-              sseEvent(controller, "failover", { profileName }),
+            onFailover: ({ id, name }) =>
+              sseEvent(controller, "failover", {
+                profileId: id,
+                profileName: name,
+              }),
           });
           sseEvent(controller, "result", {
             status:

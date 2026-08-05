@@ -686,6 +686,7 @@ export function GameInterface({
     if (apiSwitching || profileId === apiActiveId) return;
     setApiSwitching(true);
     setApiSwitchError("");
+    setFailoverNotice("");
     try {
       const response = await fetch("/api/settings/ai", {
         method: "POST",
@@ -1288,7 +1289,7 @@ export function GameInterface({
     url: string,
     body: unknown,
     onDelta: (text: string) => void,
-    onFailover?: (profileName: string) => void,
+    onFailover?: ({ id, name }: { id: string; name: string }) => void,
   ): Promise<AdvanceTurnResponse> {
     const response = await fetch(url, {
       method: "POST",
@@ -1338,8 +1339,12 @@ export function GameInterface({
       const record = payload as Record<string, unknown>;
       if (event === "delta" && typeof record.text === "string") {
         onDelta(record.text);
-      } else if (event === "failover" && typeof record.profileName === "string") {
-        onFailover?.(record.profileName);
+      } else if (
+        event === "failover" &&
+        typeof record.profileId === "string" &&
+        typeof record.profileName === "string"
+      ) {
+        onFailover?.({ id: record.profileId, name: record.profileName });
       } else if (event === "result") {
         pendingResult = payload as AdvanceTurnResponse;
       } else if (event === "error") {
@@ -1395,10 +1400,12 @@ export function GameInterface({
           storyDirection: directionInput.trim(),
         },
         (text) => setStreamingChars((current) => current + text.length),
-        (profileName) =>
+        ({ id, name }) => {
+          setApiActiveId(id);
           setFailoverNotice(
-            `当前 API 生成失败，已自动切换到备用配置“${profileName}”。`,
-          ),
+            `已自动切换并启用备用配置“${name}”，后续回合将使用该配置，可在顶栏重新选择。`,
+          );
+        },
       );
       if (!body.adventure) throw new Error("生成本轮剧情失败。");
       if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
@@ -1487,10 +1494,12 @@ export function GameInterface({
           mode,
         },
         (text) => setStreamingChars((current) => current + text.length),
-        (profileName) =>
+        ({ id, name }) => {
+          setApiActiveId(id);
           setFailoverNotice(
-            `当前 API 生成失败，已自动切换到备用配置“${profileName}”。`,
-          ),
+            `已自动切换并启用备用配置“${name}”，后续回合将使用该配置，可在顶栏重新选择。`,
+          );
+        },
       );
       if (!body.adventure) throw new Error("重新生成最新剧情失败。");
       if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {

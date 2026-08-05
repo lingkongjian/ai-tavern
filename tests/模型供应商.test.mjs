@@ -16,6 +16,7 @@ import {
   discoverAiModels,
 } from "../lib/ai/模型可用性.ts";
 import { generateWithProfileFailover } from "../lib/story/回合服务.ts";
+import { getActiveAiProfileSync } from "../lib/ai/活动配置.ts";
 import {
   deleteAiProviderConfig,
   listAiProfiles,
@@ -642,15 +643,190 @@ test("generation falls back to alternate API profiles when the active one fails"
             ],
           });
         },
-        onFailover: (name) => failovers.push(name),
+        onFailover: ({ id, name }) => failovers.push({ id, name }),
       },
     );
 
+    const backupId = (await listAiProfiles({ filePath: profilesFile })).profiles[0].id;
     assert.deepEqual(result.content, { status: "ok" });
-    assert.deepEqual(failovers, ["备用 API"]);
+    assert.deepEqual(failovers, [{ id: backupId, name: "备用 API" }]);
     assert.equal(requestedEndpoints.length, 2);
     assert.match(requestedEndpoints[1], /backup\.example/);
     assert.equal(requestedKeys[1], "Bearer backup-secret");
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+    restoreEnvironment();
+  }
+});
+
+test("failover persistently activates the backup profile for later requests", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "ai-tavern-failover-persist-"),
+  );
+  const configFile = path.join(temporaryDirectory, "模型.env");
+  const profilesFile = path.join(temporaryDirectory, "api-configs.json");
+  try {
+    process.env.AI_TAVERN_CONFIG_FILE = configFile;
+    process.env.AI_TAVERN_DATA_DIR = temporaryDirectory;
+    await saveAiProfile(
+      {
+        name: "备用 API",
+        provider: "opencode_go",
+        baseUrl: "https://backup.example/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "backup-secret",
+      },
+      { filePath: profilesFile },
+    );
+    await saveAiProfile(
+      {
+        name: "主用 API",
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "go-secret",
+      },
+      { filePath: profilesFile },
+    );
+    const backupId = (await listAiProfiles({ filePath: profilesFile })).profiles[0].id;
+
+    const fetchFor = () =>
+      async (url) => {
+        if (String(url).includes("opencode.ai")) {
+          throw new AiRequestError("服务暂时不可用", 503);
+        }
+        return Response.json({
+          model: "deepseek-v4-flash",
+          choices: [
+            { finish_reason: "stop", message: { content: '{"status":"ok"}' } },
+          ],
+        });
+      };
+
+    const firstEndpoints = [];
+    const firstResult = await generateWithProfileFailover(
+      [{ role: "user", content: "返回 JSON" }],
+      {
+        fetchImplementation: async (url) => {
+          firstEndpoints.push(String(url));
+          return fetchFor()(url);
+        },
+      },
+    );
+    assert.deepEqual(firstResult.content, { status: "ok" });
+    assert.equal(firstEndpoints.length, 2);
+    assert.equal(getActiveAiProfileSync()?.id, backupId);
+
+    const nextEndpoints = [];
+    const nextResult = await generateWithProfileFailover(
+      [{ role: "user", content: "返回 JSON" }],
+      {
+        fetchImplementation: async (url) => {
+          nextEndpoints.push(String(url));
+          return fetchFor()(url);
+        },
+      },
+    );
+    assert.deepEqual(nextResult.content, { status: "ok" });
+    assert.equal(nextEndpoints.length, 1);
+    assert.match(nextEndpoints[0], /backup\.example/);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+    restoreEnvironment();
+  }
+});
+
+test("failover keeps the active profile when every backup fails", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "ai-tavern-failover-all-down-"),
+  );
+  const configFile = path.join(temporaryDirectory, "模型.env");
+  const profilesFile = path.join(temporaryDirectory, "api-configs.json");
+  try {
+    process.env.AI_TAVERN_CONFIG_FILE = configFile;
+    process.env.AI_TAVERN_DATA_DIR = temporaryDirectory;
+    await saveAiProfile(
+      {
+        name: "备用 API",
+        provider: "opencode_go",
+        baseUrl: "https://backup.example/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "backup-secret",
+      },
+      { filePath: profilesFile },
+    );
+    await saveAiProfile(
+      {
+        name: "主用 API",
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "go-secret",
+      },
+      { filePath: profilesFile },
+    );
+    const profiles = await listAiProfiles({ filePath: profilesFile });
+    const mainId = profiles.profiles[1].id;
+    const failovers = [];
+
+    await assert.rejects(
+      () =>
+        generateWithProfileFailover([{ role: "user", content: "返回 JSON" }], {
+          fetchImplementation: async () => {
+            throw new AiRequestError("全部不可用", 503);
+          },
+          onFailover: ({ id, name }) => failovers.push({ id, name }),
+        }),
+      (error) => error instanceof AiRequestError && error.message.includes("无法连接"),
+    );
+
+    assert.deepEqual(failovers, []);
+    assert.equal(getActiveAiProfileSync()?.id, mainId);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+    restoreEnvironment();
+  }
+});
+
+test("failover does not trigger with a single profile", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "ai-tavern-failover-single-"),
+  );
+  const configFile = path.join(temporaryDirectory, "模型.env");
+  const profilesFile = path.join(temporaryDirectory, "api-configs.json");
+  try {
+    process.env.AI_TAVERN_CONFIG_FILE = configFile;
+    process.env.AI_TAVERN_DATA_DIR = temporaryDirectory;
+    await saveAiProfile(
+      {
+        name: "唯一配置",
+        provider: "opencode_go",
+        baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+        model: "deepseek-v4-flash",
+        jsonMode: "response_format",
+        apiKey: "go-secret",
+      },
+      { filePath: profilesFile },
+    );
+    const failovers = [];
+
+    await assert.rejects(
+      () =>
+        generateWithProfileFailover([{ role: "user", content: "返回 JSON" }], {
+          fetchImplementation: async () => {
+            throw new AiRequestError("服务暂时不可用", 503);
+          },
+          onFailover: ({ id, name }) => failovers.push({ id, name }),
+        }),
+      (error) => error instanceof AiRequestError && error.message.includes("无法连接"),
+    );
+
+    assert.deepEqual(failovers, []);
+    assert.equal(getActiveAiProfileSync()?.name, "唯一配置");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
     restoreEnvironment();

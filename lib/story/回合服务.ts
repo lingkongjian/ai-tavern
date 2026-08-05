@@ -12,7 +12,10 @@ import {
   getActiveAiProfileSync,
   type ActiveAiProfile,
 } from "../ai/活动配置.ts";
-import { listProfileRecords } from "../ai/模型配置文件.ts";
+import {
+  activateAiProfile,
+  listProfileRecords,
+} from "../ai/模型配置文件.ts";
 import {
   detectSceneRepetitionAgainstRecent,
   repetitionFixInstruction,
@@ -60,6 +63,11 @@ export type StoryJsonGenerator = (
   messages: AiMessage[],
 ) => Promise<AiJsonResult>;
 
+export interface FailoverProfileInfo {
+  id: string;
+  name: string;
+}
+
 function isFailoverTrigger(error: unknown) {
   return error instanceof AiRequestError || error instanceof AiResponseError;
 }
@@ -78,7 +86,7 @@ export async function generateWithProfileFailover(
   messages: AiMessage[],
   options: {
     onStreamDelta?: (text: string) => void;
-    onFailover?: (profileName: string) => void;
+    onFailover?: (target: FailoverProfileInfo) => void;
     fetchImplementation?: typeof fetch;
     timeoutMs?: number;
   } = {},
@@ -106,8 +114,7 @@ export async function generateWithProfileFailover(
   );
   for (const profile of alternates) {
     try {
-      options.onFailover?.(profile.name);
-      return options.onStreamDelta
+      const result = options.onStreamDelta
         ? await requestAiJsonStream(messages, {
             config: profileAsConfigInput(profile),
             onDelta: options.onStreamDelta,
@@ -119,6 +126,15 @@ export async function generateWithProfileFailover(
             fetchImplementation: options.fetchImplementation,
             timeoutMs: options.timeoutMs,
           });
+      // 备用请求成功后持久切换活动配置：后续回合（含校验修复重试）都从备用开始，
+      // 直到用户手动切回。持久化失败只记录，不影响本轮回合结果。
+      try {
+        await activateAiProfile(profile.id);
+      } catch (activationError) {
+        console.error("自动切换备用 API 配置持久化失败", activationError);
+      }
+      options.onFailover?.({ id: profile.id, name: profile.name });
+      return result;
     } catch (error) {
       lastError = error;
     }
@@ -128,7 +144,7 @@ export async function generateWithProfileFailover(
 
 export function defaultStoryGenerator(
   onStreamDelta?: (text: string) => void,
-  onFailover?: (profileName: string) => void,
+  onFailover?: (target: FailoverProfileInfo) => void,
 ): StoryJsonGenerator {
   return (messages) =>
     generateWithProfileFailover(messages, {
@@ -143,7 +159,7 @@ export interface AdvanceTurnOptions {
   input: PlayerTurnRequest;
   generate?: StoryJsonGenerator;
   onStreamDelta?: (text: string) => void;
-  onFailover?: (profileName: string) => void;
+  onFailover?: (target: FailoverProfileInfo) => void;
   createTurnId?: () => string;
 }
 
@@ -157,7 +173,7 @@ export interface RegenerateTurnOptions {
   mode?: RegenerateRewriteMode;
   generate?: StoryJsonGenerator;
   onStreamDelta?: (text: string) => void;
-  onFailover?: (profileName: string) => void;
+  onFailover?: (target: FailoverProfileInfo) => void;
 }
 
 function asNumber(value: JsonValue | undefined) {
