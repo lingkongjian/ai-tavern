@@ -588,6 +588,83 @@ test("旧版完整存档多根分支导入时确定性派生恰好一个主线",
   }
 });
 
+test("次要人物名录实体随完整存档与存档点往返保留", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-minor-archive-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = startArchiveStory(store);
+    store.commitTurn({
+      sessionId: started.sessionId,
+      branchId: started.branchId,
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "minor-archive-root",
+      playerInput: { roleplay: { mode: "action", content: "询问守镜人的家人" } },
+      generatedOutput: { schemaVersion: "1.0.0", scene: "守镜人提到她的二舅。" },
+      summaryPatch: "守镜人提起二舅周正国。",
+      events: [
+        { id: "archive-event-minor", eventType: "family_mentioned", summary: "守镜人提到二舅" },
+      ],
+      stateMutations: [
+        {
+          entityType: "minor_character",
+          entityId: "npc:周正国",
+          operation: "replace",
+          value: {
+            name: "周正国",
+            relation: "守镜人二舅",
+            firstMentionedTurnId: "archive-turn-minor",
+            lastMentionedTurnId: "archive-turn-minor",
+          },
+          reason: "剧情提到了守镜人的二舅",
+          evidence: ["archive-event-minor"],
+        },
+      ],
+    });
+    const manualSave = store.createSavePoint(started.sessionId, "二舅名录存档");
+
+    // 存档点恢复：decodeSnapshotStates 白名单包含 minor_character
+    const restored = store.restoreSavePoint(started.sessionId, manualSave.id);
+    assert.equal(restored.branchId, started.branchId);
+    const afterRestore = store.loadAdventure(started.sessionId);
+    assert.ok(
+      afterRestore.branchState.states.some(
+        (state) =>
+          state.entityType === "minor_character" &&
+          state.entityId === "npc:周正国" &&
+          state.state.relation === "守镜人二舅",
+      ),
+    );
+
+    // 完整存档导出：materialized_states 保留 minor_character 行
+    const archive = exportCompleteAdventure(database, started.sessionId);
+    const minorRows = archive.data.materialized_states.filter(
+      (row) => row.entity_type === "minor_character",
+    );
+    assert.equal(minorRows.length, 1);
+    assert.equal(minorRows[0].entity_id, "npc:周正国");
+    assert.equal(JSON.parse(minorRows[0].state_json).firstMentionedTurnId, "archive-turn-minor");
+
+    // 导入隔离副本后实体保留
+    const imported = importCompleteAdventure(database, archive);
+    const importedAdventure = store.loadAdventure(imported.sessionId);
+    const importedEntry = importedAdventure.branchState.states.find(
+      (state) =>
+        state.entityType === "minor_character" && state.entityId === "npc:周正国",
+    );
+    assert.ok(importedEntry);
+    assert.equal(importedEntry.state.name, "周正国");
+    assert.equal(importedEntry.state.relation, "守镜人二舅");
+    assert.equal(importedEntry.state.firstMentionedTurnId, "archive-turn-minor");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("整库备份可恢复并在恢复前自动留下安全副本", () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-backup-"));
   const previousDataDirectory = process.env.AI_TAVERN_DATA_DIR;

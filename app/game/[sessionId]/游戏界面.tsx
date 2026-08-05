@@ -96,6 +96,7 @@ const stateLabels: Record<LoadedStateChange["entityType"], string> = {
   session_state: "场景状态",
   source_document: "原文进度",
   appointment: "约定",
+  minor_character: "次要人物名录",
 };
 
 const operationLabels: Record<LoadedStateChange["operation"], string> = {
@@ -120,6 +121,8 @@ const contextFieldLabels: Record<string, string> = {
   longTermMemory: "召回的长期记忆",
   playerInput: "玩家本轮输入",
   sourceReferences: "召回的原文片段",
+  minorCharacters: "次要人物名录",
+  minorCharacterNote: "次要人物名录规则",
 };
 
 const fieldLabels: Record<string, string> = {

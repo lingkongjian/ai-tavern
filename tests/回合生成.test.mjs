@@ -18,7 +18,7 @@ import {
   collectDivergenceSignals,
   TurnCancelledError,
 } from "../lib/story/回合服务.ts";
-import { createStoryGenerationMessages, createStoryGenerationPrompt } from "../lib/story/剧情提示.ts";
+import { createStoryGenerationMessages, createStoryGenerationPrompt, collectMinorCharacters } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 import { sceneSimilarity } from "../lib/story/重复检测.ts";
 
@@ -4314,3 +4314,355 @@ test("knownFacts 上下文预算：每角色最多 10 条、总字符约 1200、
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+test("minorCharacterUpdates 校验：operation 枚举、name 限长与重复、字段限长", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-minor-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "次要人物协议测试");
+    const adventure = store.loadAdventure(started.sessionId);
+    const base = statusesTestTurn(
+      started,
+      "event-minor-protocol",
+      "守钟人提起她的家人。",
+    );
+    const withUpdates = (updates) => ({
+      ...base,
+      stateCommit: { ...base.stateCommit, minorCharacterUpdates: updates },
+    });
+
+    // 非数组 → 拒绝
+    assert.throws(
+      () => validateGeneratedTurn(withUpdates("周正国"), adventure, "minor-0"),
+      GeneratedTurnValidationError,
+    );
+    // 非法 operation → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withUpdates([{ operation: "delete", name: "周正国" }]),
+          adventure,
+          "minor-1",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("operation")),
+    );
+    // name 为空 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withUpdates([{ operation: "add", name: "" }]),
+          adventure,
+          "minor-2",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("name")),
+    );
+    // name 超过 40 字符 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withUpdates([{ operation: "add", name: "周".repeat(41) }]),
+          adventure,
+          "minor-3",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("40")),
+    );
+    // 同轮数组内 name 重复 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withUpdates([
+            { operation: "add", name: "周正国" },
+            { operation: "update", name: "周正国" },
+          ]),
+          adventure,
+          "minor-4",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("重复")),
+    );
+    // relation 超过 80 字符 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withUpdates([
+            { operation: "add", name: "周正国", relation: "关".repeat(81) },
+          ]),
+          adventure,
+          "minor-5",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("relation")),
+    );
+    // description 超过 200 字符 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withUpdates([
+            { operation: "add", name: "周正国", description: "描".repeat(201) },
+          ]),
+          adventure,
+          "minor-6",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("description")),
+    );
+    // 缺省 → 空数组（名录保持不变）
+    const omitted = validateGeneratedTurn(base, adventure, "minor-7");
+    assert.deepEqual(omitted.stateCommit.minorCharacterUpdates, []);
+    // 合法 add/update → 通过并规范化保留可选字段
+    const valid = validateGeneratedTurn(
+      withUpdates([
+        { operation: "add", name: "周正国", relation: "主角二舅" },
+        { operation: "update", name: "陈婆", description: "守钟人的邻居" },
+      ]),
+      adventure,
+      "minor-8",
+    );
+    assert.deepEqual(valid.stateCommit.minorCharacterUpdates, [
+      { operation: "add", name: "周正国", relation: "主角二舅" },
+      { operation: "update", name: "陈婆", description: "守钟人的邻居" },
+    ]);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("次要人物名录物化：add 建立实体、update 更新、重复 add 走更新语义并注入上下文", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-minor-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "次要人物名录测试");
+
+    // 第一回合：add 登记周正国
+    const turn1 = {
+      ...statusesTestTurn(started, "event-minor-1", "守钟人提到她的二舅。"),
+      stateCommit: {
+        ...statusesTestTurn(started, "event-minor-1", "守钟人提到她的二舅。").stateCommit,
+        minorCharacterUpdates: [
+          { operation: "add", name: "周正国", relation: "主角二舅" },
+        ],
+      },
+    };
+    const result1 = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "minor-turn-1",
+        selectedChoiceId: "opening-neutral",
+      }),
+      createTurnId: () => "turn-minor-1",
+      generate: async () => ({
+        content: turn1,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    let adventure = store.loadAdventure(started.sessionId);
+    let entry = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "minor_character" && state.entityId === "npc:周正国",
+    );
+    assert.ok(entry, "add 后应建立 minor_character 实体");
+    assert.equal(entry.state.name, "周正国");
+    assert.equal(entry.state.relation, "主角二舅");
+    assert.equal(entry.state.firstMentionedTurnId, "turn-minor-1");
+    assert.equal(entry.state.lastMentionedTurnId, "turn-minor-1");
+    // 名录实体不进入可扮演角色目录
+    const context1 = parseStoryContext(
+      createStoryGenerationMessages({
+        adventure,
+        turnId: "turn-minor-2",
+        resolvedPlayerTurn: {
+          playerInput: {},
+          displayMessage: "测试",
+          effectiveStoryDirection: "",
+          previousStoryDirection: "",
+        },
+      })[1].content,
+    );
+    assert.equal(
+      context1.characterDirectory.some((character) => character.name === "周正国"),
+      false,
+    );
+    assert.deepEqual(context1.minorCharacters, [
+      { name: "周正国", relation: "主角二舅" },
+    ]);
+    assert.match(context1.minorCharacterNote, /沿用原名/);
+
+    // 第二回合：update 补充关系信息
+    const turn2 = {
+      ...statusesTestTurn(started, "event-minor-2", "守钟人补充二舅的近况。"),
+      stateCommit: {
+        ...statusesTestTurn(started, "event-minor-2", "守钟人补充二舅的近况。").stateCommit,
+        minorCharacterUpdates: [
+          {
+            operation: "update",
+            name: "周正国",
+            relation: "主角二舅，在城南卖布",
+          },
+        ],
+      },
+    };
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: result1.committedTurn.id,
+        idempotencyKey: "minor-turn-2",
+        customChoice: "继续听守钟人讲家事",
+      }),
+      createTurnId: () => "turn-minor-2",
+      generate: async () => ({
+        content: turn2,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    entry = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "minor_character" && state.entityId === "npc:周正国",
+    );
+    assert.equal(entry.state.relation, "主角二舅，在城南卖布");
+    assert.equal(entry.state.firstMentionedTurnId, "turn-minor-1");
+    assert.equal(entry.state.lastMentionedTurnId, "turn-minor-2");
+
+    // 第三回合：重复 add 同 name（模型误用）→ 更新语义：firstMentioned 保留
+    const turn3 = {
+      ...statusesTestTurn(started, "event-minor-3", "守钟人再次提起二舅。"),
+      stateCommit: {
+        ...statusesTestTurn(started, "event-minor-3", "守钟人再次提起二舅。").stateCommit,
+        minorCharacterUpdates: [
+          { operation: "add", name: "周正国", relation: "主角二舅" },
+        ],
+      },
+    };
+    const result3 = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: "turn-minor-2",
+        idempotencyKey: "minor-turn-3",
+        customChoice: "继续听守钟人讲家事",
+      }),
+      createTurnId: () => "turn-minor-3",
+      generate: async () => ({
+        content: turn3,
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    adventure = store.loadAdventure(started.sessionId);
+    entry = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "minor_character" && state.entityId === "npc:周正国",
+    );
+    assert.equal(entry.state.firstMentionedTurnId, "turn-minor-1");
+    assert.equal(entry.state.lastMentionedTurnId, "turn-minor-3");
+    assert.equal(entry.state.relation, "主角二舅");
+
+    // 后续回合上下文注入名录 + 规则 38 文本
+    const snapshot = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-minor-4",
+      resolvedPlayerTurn: {
+        playerInput: {},
+        displayMessage: "测试",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    assert.match(snapshot.snapshot.systemPrompt, /38\. 次要人物名录/);
+    assert.match(snapshot.snapshot.systemPrompt, /重提已登记人物时必须沿用名录中的原名/);
+    const context = parseStoryContext(snapshot.messages[1].content);
+    assert.deepEqual(context.minorCharacters, [
+      { name: "周正国", relation: "主角二舅" },
+    ]);
+    const minorSection = snapshot.snapshot.diagnostics.sections.find(
+      (section) => section.name === "次要人物名录",
+    );
+    assert.ok(minorSection);
+    assert.equal(minorSection.itemCount, 1);
+    // 名录实体整体随状态变更审计保存
+    assert.ok(
+      result3.committedTurn &&
+        store
+          .loadAdventure(started.sessionId)
+          .branchState.recentTurns.at(-1)
+          .stateChanges.some(
+            (change) =>
+              change.entityType === "minor_character" &&
+              change.entityId === "npc:周正国",
+          ),
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("次要人物名录预算：超 2400 字符时先省略 relation 再截断并在诊断记录", () => {
+  const mkState = (name, relation) => ({
+    entityType: "minor_character",
+    entityId: `npc:${name}`,
+    state: { name, ...(relation ? { relation } : {}) },
+    isActive: true,
+    version: 1,
+    updatedTurnId: "turn-x",
+  });
+  // 少量名录：全部保留 name + relation
+  const small = collectMinorCharacters([
+    mkState("周正国", "主角二舅"),
+    mkState("陈婆", "守钟人邻居"),
+  ]);
+  assert.equal(small.droppedRelations, 0);
+  assert.equal(small.droppedCharacters, 0);
+  assert.deepEqual(small.characters, [
+    { name: "周正国", relation: "主角二舅" },
+    { name: "陈婆", relation: "守钟人邻居" },
+  ]);
+  // 大量名录（relation 很长）：总字符超预算 → 省略全部 relation 保留 name
+  const longRelation = "关".repeat(80);
+  const many = collectMinorCharacters(
+    Array.from({ length: 40 }, (_, index) =>
+      mkState(`人物${index}`, `${longRelation}${index}`),
+    ),
+  );
+  assert.ok(many.droppedRelations > 0);
+  assert.ok(many.characters.length > 0);
+  assert.ok(
+    many.characters.every((entry) => entry.relation === undefined),
+    "超预算时必须省略 relation 只保留 name",
+  );
+  // 更多名录：连 name 也超预算 → 截断并记录 droppedCharacters
+  const huge = collectMinorCharacters(
+    Array.from({ length: 400 }, (_, index) => mkState(`超长名字人物${index}`)),
+  );
+  assert.ok(huge.droppedCharacters > 0);
+  assert.ok(huge.characters.length < 400);
+  assert.equal(
+    huge.characters.length + huge.droppedCharacters,
+    400,
+    "截断只丢弃最早录入的人物，不重复计数",
+  );
+});
+

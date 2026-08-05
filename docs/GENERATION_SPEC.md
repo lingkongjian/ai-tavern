@@ -365,6 +365,10 @@ AI 控制角色提出会显著改变主线的治疗、解封、调查、营救�
 
 `character_state.knownFacts`（可选）记录角色已经知道的重要信息：`[{ id, content }]`（完整数组替换，`null` 清除全部；id 稳定唯一 ≤120 字符、content ≤300 字符）。模型在角色获知重要信息时（对话告知、信件、发现、偷听等）登记到该角色 `knownFacts`；**已登记的信息，后续剧情不得重复生成"首次获知/得知该信息"的表述**——剧本推进到相关情节时应体现角色已掌握信息（基于信息行动、决策、回应），不重复交代获知过程；信息按角色隔离（A 已知不等于 B 已知，除非 B 也获知并登记）。上下文按角色注入已知信息（每角色 ≤10 条、总预算约 1200 字符，超出保留最近登记）。
 
+### 10.6 次要人物名录（minorCharacterUpdates）
+
+剧情中提到的未建人物卡的背景 NPC（随口提到的亲人、邻居、路人等）在 `stateCommit.minorCharacterUpdates` 中**增量登记**：`{ operation: "add" | "update", name, relation?, description? }`（每轮最多 20 条、name ≤40 且同轮不重复、relation ≤80、description ≤200；description 仅登记不注入上下文）。物化为 `minor_character` 实体（entityId `npc:<name>`，含 first/lastMentionedTurnId）；重复 add 按 update 语义保留首次提及。上下文注入 `minorCharacters` 名录（name+relation 全部注入、description 不注入，超 2400 字符预算时按三级降级并在诊断记录），标注"重提必须沿用原名"（规则 38）。名录不进入可扮演角色列表（与 character_card 目录区分）；已登记 NPC 重提必须沿用原名，化名/改名须有事件依据并 update 登记。
+
 ### 10.4 关系变化（relationshipChanges）
 
 `stateCommit.relationshipChanges` 更新角色之间的关系数值：每项包含 `sourceCharacterId`、`targetCharacterId`（均为已存在角色）、`dimension`（`trust`/`affection`/`fear`/`hostility`/`respect`）、`delta`（-100 ~ 100）、`reason` 与 `evidence`。后端按维度对累加并钳制到 -100 ~ 100，自动建立或更新双向关系记录。`evidence` 至少 1 条且必须指向本轮或历史真实事件/对话 ID。关系变化必须**明确区分维度**（规则 37）：信任（trust：托付秘密、可靠承诺、守约）与好感（affection：心动、亲近、思念）是不同维度，情侣/暧昧关系深化时必须判断本次加深的是信任、好感还是两者兼有（兼有时分别登记两条变化，各自 `delta` 与 `reason`），不得笼统"关系加深"；`reason` 必须指向具体事件或对话依据。

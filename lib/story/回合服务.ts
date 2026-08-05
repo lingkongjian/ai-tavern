@@ -1312,6 +1312,45 @@ function createStateMutations(input: {
     }
   }
 
+  // 次要人物名录（minorCharacterUpdates）登记：
+  // - add：名录中不存在该人物时以 replace 建立实体（firstMentionedTurnId/lastMentionedTurnId
+  //   均为本轮）；若已存在（模型重复 add），按 update 语义合并——保留首次提及回合，
+  //   更新 relation/description（仅提供的字段）与 lastMentionedTurnId；
+  // - update：合并 relation/description（仅提供的字段）并更新 lastMentionedTurnId；
+  //   若名录中不存在（模型误用 update 登记新人），按 add 语义建立实体。
+  // 名录与角色卡目录（character_card）区分：只登记未建立人物卡的背景 NPC，
+  // 不进入可扮演角色列表。
+  const minorCharacterStates = adventure.branchState.states.filter(
+    (state) => state.entityType === "minor_character",
+  );
+  const minorCharacterById = new Map(
+    minorCharacterStates.map((state) => [state.entityId, state] as const),
+  );
+  for (const update of generated.stateCommit.minorCharacterUpdates) {
+    const entityId = `npc:${update.name}`;
+    const existing = minorCharacterById.get(entityId);
+    const isNew = !existing;
+    const value: JsonObject = {
+      name: update.name,
+      ...(update.relation !== undefined ? { relation: update.relation } : {}),
+      ...(update.description !== undefined
+        ? { description: update.description }
+        : {}),
+      lastMentionedTurnId: turnId,
+      ...(isNew ? { firstMentionedTurnId: turnId } : {}),
+    };
+    mutations.push({
+      entityType: "minor_character",
+      entityId,
+      operation: isNew ? "replace" : "merge",
+      value,
+      reason: isNew
+        ? `剧情提到了新的次要人物「${update.name}」，登记到名录`
+        : `剧情再次提到/补充了次要人物「${update.name}」，更新名录`,
+      evidence: [firstEvidenceId ?? turnId],
+    });
+  }
+
   const sessionStateForDay = adventure.branchState.states.find(
     (state) => state.entityType === "session_state" && state.entityId === "core",
   );

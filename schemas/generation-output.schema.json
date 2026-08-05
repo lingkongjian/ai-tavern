@@ -265,6 +265,14 @@
         },
         "summaryPatch": {
           "type": "string"
+        },
+        "minorCharacterUpdates": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/minorCharacterUpdate"
+          },
+          "description": "可选：剧情提到新的次要人物（随口提到的亲人、邻居、路人等未建立人物卡的背景 NPC）时 add 登记；已登记人物重提或补充信息时 update。同轮数组内 name 不得重复。"
         }
       }
     },
@@ -810,6 +818,32 @@
         "title": { "$ref": "#/$defs/nonEmptyString" },
         "content": { "$ref": "#/$defs/nonEmptyString" },
         "reason": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "minorCharacterUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "name"],
+      "properties": {
+        "operation": {
+          "enum": ["add", "update"],
+          "description": "add：首次登记新的次要人物；update：已登记人物重提或补充信息。"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString",
+          "maxLength": 40,
+          "description": "次要人物姓名（≤40 字符）。同轮数组内不得重复；已登记人物重提时必须沿用原名。"
+        },
+        "relation": {
+          "$ref": "#/$defs/nonEmptyString",
+          "maxLength": 80,
+          "description": "与谁的关系（如“主角二舅”，≤80 字符），可选。"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString",
+          "maxLength": 200,
+          "description": "补充描述（≤200 字符），可选，不注入上下文（省预算）。"
+        }
       }
     }
   }

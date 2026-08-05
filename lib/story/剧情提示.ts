@@ -113,6 +113,74 @@ function collectCharacterKnownFacts(value: JsonValue | undefined) {
   return result;
 }
 
+/**
+ * 次要人物名录（minor_character）注入：全部名录注入（用户确认），输出
+ * name + relation（简短），description 不注入（省预算）。
+ * 预算处理（总字符 > 2_400 时降级，结果随 diagnostics 记录）：
+ * - 第一级：保留 name + relation；
+ * - 第二级：省略 relation 只保留 name；
+ * - 第三级：按当前顺序保留尽量多的 name（超出预算的条目截断）。
+ * 名录是剧情中已出现的背景 NPC，用于长上下文下保持名字一致性；
+ * 标注“重提时必须沿用原名（不得改名）”由系统提示规则 38 与
+ * context.minorCharacterNote 共同传达。
+ */
+export type MinorCharacterContextEntry = {
+  name: string;
+  relation?: string;
+};
+
+const MINOR_CHARACTER_BUDGET_CHARS = 2_400;
+
+export function collectMinorCharacters(
+  states: LoadedAdventure["branchState"]["states"],
+): {
+  characters: MinorCharacterContextEntry[];
+  droppedRelations: number;
+  droppedCharacters: number;
+} {
+  const entries = states
+    .filter((state) => state.entityType === "minor_character" && state.isActive)
+    .map((state) => ({
+      name: readText(state.state.name),
+      relation: readText(state.state.relation),
+    }))
+    .filter((entry) => entry.name);
+  if (entries.length === 0) {
+    return { characters: [], droppedRelations: 0, droppedCharacters: 0 };
+  }
+  const relationCount = entries.filter((entry) => entry.relation).length;
+  const fits = (items: MinorCharacterContextEntry[]) =>
+    JSON.stringify(items).length <= MINOR_CHARACTER_BUDGET_CHARS;
+  const withRelations: MinorCharacterContextEntry[] = entries.map((entry) => ({
+    name: entry.name,
+    ...(entry.relation ? { relation: entry.relation } : {}),
+  }));
+  if (fits(withRelations)) {
+    return { characters: withRelations, droppedRelations: 0, droppedCharacters: 0 };
+  }
+  const namesOnly: MinorCharacterContextEntry[] = entries.map((entry) => ({
+    name: entry.name,
+  }));
+  if (fits(namesOnly)) {
+    return {
+      characters: namesOnly,
+      droppedRelations: relationCount,
+      droppedCharacters: 0,
+    };
+  }
+  const kept: MinorCharacterContextEntry[] = [];
+  for (const entry of namesOnly) {
+    const candidate = [...kept, entry];
+    if (JSON.stringify(candidate).length > MINOR_CHARACTER_BUDGET_CHARS) break;
+    kept.push(entry);
+  }
+  return {
+    characters: kept,
+    droppedRelations: relationCount,
+    droppedCharacters: namesOnly.length - kept.length,
+  };
+}
+
 export interface ResolvedPlayerTurn {
   playerInput: JsonObject;
   displayMessage: string;
@@ -562,6 +630,13 @@ export function createStoryGenerationPrompt(input: {
     .filter(
       (item): item is NonNullable<typeof item> => item !== null,
     );
+  // 次要人物名录：全部注入（用户确认），输出 name + relation（description 不注入
+  // 省预算）；超出字符预算时先省略 relation 再截断（见 collectMinorCharacters）。
+  const minorCharacterDirectory = collectMinorCharacters(
+    usableStateRecords.filter((state) => state.entityType === "minor_character"),
+  );
+  const minorCharacterNote =
+    "剧情中已出现的次要人物名录（未建立人物卡的背景 NPC）：重提名录中的任何人时必须沿用原名（不得改名、混用或张冠李戴）；名录不参与可扮演角色列表。";
   const relevantCharacterIds = new Set(
     characterDirectory
       .filter(
@@ -780,6 +855,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 35. 角色想法体系：玩家的内心想法来自本轮输入（playerInput.innerThoughts / 上下文 latestPlayerInnerThoughts），仅玩家角色自己知道，其他角色（含 NPC）不可知；AI 控制角色的内心想法在本轮输出 turn.characterThoughts 中表达（每条 {"characterId":"角色ID","content":"内心独白"}，最多 6 条，每条不超过 400 字符；没有则不返回），最近回合的 characterThoughts 会随上下文注入，同为该角色内心独白，其他角色（含玩家角色）不可知。想法是角色的内在动机：影响该角色的言行风格、候选选项倾向与后续行动的一致性；但想法不自动成为言行——言行仍必须通过 scene/events/dialogue 呈现，玩家角色的想法不能替其自动做出言行。任何角色的想法对其他角色不可知：正文、对话、事件中不得直接写出他人想法（读心、心灵感应等必须有剧情事件支撑才可出现），不得把 NPC 的想法当作玩家角色或其他 NPC 已知信息使用，不得用 NPC 想法替玩家角色做决定。
 36. 角色已知信息（character_state.knownFacts）：角色获知重要信息（对话告知、信件、发现、偷听、亲眼所见等）时，在本轮 characterStateChanges 的 patch.knownFacts 中登记：{"id":"稳定唯一ID","content":"该角色已经知道的信息（约 300 字内）"}。knownFacts 是完整数组替换：新增、修改（id 不变）或移除时必须提供包含全部现存条目的新数组；patch.knownFacts=null 表示清除该角色全部已知信息。上下文 characterDirectory 中的 knownFacts 是“该角色已经知道的信息”，按角色隔离：A 已知不等于 B 已知，除非 B 也通过剧情获知并登记。已登记的信息，后续剧情不得重复生成“首次获知/得知该信息”的表述——剧本推进到相关情节时应体现角色已经掌握该信息（基于信息行动、决策、回应），而不是重新交代获知过程；首次获知本身（何时、从哪里得知）仍应在发生时通过剧情呈现，并同步登记。角色想法（规则 35）可以基于其已知信息生成。
 37. 关系变化维度区分：relationshipChanges 必须明确区分维度——信任（trust：托付秘密、可靠承诺、守约、值得依赖）与好感（affection：心动、亲近、思念、情感依恋）是不同的维度，恐惧（fear）、敌意（hostility）、敬意（respect）同理各自独立。尤其在情侣或暧昧关系深化时，必须判断本次加深的究竟是信任、好感还是两者兼有：两类都加深时分别登记两条变化（各自标注 delta 与 reason），不得笼统写“关系加深”或只改一个维度敷衍了事；每个变化的 reason 必须指向本轮或历史中具体的事件/对话依据（与规则 8 的证据要求一致），不得使用无依据的泛化理由。
+38. 次要人物名录（stateCommit.minorCharacterUpdates）：剧情提到新的次要人物（随口提到的亲人、邻居、路人等未建立人物卡的背景 NPC；主角、主要角色与已建立人物卡的 NPC 不在此登记）时，在本轮 stateCommit.minorCharacterUpdates 中登记：{"operation":"add","name":"名字","relation":"与谁的关系（如 主角二舅）","description":"补充描述（可选）"}。name 不超过 40 字、relation 不超过 80 字、description 不超过 200 字；同轮数组内 name 不得重复。已登记的人物再次被提及或补充信息时用 update 更新（{"operation":"update","name":"原名","relation":"...","description":"..."}，可只带要更新的字段）。上下文 minorCharacters 是剧情中已出现的次要人物名录（只含 name 与 relation），其旁的 minorCharacterNote 与名录同为本轮约束：重提已登记人物时必须沿用名录中的原名，不得改名、混用或张冠李戴（防止长上下文后早期提及被挤出导致名字漂移）；名字变化若剧情需要（化名、改名、隐瞒身份）必须要有事件依据，并在本轮用 update 登记原名与新名字，正文不得直接改用新名字。
 
 返回结构必须完整：
 {
@@ -804,6 +880,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
     "plotThreadUpdates": [],
     "plotTriggerUpdates": [],
     "appointments": [{"id":"约定ID","title":"约定标题","description":"约定内容（何时、何地、何事）","characterIds":["参与角色ID"],"atDay":游戏内约定日期}],
+    "minorCharacterUpdates": [{"operation":"add","name":"次要人物名字","relation":"与谁的关系","description":"补充描述（可选）"}],
     "storyDirectionEvaluation": {"status":"active 或 completed","reason":"评估原因","evidence":["完成时必须有证据"],"continuity":"aligned、diverged 或 uncertain","continuityReason":"与预埋剧本的连续性判定","recommendedModuleId":null,"suggestedNextDirection":null,"divergenceState":null},
     "summaryPatch": "用于后续上下文的简短摘要"
   },
@@ -818,7 +895,7 @@ worldBookChanges 按需使用以下结构之一：
 - update：{"operation":"update","targetEntryId":"现有条目ID","patch":{"content":"更新后的事实"},"sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 - deactivate：{"operation":"deactivate","targetEntryId":"现有条目ID","sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 
-没有某类变化时必须返回空数组；turn.characterThoughts 没有则省略（不返回空数组）；stateCommit.appointments 按规则 34 使用：剧情中角色明确约定未来时间点（会面、交易、交付等，非剧本包任务期限）时登记（完整数组替换，null 清除全部约定，省略表示约定保持不变），dueAppointments（约定日已到）出现时本轮必须体现赴约/错过/变故并同步更新 appointments。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
+没有某类变化时必须返回空数组；turn.characterThoughts 没有则省略（不返回空数组）；stateCommit.appointments 按规则 34 使用：剧情中角色明确约定未来时间点（会面、交易、交付等，非剧本包任务期限）时登记（完整数组替换，null 清除全部约定，省略表示约定保持不变），dueAppointments（约定日已到）出现时本轮必须体现赴约/错过/变故并同步更新 appointments。stateCommit.minorCharacterUpdates 按规则 38 使用：剧情提到新的次要人物时 add 登记，已登记人物重提/补充信息时 update（重提必须沿用名录原名，不得改名）；没有次要人物变化时省略该字段。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
 
   const context: JsonObject = {
     ...(latestPlayerRoleplay ? { latestPlayerRoleplay } : {}),
@@ -837,6 +914,9 @@ worldBookChanges 按需使用以下结构之一：
     characterDirectory,
     ...(hiddenCharacterStatuses.length > 0
       ? { hiddenCharacterStatuses }
+      : {}),
+    ...(minorCharacterDirectory.characters.length > 0
+      ? { minorCharacters: minorCharacterDirectory.characters, minorCharacterNote }
       : {}),
     storyModules: storyModulesForGeneration,
     storyModuleProgress: storyModules.map((module) => ({
@@ -950,6 +1030,7 @@ worldBookChanges 按需使用以下结构之一：
   const sectionEntries = [
     ["剧本与会话", { campaign: context.campaign, session: context.session, branch: context.branch }],
     ["人物目录", context.characterDirectory],
+    ["次要人物名录", context.minorCharacters ?? []],
     ["剧情任务", { modules: context.storyModules, progress: context.storyModuleProgress }],
     ["伏笔与触发器", { threads: context.plotThreads ?? [], triggers: context.plotTriggers ?? [] }],
     ["约定", { upcoming: context.appointments ?? [], due: context.dueAppointments ?? [] }],
@@ -1018,10 +1099,23 @@ worldBookChanges 按需使用以下结构之一：
   if (stateTokens >= 5_000) {
     warnings.push("当前状态接近 5200 token 预算上限，低优先级资料可能未进入本轮上下文。");
   }
+  if (minorCharacterDirectory.droppedRelations > 0) {
+    warnings.push(
+      `次要人物名录超出 ${MINOR_CHARACTER_BUDGET_CHARS} 字符预算：已省略全部 relation 保留 name${minorCharacterDirectory.droppedCharacters > 0 ? `，并截断 ${minorCharacterDirectory.droppedCharacters} 个超出预算的名录条目` : ""}。`,
+    );
+  }
   const diagnostics: JsonObject = {
     characterCoverage: characterDiagnostics,
     sections,
     warnings,
+    minorCharacters: {
+      total: minorCharacterDirectory.characters.length
+        + minorCharacterDirectory.droppedCharacters,
+      injected: minorCharacterDirectory.characters.length,
+      budgetChars: MINOR_CHARACTER_BUDGET_CHARS,
+      droppedRelations: minorCharacterDirectory.droppedRelations,
+      droppedCharacters: minorCharacterDirectory.droppedCharacters,
+    },
     truncation: {
       stateBudgetTokens: 5_200,
       selectedStateTokens: stateTokens,

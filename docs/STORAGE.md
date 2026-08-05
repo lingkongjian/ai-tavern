@@ -214,6 +214,8 @@ DeepSeek 每轮返回 `sceneTransition`，其中包含回合结束时的地点�
 
 `character_state.knownFacts`（可选）记录角色已知的重要信息（`id` + `content`，完整数组替换、`null` 清除），随实体序列化、存档版本不变；角色已登记的信息在后续剧情中不重复生成获知表述。
 
+`minor_character` 状态实体记录剧情中提及的次要人物名录（`name`/`relation?`/`description?`/`firstMentionedTurnId`/`lastMentionedTurnId`，entityId `npc:<name>`），由回合输出 `stateCommit.minorCharacterUpdates` 增量登记（add/update，重复 add 按更新保留首次提及），随分支与完整存档整体序列化；名录不进入可扮演角色列表。
+
 `appointment` 状态实体记录剧情中动态产生的约定（`appointmentId`/`title`/`description`/`characterIds`/`atDay`/`status: pending`/`sourceTurnId`），由回合输出 `stateCommit.appointments` 完整数组替换驱动（新增 replace、移除的标记 cancelled 保留历史），随分支与完整存档整体序列化；到期（`atDay` ≤ 当前日期）未处理的约定以 `dueAppointments` 导演提示注入，剧情体现兑现或失效。
 
 `session_state.core` 另有 `timeMode`（`story` 缺省 / `turn_based`）与 `phaseOffset`（缺省 0）字段：`turn_based`（五回合一天）下每个回合固定推进一个时段（`DAY_PHASES[phaseOffset % 5]`：早上/上午/中午/下午/晚上），每 5 回合 `gameTimeDay +1`，`timeAdvance`/`gameTimeDayNext` 被忽略。时间模式在**新建剧本时确定**（开局表单或剧本包 `adventure.timeMode` 可选声明，开局物化写入 `session_state.core.timeMode`、turn_based 时 `phaseOffset: 0`），开局后不可切换。`phaseOffset` 随回合提交写入 `stateChanges`，历史回看可按快照还原当时时段。

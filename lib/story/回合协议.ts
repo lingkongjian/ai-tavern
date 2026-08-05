@@ -182,6 +182,22 @@ export interface GeneratedAppointment {
   atDay: number;
 }
 
+/**
+ * 次要人物名录登记（stateCommit.minorCharacterUpdates）：
+ * 剧情提到新的次要人物（随口提到的亲人、邻居、路人等未建立人物卡的背景 NPC）
+ * 时 add 登记；已登记人物重提或补充信息时 update（同 name 更新 relation/description）。
+ * 名录用于长上下文下保持名字一致性，与角色卡可扮演角色目录区分。
+ */
+export interface GeneratedMinorCharacterUpdate {
+  operation: "add" | "update";
+  /** 次要人物姓名（≤40 字符），同轮数组内不得重复；已登记人物重提时必须沿用原名。 */
+  name: string;
+  /** 与谁的关系（≤80 字符），可选。 */
+  relation?: string;
+  /** 补充描述（≤200 字符），可选，不注入上下文（省预算）。 */
+  description?: string;
+}
+
 export interface GeneratedSceneTransition {
   locationId: string;
   locationName?: string;
@@ -275,6 +291,8 @@ export interface ValidatedGeneratedTurn {
     plotTriggerUpdates: GeneratedPlotTriggerUpdate[];
     /** 剧情约定：undefined=未提供（约定保持不变）、null=清除全部、数组=完整替换。 */
     appointments: GeneratedAppointment[] | null | undefined;
+    /** 次要人物名录登记（可选，无变化时为空数组）。 */
+    minorCharacterUpdates: GeneratedMinorCharacterUpdate[];
     storyDirectionEvaluation: {
       status: "active" | "completed";
       reason: string;
@@ -763,6 +781,66 @@ export function validateAppointmentsArray(
       description: description || "",
       ...(characterIds !== undefined ? { characterIds } : {}),
       atDay: Number.isInteger(atDay) && atDay >= 1 ? atDay : 1,
+    });
+  });
+  return result;
+}
+
+/**
+ * 校验次要人物名录登记数组（stateCommit.minorCharacterUpdates）。
+ * - undefined：未提供，返回空数组（名录保持不变）；
+ * - 数组：逐项校验 operation 枚举（add/update）、name（非空、≤40 字符、
+ *   同轮数组内不重复）、relation（可选 ≤80 字符）、description（可选 ≤200 字符）。
+ * 返回规范化后的登记列表（有校验问题时返回仍可读取的部分，由调用方决定成败）。
+ */
+export function validateMinorCharacterUpdatesArray(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+): GeneratedMinorCharacterUpdate[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    issues.push(`${path} 必须是数组。`);
+    return [];
+  }
+  if (value.length > 20) issues.push(`${path} 每轮最多登记 20 个次要人物。`);
+  const result: GeneratedMinorCharacterUpdate[] = [];
+  const names = new Set<string>();
+  value.slice(0, 20).forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    if (!isObject(item)) {
+      issues.push(`${itemPath} 必须是对象。`);
+      return;
+    }
+    const operation = oneOf(
+      item.operation,
+      ["add", "update"] as const,
+      `${itemPath}.operation`,
+      issues,
+    );
+    const name = readString(item.name).trim();
+    if (!name) {
+      issues.push(`${itemPath}.name 不能为空。`);
+    } else if (name.length > 40) {
+      issues.push(`${itemPath}.name 不能超过 40 个字符。`);
+    } else if (names.has(name)) {
+      issues.push(`${itemPath}.name ${name} 在本轮登记中重复。`);
+    } else {
+      names.add(name);
+    }
+    const relation = readString(item.relation).trim();
+    if (relation.length > 80) {
+      issues.push(`${itemPath}.relation 不能超过 80 个字符。`);
+    }
+    const description = readString(item.description).trim();
+    if (description.length > 200) {
+      issues.push(`${itemPath}.description 不能超过 200 个字符。`);
+    }
+    result.push({
+      operation,
+      name: name || `人物${index + 1}`,
+      ...(relation ? { relation } : {}),
+      ...(description ? { description } : {}),
     });
   });
   return result;
@@ -2047,6 +2125,12 @@ export function validateGeneratedTurn(
     characterIds,
   );
 
+  const minorCharacterUpdates = validateMinorCharacterUpdatesArray(
+    stateCommit.minorCharacterUpdates,
+    "stateCommit.minorCharacterUpdates",
+    issues,
+  );
+
   let storyDirectionEvaluation: ValidatedGeneratedTurn["stateCommit"]["storyDirectionEvaluation"] = null;
   if (stateCommit.storyDirectionEvaluation !== null) {
     const evaluation = requiredObject(
@@ -2419,6 +2503,7 @@ export function validateGeneratedTurn(
       plotThreadUpdates,
       plotTriggerUpdates,
       appointments,
+      minorCharacterUpdates,
       storyDirectionEvaluation,
       summaryPatch,
     },
