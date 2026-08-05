@@ -37,12 +37,14 @@ import {
 import {
   DAY_PHASES,
   GeneratedTurnValidationError,
+  PlayerTurnInputError,
   dayPhaseOf,
   normalizeGeneratedTurnVersion,
   type GeneratedRelationshipTypeChange,
   type GeneratedSceneTransition,
   type PlayerTurnRequest,
   type RegenerateRewriteMode,
+  type SceneMode,
   type SceneTimeAdvance,
   type TimeMode,
   validateGeneratedTurn,
@@ -759,6 +761,8 @@ async function generateValidatedTurn(input: {
   generate: StoryJsonGenerator;
   recentScenes?: string[];
   rewriteMode?: RegenerateRewriteMode;
+  /** 回合场景模式：detail 时校验强制游戏内时间不得推进。 */
+  sceneMode?: SceneMode;
 }) {
   let generation = await input.generate(input.messages);
   generation = {
@@ -798,7 +802,11 @@ async function generateValidatedTurn(input: {
       generation.content,
       input.adventure,
       input.turnId,
-      { timeMode: validationTimeMode, rewriteMode: input.rewriteMode },
+      {
+        timeMode: validationTimeMode,
+        rewriteMode: input.rewriteMode,
+        sceneMode: input.sceneMode,
+      },
     );
     checkRepetition(validated.turn.scene);
   } catch (error) {
@@ -833,7 +841,11 @@ async function generateValidatedTurn(input: {
       generation.content,
       input.adventure,
       input.turnId,
-      { timeMode: validationTimeMode, rewriteMode: input.rewriteMode },
+      {
+        timeMode: validationTimeMode,
+        rewriteMode: input.rewriteMode,
+        sceneMode: input.sceneMode,
+      },
     );
     checkRepetition(validated.turn.scene);
   }
@@ -1728,6 +1740,14 @@ export async function advanceAdventureTurn(
   }
 
   const adventure = store.loadAdventure(sessionId);
+  // 回合场景模式（detail/advance）仅在 story 时间模式可用：turn_based（五回合一天）
+  // 的时间由系统按回合固定推进，场景模式的时间语义与之冲突，入口直接拒绝。
+  // parsePlayerTurnRequest 是纯函数读不到会话状态，因此该防御放在回合服务层。
+  if (input.sceneMode && readSessionTimeMode(adventure) === "turn_based") {
+    throw new PlayerTurnInputError([
+      "回合场景模式（详细描写/场景推进）仅在「剧情驱动」时间模式下可用，当前会话为「五回合一天」模式，无法使用该模式。",
+    ]);
+  }
   if (adventure.branchState.branch.headTurnId !== input.expectedHeadTurnId) {
     throw new BranchHeadConflictError(
       input.expectedHeadTurnId,
@@ -1808,6 +1828,7 @@ export async function advanceAdventureTurn(
     turnId,
     generate,
     ...(recentScenes.length > 0 ? { recentScenes } : {}),
+    sceneMode: input.sceneMode,
   });
   const stateMutations = createStateMutations({
     adventure,

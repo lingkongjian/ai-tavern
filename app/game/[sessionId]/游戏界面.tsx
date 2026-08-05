@@ -768,6 +768,8 @@ export function GameInterface({
   const [roleplayMode, setRoleplayMode] = useState("mixed");
   const [roleplayInput, setRoleplayInput] = useState("");
   const [innerThoughtsInput, setInnerThoughtsInput] = useState("");
+  const [sceneMode, setSceneMode] = useState<"" | "detail" | "advance">("");
+  const [scenePromptInput, setScenePromptInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [streamingChars, setStreamingChars] = useState(0);
@@ -1167,6 +1169,10 @@ export function GameInterface({
     text(displayedTurn?.playerInput.innerThoughts)
       ? `想法：${text(displayedTurn?.playerInput.innerThoughts)}`
       : "",
+    text(displayedTurn?.playerInput.sceneMode) &&
+    text(displayedTurn?.playerInput.scenePrompt)
+      ? `场景（${text(displayedTurn?.playerInput.sceneMode) === "detail" ? "详细描写" : "推进"}）：${text(displayedTurn?.playerInput.scenePrompt)}`
+      : "",
   ].filter(Boolean);
   const initialDirection = text(storyDirection?.content);
   const [directionInput, setDirectionInput] = useState(initialDirection);
@@ -1353,12 +1359,16 @@ export function GameInterface({
     if (change.entityType === "relationship") return "角色关系";
     return change.entityId === "core" ? "当前场景" : change.entityId;
   }
-  const canSubmit = Boolean(
-    selectedChoice ||
-      customChoice.trim() ||
-      roleplayInput.trim() ||
-      directionInput.trim() !== initialDirection,
-  );
+  // 场景模式（detail/advance）仅在 story 时间模式可用；选择场景模式时场景内容
+  // 必填（场景模式单独也可构成有效提交，作为本轮主要内容来源）。
+  const canSubmit =
+    Boolean(
+      selectedChoice ||
+        customChoice.trim() ||
+        roleplayInput.trim() ||
+        (sceneMode && scenePromptInput.trim()) ||
+        directionInput.trim() !== initialDirection,
+    ) && (!sceneMode || scenePromptInput.trim().length > 0);
 
   async function streamTurnRequest(
     url: string,
@@ -1488,6 +1498,8 @@ export function GameInterface({
       setCustomChoice("");
       setRoleplayInput("");
       setInnerThoughtsInput("");
+      setSceneMode("");
+      setScenePromptInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -1530,6 +1542,9 @@ export function GameInterface({
             : undefined,
           innerThoughts: innerThoughtsInput.trim() || undefined,
           storyDirection: directionInput.trim(),
+          ...(sceneMode && scenePromptInput.trim()
+            ? { sceneMode, scenePrompt: scenePromptInput.trim() }
+            : {}),
         },
         (text) => setStreamingChars((current) => current + text.length),
         ({ id, name }) => {
@@ -1566,6 +1581,8 @@ export function GameInterface({
       setCustomChoice("");
       setRoleplayInput("");
       setInnerThoughtsInput("");
+      setSceneMode("");
+      setScenePromptInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -1675,6 +1692,8 @@ export function GameInterface({
       setCustomChoice("");
       setRoleplayInput("");
       setInnerThoughtsInput("");
+      setSceneMode("");
+      setScenePromptInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -4163,6 +4182,97 @@ export function GameInterface({
                       placeholder="角色此刻内心的真实想法（作为内在动机影响角色后续言行，其他角色无从知晓）……"
                     />
                   </label>
+
+                  {timeMode === "story" ? (
+                    <div className="scene-mode-group">
+                      <div
+                        className="scene-mode-options"
+                        role="radiogroup"
+                        aria-label="回合模式"
+                      >
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={sceneMode === ""}
+                          className={
+                            sceneMode === ""
+                              ? "scene-mode-option selected"
+                              : "scene-mode-option"
+                          }
+                          onClick={() => {
+                            setSceneMode("");
+                            setScenePromptInput("");
+                          }}
+                        >
+                          <span>
+                            <b>标准生成</b>
+                            <small>按本轮输入正常推进剧情</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={sceneMode === "detail"}
+                          className={
+                            sceneMode === "detail"
+                              ? "scene-mode-option selected"
+                              : "scene-mode-option"
+                          }
+                          onClick={() => setSceneMode("detail")}
+                        >
+                          <span>
+                            <b>详细描写场景</b>
+                            <small>时间不变动，详细描写你提供的场景</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={sceneMode === "advance"}
+                          className={
+                            sceneMode === "advance"
+                              ? "scene-mode-option selected"
+                              : "scene-mode-option"
+                          }
+                          onClick={() => setSceneMode("advance")}
+                        >
+                          <span>
+                            <b>场景推进</b>
+                            <small>时间推进，以场景为起点描写接下来发生的事</small>
+                          </span>
+                        </button>
+                      </div>
+                      {sceneMode ? (
+                        <label className="game-input scene-prompt-input">
+                          <span>
+                            <b>
+                              {sceneMode === "detail"
+                                ? "详细描写场景"
+                                : "推进场景"}
+                            </b>
+                            <small>
+                              {sceneMode === "detail"
+                                ? "详细展开该场景的环境、人物与氛围，游戏内时间不推进"
+                                : "以该场景为起点推进剧情，时间按剧情自然推进"}
+                            </small>
+                          </span>
+                          <textarea
+                            rows={4}
+                            maxLength={2_000}
+                            value={scenePromptInput}
+                            onChange={(event) =>
+                              setScenePromptInput(event.target.value)
+                            }
+                            placeholder={
+                              sceneMode === "detail"
+                                ? "描述你想仔细描写的场景：环境、在场人物、氛围、感官细节……"
+                                : "描述接下来的场景：以它为起点，继续推进剧情……"
+                            }
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
 
                 {submitError ? (
@@ -4351,7 +4461,7 @@ export function GameInterface({
 
                 <div className="turn-footer">
                   <p>
-                    当前 AI 模型会结合世界书、角色卡、当前状态和三种玩家输入生成下一轮；校验通过后才会整体保存。
+                    当前 AI 模型会结合世界书、角色卡、当前状态和玩家输入生成下一轮；校验通过后才会整体保存。
                   </p>
                   <button
                     className={submitting ? "generating" : ""}

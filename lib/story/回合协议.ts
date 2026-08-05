@@ -32,6 +32,15 @@ export type TimeMode = "story" | "turn_based";
  */
 export type RegenerateRewriteMode = "standard" | "time_fix";
 
+/**
+ * 回合场景模式（仅在 story 时间模式可用；turn_based 五回合一天模式下
+ * 由回合服务层直接拒绝）：
+ * - "detail"（详细描写）：游戏内时间不变动，详细描写玩家提供的场景；
+ * - "advance"（场景推进）：以玩家提供的场景为起点，时间按剧情推进，
+ *   描写接下来要发生的事。
+ */
+export type SceneMode = "detail" | "advance";
+
 /** 五回合一天模式的五个时段（按顺序每回合推进一个）。 */
 export const DAY_PHASES = ["早上", "上午", "中午", "下午", "晚上"] as const;
 
@@ -88,6 +97,14 @@ export interface PlayerTurnRequest {
    */
   innerThoughts?: string;
   storyDirection?: string;
+  /**
+   * 回合场景模式（可选，仅在 story 时间模式可用，turn_based 由服务层拒绝）：
+   * "detail" 详细描写玩家提供的场景（游戏内时间不得推进）；"advance" 以场景
+   * 为起点推进剧情（时间正常推进）。与 scenePrompt 绑定：两者必须同时提供。
+   */
+  sceneMode?: SceneMode;
+  /** 玩家提供的场景（可选，限长 2000）：与 sceneMode 绑定，选模式必有场景。 */
+  scenePrompt?: string;
 }
 
 export interface RegenerateTurnRequest {
@@ -435,6 +452,28 @@ export function parsePlayerTurnRequest(value: unknown): PlayerTurnRequest {
       ? value.innerThoughts.trim().slice(0, 1_000)
       : undefined;
 
+  // 回合场景模式与场景内容：绑定校验——sceneMode 提供时 scenePrompt 必须提供
+  // （反之亦然，选模式必有场景）；sceneMode 枚举非法拒绝；scenePrompt 限长 2000。
+  let sceneMode: SceneMode | undefined;
+  if (value.sceneMode !== undefined && value.sceneMode !== null) {
+    if (value.sceneMode === "detail" || value.sceneMode === "advance") {
+      sceneMode = value.sceneMode;
+    } else {
+      issues.push("回合模式 sceneMode 必须是 detail 或 advance。");
+    }
+  }
+  const scenePrompt =
+    typeof value.scenePrompt === "string"
+      ? value.scenePrompt.trim().slice(0, 2_000)
+      : undefined;
+  if ((sceneMode === undefined) !== (scenePrompt === undefined)) {
+    issues.push(
+      "回合模式与场景必须同时提供：选择详细描写或场景推进时必须填写场景内容，反之亦然。",
+    );
+  } else if (sceneMode !== undefined && !scenePrompt) {
+    issues.push("场景内容不能为空。");
+  }
+
   let roleplay: PlayerTurnRequest["roleplay"];
   if (value.roleplay !== undefined && value.roleplay !== null) {
     if (!isObject(value.roleplay)) {
@@ -452,7 +491,13 @@ export function parsePlayerTurnRequest(value: unknown): PlayerTurnRequest {
     }
   }
 
-  if (!selectedChoiceId && !customChoice && !roleplay && !storyDirectionProvided) {
+  if (
+    !selectedChoiceId &&
+    !customChoice &&
+    !roleplay &&
+    !storyDirectionProvided &&
+    sceneMode === undefined
+  ) {
     issues.push("请至少选择一个候选项，或填写一项玩家输入。");
   }
   if (selectedChoiceId && customChoice) {
@@ -469,6 +514,7 @@ export function parsePlayerTurnRequest(value: unknown): PlayerTurnRequest {
     roleplay,
     ...(innerThoughts ? { innerThoughts } : {}),
     ...(storyDirectionProvided ? { storyDirection } : {}),
+    ...(sceneMode ? { sceneMode, scenePrompt } : {}),
   };
 }
 
@@ -1189,7 +1235,12 @@ export function validateGeneratedTurn(
   value: JsonObject,
   adventure: LoadedAdventure,
   turnId: string,
-  options: { timeMode?: TimeMode; rewriteMode?: RegenerateRewriteMode } = {},
+  options: {
+    timeMode?: TimeMode;
+    rewriteMode?: RegenerateRewriteMode;
+    /** 回合场景模式：detail 时强制游戏内时间不得推进（校验错误，走修复重试）。 */
+    sceneMode?: SceneMode;
+  } = {},
 ): ValidatedGeneratedTurn {
   const issues: string[] = [];
   const normalizationWarnings: string[] = [];
@@ -2468,6 +2519,28 @@ export function validateGeneratedTurn(
       for (const warning of timeWarnings) {
         normalizationWarnings.push(warning);
       }
+    }
+  }
+
+  // 详细描写模式（detail）时间强制（校验错误，走修复重试）：时间不得推进——
+  // timeAdvance 只能为 moment/hours（缺省视为 moment），gameTimeDayNext 不得
+  // 大于当前游戏内日期（等于当前日表示不推进，合法）。
+  if (options.sceneMode === "detail" && sceneTransition) {
+    if (
+      sceneTransition.timeAdvance === "one_day" ||
+      sceneTransition.timeAdvance === "several_days"
+    ) {
+      issues.push(
+        "详细描写模式（detail）下游戏内时间不得推进：sceneTransition.timeAdvance 只能为 moment 或 hours（或省略），不得声明 one_day/several_days。",
+      );
+    }
+    if (
+      sceneTransition.gameTimeDayNext !== undefined &&
+      sceneTransition.gameTimeDayNext > currentGameTimeDay
+    ) {
+      issues.push(
+        `详细描写模式（detail）下游戏内时间不得推进：sceneTransition.gameTimeDayNext 不得大于当前游戏内日期（当前为第 ${currentGameTimeDay} 天）。`,
+      );
     }
   }
 

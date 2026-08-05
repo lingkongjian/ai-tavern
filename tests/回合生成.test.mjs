@@ -18,7 +18,12 @@ import {
   collectDivergenceSignals,
   TurnCancelledError,
 } from "../lib/story/回合服务.ts";
-import { createStoryGenerationMessages, createStoryGenerationPrompt, collectMinorCharacters } from "../lib/story/剧情提示.ts";
+import {
+  createStoryGenerationMessages,
+  createStoryGenerationPrompt,
+  collectMinorCharacters,
+  resolvePlayerTurn,
+} from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
 import { sceneSimilarity } from "../lib/story/重复检测.ts";
 import {
@@ -2202,6 +2207,7 @@ function statusesTestTurn(started, eventId, scene, extra = {}) {
         reason: "旅人与守钟人仍在钟楼石室中。",
         evidence: [eventId],
         ...(extra.timeAdvance ? { timeAdvance: extra.timeAdvance } : {}),
+        ...(extra.gameTimeDayNext ? { gameTimeDayNext: extra.gameTimeDayNext } : {}),
       },
       characterStateChanges: extra.characterStateChanges ?? [],
       relationshipChanges: [],
@@ -5029,6 +5035,437 @@ test("关系定性转化端到端：物化双向同步、审计 from→to、数�
         state.entityId === `${started.playerCharacterId}:${started.mainCharacterId}`,
     );
     assert.equal(importedReverse.state.relationshipType, "romantic");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("场景模式协议校验：sceneMode 与 scenePrompt 绑定、枚举非法拒绝、限长 2000", () => {
+  // sceneMode + scenePrompt 同时提供 → 通过并保留
+  const parsed = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "scene-mode-1",
+    sceneMode: "detail",
+    scenePrompt: "细雨中的钟楼石室，铜钟静静悬着。",
+  });
+  assert.equal(parsed.sceneMode, "detail");
+  assert.equal(parsed.scenePrompt, "细雨中的钟楼石室，铜钟静静悬着。");
+  const advanced = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "scene-mode-2",
+    sceneMode: "advance",
+    scenePrompt: "旅人推开钟楼的侧门。",
+  });
+  assert.equal(advanced.sceneMode, "advance");
+
+  // 只给 sceneMode 没有 scenePrompt → 拒绝（选模式必有场景）
+  assert.throws(
+    () =>
+      parsePlayerTurnRequest({
+        expectedHeadTurnId: null,
+        idempotencyKey: "scene-mode-3",
+        sceneMode: "detail",
+      }),
+    (error) =>
+      error instanceof PlayerTurnInputError &&
+      error.issues.some((issue) => issue.includes("同时提供")),
+  );
+  // 只给 scenePrompt 没有 sceneMode → 拒绝（反之亦然）
+  assert.throws(
+    () =>
+      parsePlayerTurnRequest({
+        expectedHeadTurnId: null,
+        idempotencyKey: "scene-mode-4",
+        scenePrompt: "只有场景没有模式。",
+      }),
+    (error) =>
+      error instanceof PlayerTurnInputError &&
+      error.issues.some((issue) => issue.includes("同时提供")),
+  );
+  // sceneMode 枚举非法 → 拒绝
+  assert.throws(
+    () =>
+      parsePlayerTurnRequest({
+        expectedHeadTurnId: null,
+        idempotencyKey: "scene-mode-5",
+        sceneMode: "time_skip",
+        scenePrompt: "场景。",
+      }),
+    (error) =>
+      error instanceof PlayerTurnInputError &&
+      error.issues.some((issue) => issue.includes("sceneMode")),
+  );
+  // sceneMode + 空白 scenePrompt → 拒绝
+  assert.throws(
+    () =>
+      parsePlayerTurnRequest({
+        expectedHeadTurnId: null,
+        idempotencyKey: "scene-mode-6",
+        sceneMode: "detail",
+        scenePrompt: "   ",
+      }),
+    (error) =>
+      error instanceof PlayerTurnInputError &&
+      error.issues.some((issue) => issue.includes("不能为空")),
+  );
+  // scenePrompt 超过 2000 字符截断
+  const long = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "scene-mode-7",
+    sceneMode: "advance",
+    scenePrompt: "景".repeat(2_500),
+  });
+  assert.equal(long.scenePrompt.length, 2_000);
+  // 场景模式 + 场景内容可单独构成有效提交（作为本轮主要内容来源）
+  const standalone = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "scene-mode-8",
+    sceneMode: "detail",
+    scenePrompt: "深夜的钟楼顶，月光穿过破损的天窗。",
+  });
+  assert.equal(standalone.sceneMode, "detail");
+});
+
+test("场景模式上下文注入：resolvePlayerTurn 携带 sceneMode/scenePrompt、显示消息与规则 40", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-scene-context-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "场景上下文测试");
+    const adventure = store.loadAdventure(started.sessionId);
+
+    const resolved = resolvePlayerTurn(adventure, {
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "scene-context-1",
+      sceneMode: "detail",
+      scenePrompt: "黄昏的钟楼石室，潮气在铜钟表面凝成细小的水珠。",
+    });
+    // playerInput 保留场景模式与场景内容（历史回合还原与审计）
+    assert.equal(resolved.playerInput.sceneMode, "detail");
+    assert.equal(
+      resolved.playerInput.scenePrompt,
+      "黄昏的钟楼石室，潮气在铜钟表面凝成细小的水珠。",
+    );
+    assert.match(resolved.displayMessage, /场景（详细描写）：/);
+
+    const snapshot = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-scene-2",
+      resolvedPlayerTurn: resolved,
+    });
+    // 规则 40 注入：场景模式语义
+    assert.match(snapshot.snapshot.systemPrompt, /40\. 场景模式/);
+    assert.match(snapshot.snapshot.systemPrompt, /时间不得推进/);
+    assert.match(snapshot.snapshot.systemPrompt, /advance（场景推进）模式/);
+    // context 顶部高亮分区 latestPlayerScene
+    const context = parseStoryContext(snapshot.messages[1].content);
+    assert.equal(context.latestPlayerScene.mode, "detail");
+    assert.equal(
+      context.latestPlayerScene.content,
+      "黄昏的钟楼石室，潮气在铜钟表面凝成细小的水珠。",
+    );
+    // 玩家输入完整字段同样携带场景
+    assert.equal(context.playerInput.sceneMode, "detail");
+
+    // 无场景模式时不注入 latestPlayerScene，规则 40 仍存在但不影响既有上下文
+    const plain = resolvePlayerTurn(adventure, {
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "scene-context-2",
+      customChoice: "继续调查。",
+    });
+    assert.equal("sceneMode" in plain.playerInput, false, "无场景模式时 playerInput 不写入场景字段");
+    const plainSnapshot = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-scene-3",
+      resolvedPlayerTurn: plain,
+    });
+    const plainContext = parseStoryContext(plainSnapshot.messages[1].content);
+    assert.equal("latestPlayerScene" in plainContext, false);
+    assert.equal(
+      plainSnapshot.snapshot.systemPrompt.includes("40. 场景模式"),
+      true,
+      "规则 40 常驻系统提示（无场景模式时不影响行为）",
+    );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("场景模式 detail 时间强制：timeAdvance 跨日或 gameTimeDayNext 推进 → 校验拒绝，moment/hours/同日通过", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-scene-detail-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "场景模式校验测试");
+    const adventure = store.loadAdventure(started.sessionId);
+
+    function sceneTurn(scene, sceneTransitionExtra) {
+      return {
+        ...statusesTestTurn(started, "event-scene-mode", scene),
+        stateCommit: {
+          ...statusesTestTurn(started, "event-scene-mode", scene).stateCommit,
+          sceneTransition: {
+            ...statusesTestTurn(started, "event-scene-mode", scene).stateCommit
+              .sceneTransition,
+            ...sceneTransitionExtra,
+          },
+        },
+      };
+    }
+
+    // detail + timeAdvance=one_day → 拒绝（走修复重试）
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          sceneTurn("旅人留在钟楼细看铜钟。", { timeAdvance: "one_day" }),
+          adventure,
+          "scene-detail-1",
+          { sceneMode: "detail" },
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some(
+          (issue) =>
+            issue.includes("详细描写模式") && issue.includes("timeAdvance"),
+        ),
+    );
+    // detail + timeAdvance=several_days → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          sceneTurn("旅人数日后才回来。", { timeAdvance: "several_days" }),
+          adventure,
+          "scene-detail-2",
+          { sceneMode: "detail" },
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => issue.includes("详细描写模式")),
+    );
+    // detail + gameTimeDayNext=2（当前第 1 日）→ 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          sceneTurn("旅人修整了一天。", { gameTimeDayNext: 2 }),
+          adventure,
+          "scene-detail-3",
+          { sceneMode: "detail" },
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some(
+          (issue) =>
+            issue.includes("详细描写模式") && issue.includes("gameTimeDayNext"),
+        ),
+    );
+    // detail + timeAdvance=moment → 通过
+    const moment = validateGeneratedTurn(
+      sceneTurn("旅人留在钟楼，细细打量铜钟的纹路。", { timeAdvance: "moment" }),
+      adventure,
+      "scene-detail-4",
+      { sceneMode: "detail" },
+    );
+    assert.equal(moment.stateCommit.sceneTransition.timeAdvance, "moment");
+    // detail + timeAdvance=hours → 通过（同日数小时不推进日期）
+    const hours = validateGeneratedTurn(
+      sceneTurn("两个时辰过去，钟声仍未响起。", { timeAdvance: "hours" }),
+      adventure,
+      "scene-detail-5",
+      { sceneMode: "detail" },
+    );
+    assert.equal(hours.stateCommit.sceneTransition.timeAdvance, "hours");
+    // detail + 未声明时间 → 通过
+    const silent = validateGeneratedTurn(
+      sceneTurn("旅人凝视铜钟上逆流的水滴。", {}),
+      adventure,
+      "scene-detail-6",
+      { sceneMode: "detail" },
+    );
+    assert.equal(silent.stateCommit.sceneTransition.timeAdvance, undefined);
+    // detail + gameTimeDayNext=当前日（不推进）→ 通过
+    const sameDay = validateGeneratedTurn(
+      sceneTurn("旅人留在钟楼。", { gameTimeDayNext: 1 }),
+      adventure,
+      "scene-detail-7",
+      { sceneMode: "detail" },
+    );
+    assert.equal(sameDay.stateCommit.sceneTransition.gameTimeDayNext, 1);
+
+    // advance 模式：时间正常推进，无额外校验（one_day 通过）
+    const advanced = validateGeneratedTurn(
+      sceneTurn("旅人收拾行装踏上旅途。", { timeAdvance: "one_day", gameTimeDayNext: 2 }),
+      adventure,
+      "scene-advance-1",
+      { sceneMode: "advance" },
+    );
+    assert.equal(advanced.stateCommit.sceneTransition.gameTimeDayNext, 2);
+    // 未提供 sceneMode（标准生成）行为完全不变：one_day 照常通过
+    const standard = validateGeneratedTurn(
+      sceneTurn("旅人启程。", { timeAdvance: "one_day", gameTimeDayNext: 2 }),
+      adventure,
+      "scene-standard-1",
+    );
+    assert.equal(standard.stateCommit.sceneTransition.gameTimeDayNext, 2);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("turn_based 会话提交 sceneMode → 回合服务层拒绝；detail 违规输出走修复重试后提交", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-scene-service-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "场景模式服务测试",
+      world: { name: "潮汐城", premise: "钟声会改变潮水方向。" },
+      player: { name: "旅人", description: "寻找失踪同伴的测绘师。" },
+      mainCharacter: {
+        name: "守钟人",
+        role: "钟楼看守",
+        personality: "警觉但守信。",
+        firstMessage: "钟还没有敲响。",
+      },
+      openingScene: "旅人在黄昏来到钟楼。",
+      timeMode: "turn_based",
+    });
+
+    // 1) turn_based 防御：协议层放行（纯函数读不到会话状态），回合服务层拒绝
+    const input = parsePlayerTurnRequest({
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "scene-tb-1",
+      sceneMode: "detail",
+      scenePrompt: "钟楼石室。",
+    });
+    await assert.rejects(
+      advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input,
+        generate: async () => {
+          throw new Error("turn_based 防御不应调用模型");
+        },
+      }),
+      (error) =>
+        error instanceof PlayerTurnInputError &&
+        error.issues.some((issue) => issue.includes("五回合一天")),
+    );
+    const unchanged = store.loadAdventure(started.sessionId);
+    assert.equal(
+      unchanged.branchState.recentTurns.length,
+      1,
+      "turn_based 拒绝后不应新增回合",
+    );
+
+    // 2) story 模式 + detail：首次输出违规（one_day）→ 校验拒绝走修复重试，修复后提交
+    const storyStarted = store.startAdventure({
+      campaignName: "场景模式修复测试",
+      world: { name: "潮汐城", premise: "钟声会改变潮水方向。" },
+      player: { name: "旅人", description: "寻找失踪同伴的测绘师。" },
+      mainCharacter: {
+        name: "守钟人",
+        role: "钟楼看守",
+        personality: "警觉但守信。",
+        firstMessage: "钟还没有敲响。",
+      },
+      openingScene: "旅人在黄昏来到钟楼。",
+    });
+    let generationCalls = 0;
+    const result = await advanceAdventureTurn({
+      store,
+      sessionId: storyStarted.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: storyStarted.openingTurnId,
+        idempotencyKey: "scene-story-1",
+        sceneMode: "detail",
+        scenePrompt: "黄昏的钟楼石室，铜钟静悬，潮气凝珠。",
+      }),
+      createTurnId: () => "turn-scene-story-1",
+      generate: async () => {
+        generationCalls += 1;
+        return {
+          content:
+            generationCalls === 1
+              ? statusesTestTurn(storyStarted, "event-scene-story-1", "旅人留驻钟楼。", {
+                  timeAdvance: "one_day",
+                })
+              : statusesTestTurn(storyStarted, "event-scene-story-1", "旅人留驻钟楼，细看铜钟纹路。", {
+                  timeAdvance: "moment",
+                }),
+          model: "deepseek-test",
+          usage: { totalTokens: 200 },
+        };
+      },
+    });
+    assert.equal(generationCalls, 2, "detail 违规输出应触发一次修复重试");
+    assert.equal(result.committedTurn.id, "turn-scene-story-1");
+    assert.equal(
+      store.loadTurnContextSnapshot(storyStarted.sessionId, "turn-scene-story-1")
+        .repairApplied,
+      true,
+      "detail 违规修复重试应在上下文快照中记录",
+    );
+    const afterDetail = store.loadAdventure(storyStarted.sessionId);
+    const coreAfterDetail = afterDetail.branchState.states.find(
+      (state) => state.entityType === "session_state" && state.entityId === "core",
+    );
+    assert.equal(
+      coreAfterDetail.state.gameTimeDay,
+      1,
+      "detail 模式提交后游戏内日期不应推进",
+    );
+    assert.equal(
+      afterDetail.branchState.recentTurns.at(-1).playerInput.sceneMode,
+      "detail",
+      "历史回合应保存场景模式",
+    );
+    assert.equal(
+      afterDetail.branchState.recentTurns.at(-1).playerInput.scenePrompt,
+      "黄昏的钟楼石室，铜钟静悬，潮气凝珠。",
+    );
+
+    // 3) story 模式 + advance：时间正常推进（gameTimeDayNext=2 → 第 2 日）
+    const advanced = await advanceAdventureTurn({
+      store,
+      sessionId: storyStarted.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: result.committedTurn.id,
+        idempotencyKey: "scene-story-2",
+        sceneMode: "advance",
+        scenePrompt: "旅人收拾行装，准备离开钟楼。",
+      }),
+      createTurnId: () => "turn-scene-story-2",
+      generate: async () => ({
+        content: statusesTestTurn(storyStarted, "event-scene-story-2", "旅人踏上旅途。", {
+          gameTimeDayNext: 2,
+        }),
+        model: "deepseek-test",
+        usage: { totalTokens: 200 },
+      }),
+    });
+    assert.equal(advanced.committedTurn.sequence, 3);
+    const coreAfterAdvance = store
+      .loadAdventure(storyStarted.sessionId)
+      .branchState.states.find(
+        (state) => state.entityType === "session_state" && state.entityId === "core",
+      );
+    assert.equal(
+      coreAfterAdvance.state.gameTimeDay,
+      2,
+      "advance 模式时间按剧情推进",
+    );
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

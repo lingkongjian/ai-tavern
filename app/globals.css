@@ -4186,6 +4186,58 @@ a {
   grid-row: span 2;
 }
 
+.scene-mode-group {
+  display: grid;
+  gap: 11px;
+}
+
+.scene-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scene-mode-option {
+  display: grid;
+  padding: 12px 14px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 3px;
+  background: rgb(10 8 9 / 32%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.scene-mode-option span {
+  display: grid;
+  gap: 5px;
+}
+
+.scene-mode-option b {
+  color: #b9aa99;
+  font-size: 0.76rem;
+}
+
+.scene-mode-option small {
+  color: #6f6560;
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+.scene-mode-option.selected {
+  border-color: rgb(212 124 69 / 55%);
+  background: rgb(88 44 24 / 22%);
+}
+
+.scene-mode-option.selected b {
+  color: #e8b48c;
+}
+
+.scene-prompt-input textarea {
+  min-height: 110px;
+}
+
 .turn-footer {
   display: flex;
   align-items: center;
@@ -7991,6 +8043,10 @@ a {
   }
 
   .roleplay-control {
+    grid-template-columns: 1fr;
+  }
+
+  .scene-mode-options {
     grid-template-columns: 1fr;
   }
 

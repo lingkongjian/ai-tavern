@@ -257,6 +257,11 @@ export function resolvePlayerTurn(
     storyDirection:
       input.storyDirection !== undefined ? input.storyDirection : null,
     effectiveStoryDirection: effectiveStoryDirection || null,
+    // 回合场景模式与场景内容（绑定出现，同有同无）：detail 时间不推进，
+    // advance 时间按剧情推进；保留在 playerInput 供历史回合还原与审计。
+    ...(input.sceneMode && input.scenePrompt
+      ? { sceneMode: input.sceneMode, scenePrompt: input.scenePrompt }
+      : {}),
   };
 
   const displayParts: string[] = [];
@@ -275,6 +280,13 @@ export function resolvePlayerTurn(
   }
   if (input.innerThoughts) {
     displayParts.push(`想法：${input.innerThoughts}`);
+  }
+  if (input.sceneMode && input.scenePrompt) {
+    displayParts.push(
+      input.sceneMode === "detail"
+        ? `场景（详细描写）：${input.scenePrompt}`
+        : `场景（推进）：${input.scenePrompt}`,
+    );
   }
   if (input.storyDirection !== undefined && input.storyDirection !== previousStoryDirection) {
     displayParts.push(
@@ -392,6 +404,15 @@ export function createStoryGenerationPrompt(input: {
   // 最新玩家内心想法高亮分区：精简自 playerInput.innerThoughts（仅玩家角色自己
   // 知道，其他角色不可知），置于 context 顶部显眼位置；无想法时省略该字段。
   const playerInnerThoughts = readText(resolvedPlayerTurn.playerInput.innerThoughts);
+  // 最新玩家场景高亮分区：精简自 playerInput.sceneMode + scenePrompt（绑定出现，
+  // 同为空或同有值），置于 context 顶部显眼位置；未选择场景模式时省略该字段。
+  const playerSceneMode = resolvedPlayerTurn.playerInput.sceneMode;
+  const playerScenePrompt = readText(resolvedPlayerTurn.playerInput.scenePrompt);
+  const latestPlayerScene =
+    (playerSceneMode === "detail" || playerSceneMode === "advance") &&
+    playerScenePrompt
+      ? { mode: playerSceneMode, content: playerScenePrompt }
+      : null;
   const activeStateRecords = adventure.branchState.states.filter(
     (state) => state.isActive,
   );
@@ -886,6 +907,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 37. 关系变化维度区分：relationshipChanges 必须明确区分维度——信任（trust：托付秘密、可靠承诺、守约、值得依赖）与好感（affection：心动、亲近、思念、情感依恋）是不同的维度，恐惧（fear）、敌意（hostility）、敬意（respect）同理各自独立。尤其在情侣或暧昧关系深化时，必须判断本次加深的究竟是信任、好感还是两者兼有：两类都加深时分别登记两条变化（各自标注 delta 与 reason），不得笼统写“关系加深”或只改一个维度敷衍了事；每个变化的 reason 必须指向本轮或历史中具体的事件/对话依据（与规则 8 的证据要求一致），不得使用无依据的泛化理由。
 38. 次要人物名录（stateCommit.minorCharacterUpdates）：剧情提到新的次要人物（随口提到的亲人、邻居、路人等未建立人物卡的背景 NPC；主角、主要角色与已建立人物卡的 NPC 不在此登记）时，在本轮 stateCommit.minorCharacterUpdates 中登记：{"operation":"add","name":"名字","relation":"与谁的关系（如 主角二舅）","description":"补充描述（可选）"}。name 不超过 40 字、relation 不超过 80 字、description 不超过 200 字；同轮数组内 name 不得重复。已登记的人物再次被提及或补充信息时用 update 更新（{"operation":"update","name":"原名","relation":"...","description":"..."}，可只带要更新的字段）。上下文 minorCharacters 是剧情中已出现的次要人物名录（只含 name 与 relation），其旁的 minorCharacterNote 与名录同为本轮约束：重提已登记人物时必须沿用名录中的原名，不得改名、混用或张冠李戴（防止长上下文后早期提及被挤出导致名字漂移）；名字变化若剧情需要（化名、改名、隐瞒身份）必须要有事件依据，并在本轮用 update 登记原名与新名字，正文不得直接改用新名字。
 39. 关系定性转化（stateCommit.relationshipChanges[].typeChange）：relationshipType 是关系的定性类型（family 家人、romantic 情侣/恋人、friends 好友、rivals 对手、colleagues 同事/同门、allies 盟友、acquaintances 初识/普通关系、other 其他），区别于 trust/affection 等数值维度（数值维度变化仍按规则 37）。定性转化必须伴随真实剧情事件（写入本轮 events，如调查发现并无血缘关系、告白确立关系、决裂转为对手），不得无事件凭空改写类型。typeChange 结构：{"to":"转化后类型","reason":"转化原因（≤300 字符，必须指向本轮或历史中具体的事件/对话依据，与规则 8 的证据要求一致）","note":"补充说明（可选，≤200 字符）"}。转化后互动方式随之改变：姐弟相处与情侣相处的言谈、边界与亲近尺度不同，须按新类型呈现后续互动；转化历史保持——"曾是姐弟"等既往关系性质不因转化被抹去，人物记忆、关系 summary 与后续互动仍可体现。转化与数值变化可同步也可解耦：typeChange 只改变定性类型，系统不会自动增减信任/好感等数值；需要数值变化时仍须按规则 37 单独登记维度变化。
+40. 场景模式（context.latestPlayerScene / 玩家本轮输入的 sceneMode 与 scenePrompt）：选择场景模式时，本轮以玩家提供的场景为主要内容来源，与角色言行、剧情走向并存（场景不是替代其他输入，而是与它们共同构成本轮输入）。detail（详细描写）模式：详细展开玩家提供的场景——环境、在场人物、氛围与感官细节都写足；游戏内时间不得推进（sceneTransition.timeAdvance 只能为 moment 或 hours 或省略，gameTimeDayNext 不得大于当前游戏内日期），正文也不得暗示跨日时间流逝。advance（场景推进）模式：以玩家提供的场景为起点，描写接下来要发生的事，时间按剧情自然推进（与规则 14 的时间声明要求一致，不得在无时间流逝描写时强行推进日期）。
 
 返回结构必须完整：
 {
@@ -930,6 +952,7 @@ worldBookChanges 按需使用以下结构之一：
   const context: JsonObject = {
     ...(latestPlayerRoleplay ? { latestPlayerRoleplay } : {}),
     ...(playerInnerThoughts ? { latestPlayerInnerThoughts: playerInnerThoughts } : {}),
+    ...(latestPlayerScene ? { latestPlayerScene } : {}),
     nextTurnId: turnId,
     campaign: adventure.campaign,
     session: adventure.session,
@@ -1080,6 +1103,14 @@ worldBookChanges 按需使用以下结构之一：
     ],
     ...(latestPlayerRoleplay
       ? [["最新玩家言行", context.latestPlayerRoleplay] as const]
+      : []),
+    ...(latestPlayerScene
+      ? [
+          [
+            "最新玩家场景（detail=详细描写·时间不得推进 / advance=场景推进·时间按剧情推进）",
+            context.latestPlayerScene,
+          ] as const,
+        ]
       : []),
     ...(playerInnerThoughts
       ? [
