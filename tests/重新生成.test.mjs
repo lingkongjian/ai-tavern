@@ -17,6 +17,7 @@ import {
 import {
   advanceAdventureTurn,
   regenerateLatestAdventureTurn,
+  TurnCancelledError,
 } from "../lib/story/回合服务.ts";
 
 const migrationsDir = fileURLToPath(new URL("../drizzle", import.meta.url));
@@ -850,6 +851,132 @@ test("time_fix 重写在五回合一天模式下不要求 gameTimeDayNext", asyn
     // 模型声明的 gameTimeDayNext=9 被忽略。
     assert.equal(sessionState().gameTimeDay, 1);
     assert.equal(sessionState().phaseOffset, 1);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("重生成在提交前被取消时不替换回合，取消后可正常重写", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-regenerate-cancel-"));
+  const databasePath = join(temporaryDirectory, "story.sqlite");
+  const database = openLocalDatabase({ filePath: databasePath, migrationsDir });
+
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "重生成中断测试",
+      world: { name: "纸城", premise: "公开写下的句子会成为短暂现实。" },
+      player: { name: "记录员", description: "负责核验城市档案的旅行者。" },
+      mainCharacter: {
+        name: "馆长",
+        role: "纸城档案馆馆长",
+        personality: "严谨、克制，不接受没有来源的结论。",
+      },
+      openingScene: "记录员在闭馆前进入档案馆。",
+    });
+    const turnId = "cancel-regenerated-head-turn";
+    const firstOutput = generatedTurn({
+      turnId,
+      scene: "馆长把记录员带进红墨大厅。",
+      eventId: "cancel-old-event",
+      dialogueId: "cancel-old-dialogue",
+      summary: "记录员进入红墨大厅。",
+      dialogue: "红墨写下的内容不能撤回。",
+      locationId: "red-ink-hall",
+      locationName: "红墨大厅",
+      locationDescription: "墙面覆盖着尚未干透的红色文字。",
+      presentCharacterIds: [started.playerCharacterId, started.mainCharacterId],
+      playerCharacterId: started.playerCharacterId,
+      mainCharacterId: started.mainCharacterId,
+      mood: "旧版警惕",
+      trustDelta: 10,
+      worldFact: "红墨写下的内容永远不能撤回。",
+    });
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "cancel-initial-generated-turn",
+        selectedChoiceId: "opening-neutral",
+      }),
+      createTurnId: () => turnId,
+      generate: async () => ({
+        content: firstOutput,
+        model: "deepseek-test",
+        usage: { totalTokens: 500 },
+      }),
+    });
+
+    const replacementOutput = generatedTurn({
+      turnId,
+      scene: "馆长改带记录员进入蓝纸庭院，展示能够被改写的城市档案。",
+      eventId: "cancel-replacement-event",
+      dialogueId: "cancel-replacement-dialogue",
+      summary: "记录员进入蓝纸庭院。",
+      dialogue: "只要证据足够，纸城允许我们修订错误。",
+      locationId: "blue-paper-court",
+      locationName: "蓝纸庭院",
+      locationDescription: "蓝色纸页像树叶一样悬在庭院上空。",
+      presentCharacterIds: [started.playerCharacterId, started.mainCharacterId],
+      playerCharacterId: started.playerCharacterId,
+      mainCharacterId: started.mainCharacterId,
+      mood: "重新审视",
+      trustDelta: -5,
+      worldFact: "",
+    });
+
+    // 1) 重写完成、替换前被取消：抛 TurnCancelledError 且 head 回合不变
+    let cancelled = false;
+    await assert.rejects(
+      regenerateLatestAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        expectedHeadTurnId: turnId,
+        actionId: "cancel-regeneration-action-1",
+        feedback: "馆长的拒绝太绝对，希望她依据证据改为谨慎合作。",
+        isCancelled: () => cancelled,
+        generate: async () => {
+          cancelled = true; // 模拟重写期间客户端中断
+          return {
+            content: replacementOutput,
+            model: "deepseek-test",
+            usage: { totalTokens: 620 },
+          };
+        },
+      }),
+      (error) => error instanceof TurnCancelledError,
+    );
+    const afterCancel = store.loadAdventure(started.sessionId);
+    assert.equal(
+      afterCancel.branchState.branch.headTurnId,
+      turnId,
+      "取消后 head 回合不应被替换",
+    );
+    assert.equal(
+      afterCancel.branchState.recentTurns.at(-1).generatedOutput.turn.scene,
+      firstOutput.turn.scene,
+      "取消后最新回合仍应是旧版",
+    );
+
+    // 2) 未取消：正常替换
+    const regenerated = await regenerateLatestAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      expectedHeadTurnId: turnId,
+      actionId: "cancel-regeneration-action-2",
+      feedback: "馆长的拒绝太绝对，希望她依据证据改为谨慎合作。",
+      isCancelled: () => false,
+      generate: async () => ({
+        content: replacementOutput,
+        model: "deepseek-test",
+        usage: { totalTokens: 620 },
+      }),
+    });
+    assert.equal(regenerated.replacedTurn.id, turnId);
+    const afterRetry = store.loadAdventure(started.sessionId);
+    assert.equal(afterRetry.branchState.recentTurns.at(-1).generatedOutput.turn.scene, replacementOutput.turn.scene);
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

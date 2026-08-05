@@ -1295,6 +1295,40 @@ a {
   line-height: 1.6;
 }
 
+.interrupt-button {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border: 1px solid rgb(177 130 78 / 45%);
+  border-radius: 3px;
+  color: #c9a878;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.66rem;
+}
+
+.interrupt-button:hover {
+  border-color: #c9a878;
+  background: rgb(102 66 34 / 18%);
+}
+
+.regeneration-panel > footer button.interrupt-button {
+  border-color: rgb(177 130 78 / 45%);
+  color: #c9a878;
+  background: transparent;
+}
+
+.interrupt-notice {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border: 1px solid rgb(111 148 132 / 32%);
+  border-radius: 4px;
+  color: #86a493;
+  background: rgb(21 42 34 / 18%);
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
 .model-settings-dialog header p:last-child,
 .model-settings-dialog > footer > span {
   max-width: 520px;

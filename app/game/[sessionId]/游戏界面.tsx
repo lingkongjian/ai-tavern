@@ -55,6 +55,10 @@ function text(value: JsonValue | undefined, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function records(value: JsonValue | undefined) {
   return Array.isArray(value) ? value.filter(isObject) : [];
 }
@@ -715,6 +719,7 @@ export function GameInterface({
   const [submitError, setSubmitError] = useState("");
   const [streamingChars, setStreamingChars] = useState(0);
   const [failoverNotice, setFailoverNotice] = useState("");
+  const [interruptNotice, setInterruptNotice] = useState("");
   const [regenerating, setRegenerating] = useState(false);
   const [regenerationError, setRegenerationError] = useState("");
   const [regenerationPanelOpen, setRegenerationPanelOpen] = useState(false);
@@ -867,6 +872,10 @@ export function GameInterface({
   const [memoryManagerError, setMemoryManagerError] = useState("");
   const [memoryBusy, setMemoryBusy] = useState("");
   const pendingIdempotencyKey = useRef<string | null>(null);
+  // 生成/重生成中的 AbortController：点击“中断”时 abort，fetch 抛 AbortError 并停止读取流
+  const abortRef = useRef<AbortController | null>(null);
+  // 用户主动中断标记：与普通失败（模型报错等）区分，避免中断被当成错误展示
+  const interruptRequestedRef = useRef(false);
   const pendingRegenerationAction = useRef<{
     turnId: string;
     actionId: string;
@@ -1290,6 +1299,7 @@ export function GameInterface({
     body: unknown,
     onDelta: (text: string) => void,
     onFailover?: ({ id, name }: { id: string; name: string }) => void,
+    signal?: AbortSignal,
   ): Promise<AdvanceTurnResponse> {
     const response = await fetch(url, {
       method: "POST",
@@ -1298,6 +1308,7 @@ export function GameInterface({
         Accept: "text/event-stream",
       },
       body: JSON.stringify(body),
+      signal,
     });
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream")) {
@@ -1377,13 +1388,66 @@ export function GameInterface({
     return pendingResult;
   }
 
+  function interruptGeneration() {
+    abortRef.current?.abort();
+    interruptRequestedRef.current = true;
+  }
+
+  // 中断后轻量刷新确认服务端状态：若生成完成前已被服务端提交（竞态窗口内），
+  // 展示新回合并提示；否则保持可编辑态，玩家可修改后重新生成。
+  async function refreshAdventureAfterInterrupt() {
+    try {
+      const response = await fetch(`/api/adventures/${adventure.session.id}`, {
+        cache: "no-store",
+      });
+      const body = (await response.json()) as {
+        adventure?: LoadedAdventure;
+        error?: string;
+      };
+      if (!response.ok || !body.adventure) {
+        throw new Error(body.error ?? "刷新剧情状态失败。");
+      }
+      if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
+        return;
+      }
+      const committed =
+        body.adventure.branchState.branch.headTurnId !==
+          adventure.branchState.branch.headTurnId ||
+        body.adventure.branchState.recentTurns.length >
+          adventure.branchState.recentTurns.length;
+      if (!committed) return;
+      setAdventure(body.adventure);
+      setViewedTurn(body.adventure.branchState.recentTurns.at(-1) ?? null);
+      setSelectedChoice("");
+      setCustomChoice("");
+      setRoleplayInput("");
+      setRegenerationPanelOpen(false);
+      setRegenerationFeedback("");
+      setRegenerationMode("standard");
+      pendingRegenerationAction.current = null;
+      pendingIdempotencyKey.current = null;
+      const nextDirection = body.adventure.branchState.states.find(
+        (state) => state.entityType === "story_direction" && state.isActive,
+      );
+      setDirectionInput(text(nextDirection?.state.content));
+      setInterruptNotice("生成已在中断前完成，已展示最新回合。");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      // 刷新失败不阻塞：保持可编辑态与中断提示
+    }
+  }
+
   async function submitTurn() {
     if (!canSubmit || submitting || regenerating) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    interruptRequestedRef.current = false;
     setSubmitting(true);
     setSubmitError("");
     setRegenerationError("");
     setStreamingChars(0);
     setFailoverNotice("");
+    setInterruptNotice("");
     pendingIdempotencyKey.current ??= crypto.randomUUID();
 
     try {
@@ -1406,6 +1470,7 @@ export function GameInterface({
             `已自动切换并启用备用配置“${name}”，后续回合将使用该配置，可在顶栏重新选择。`,
           );
         },
+        controller.signal,
       );
       if (!body.adventure) throw new Error("生成本轮剧情失败。");
       if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
@@ -1443,11 +1508,20 @@ export function GameInterface({
       setDirectionInput(text(nextDirection?.state.content));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
-      setStreamingChars(0);
-      setSubmitError(
-        error instanceof Error ? error.message : "生成本轮剧情失败。",
-      );
+      if (interruptRequestedRef.current || isAbortError(error)) {
+        interruptRequestedRef.current = false;
+        setStreamingChars(0);
+        setSubmitError("");
+        setInterruptNotice("已中断本次生成，可修改后重新生成。");
+        await refreshAdventureAfterInterrupt();
+      } else {
+        setStreamingChars(0);
+        setSubmitError(
+          error instanceof Error ? error.message : "生成本轮剧情失败。",
+        );
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setSubmitting(false);
     }
   }
@@ -1484,6 +1558,10 @@ export function GameInterface({
     setRegenerationError("");
     setStreamingChars(0);
     setFailoverNotice("");
+    setInterruptNotice("");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    interruptRequestedRef.current = false;
     try {
       const body = await streamTurnRequest(
         `/api/adventures/${adventure.session.id}/turns/regenerate`,
@@ -1500,6 +1578,7 @@ export function GameInterface({
             `已自动切换并启用备用配置“${name}”，后续回合将使用该配置，可在顶栏重新选择。`,
           );
         },
+        controller.signal,
       );
       if (!body.adventure) throw new Error("重新生成最新剧情失败。");
       if (body.adventure.branchState.branch.id !== currentBranchIdRef.current) {
@@ -1536,11 +1615,21 @@ export function GameInterface({
       setDirectionInput(text(nextDirection?.state.content));
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
-      setStreamingChars(0);
-      setRegenerationError(
-        error instanceof Error ? error.message : "重新生成最新剧情失败。",
-      );
+      if (interruptRequestedRef.current || isAbortError(error)) {
+        interruptRequestedRef.current = false;
+        setStreamingChars(0);
+        setRegenerationError("");
+        pendingRegenerationAction.current = null;
+        setInterruptNotice("已中断本次生成，可修改后重新生成。");
+        await refreshAdventureAfterInterrupt();
+      } else {
+        setStreamingChars(0);
+        setRegenerationError(
+          error instanceof Error ? error.message : "重新生成最新剧情失败。",
+        );
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setRegenerating(false);
     }
   }
@@ -3449,6 +3538,15 @@ export function GameInterface({
               <footer>
                 <small>{regenerationFeedback.length} / 1000</small>
                 <div>
+                  {regenerating ? (
+                    <button
+                      type="button"
+                      className="interrupt-button"
+                      onClick={interruptGeneration}
+                    >
+                      中断重写
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     disabled={regenerating}
@@ -3875,6 +3973,12 @@ export function GameInterface({
                   </p>
                 ) : null}
 
+                {interruptNotice ? (
+                  <p className="interrupt-notice" role="status">
+                    {interruptNotice}
+                  </p>
+                ) : null}
+
                 {pendingChecks && pendingChecks.length > 0 ? (
                   <div
                     className="character-manager-backdrop"
@@ -4009,6 +4113,13 @@ export function GameInterface({
                           ? `已生成 ${streamingChars} 字`
                           : "正在连接模型"}
                       </span>
+                      <button
+                        type="button"
+                        className="interrupt-button"
+                        onClick={interruptGeneration}
+                      >
+                        中断
+                      </button>
                     </header>
                     <div
                       className="progress-track"

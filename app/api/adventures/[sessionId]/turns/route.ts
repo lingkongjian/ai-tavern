@@ -14,7 +14,10 @@ import {
   PlayerTurnInputError,
   parsePlayerTurnRequest,
 } from "@/lib/story/回合协议";
-import { advanceAdventureTurn } from "@/lib/story/回合服务";
+import {
+  advanceAdventureTurn,
+  TurnCancelledError,
+} from "@/lib/story/回合服务";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +35,18 @@ function sseEvent(controller: ReadableStreamDefaultController<Uint8Array>, event
       `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
     ),
   );
+}
+
+// 响应流被取消时（客户端断连/中止读取）触发；TS 的 ReadableStreamDefaultController
+// 类型尚未包含 signal 属性，运行时（Node 18+ / 浏览器）始终可用。
+function streamCancelledSignal(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+) {
+  return (
+    controller as ReadableStreamDefaultController<Uint8Array> & {
+      signal: AbortSignal;
+    }
+  ).signal;
 }
 
 function errorStatus(error: unknown) {
@@ -128,11 +143,19 @@ export async function POST(
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
+        let cancelled = false;
+        const markCancelled = () => {
+          cancelled = true;
+        };
+        // 前端中断（abort）或响应流被取消时，生成完成后不再提交回合
+        request.signal.addEventListener("abort", markCancelled);
+        streamCancelledSignal(controller).addEventListener("abort", markCancelled);
         try {
           const result = await advanceAdventureTurn({
             store: new LocalStoryStore(getDb()),
             sessionId,
             input,
+            isCancelled: () => cancelled,
             onStreamDelta: (text) => sseEvent(controller, "delta", { text }),
             onFailover: ({ id, name }) =>
               sseEvent(controller, "failover", {
@@ -156,6 +179,16 @@ export async function POST(
             idempotencyKey: result.idempotencyKey,
           });
         } catch (error) {
+          if (error instanceof TurnCancelledError) {
+            // 客户端已中断，不提交也不发送 error 事件；连接尚存时回一个 cancelled 事件
+            if (
+              !request.signal.aborted &&
+              !streamCancelledSignal(controller).aborted
+            ) {
+              sseEvent(controller, "cancelled", { cancelled: true });
+            }
+            return;
+          }
           if (
             error instanceof SyntaxError ||
             error instanceof PlayerTurnInputError
@@ -167,7 +200,11 @@ export async function POST(
             ...errorPayload(error),
           });
         } finally {
-          controller.close();
+          try {
+            controller.close();
+          } catch {
+            // 客户端已断开，流已不可用
+          }
         }
       },
     });

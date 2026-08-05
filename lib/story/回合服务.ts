@@ -68,6 +68,18 @@ export interface FailoverProfileInfo {
   name: string;
 }
 
+/** 流式请求的客户端在生成完成前主动中断（断连/取消）时抛出，用于阻止落库。 */
+export class TurnCancelledError extends Error {
+  constructor() {
+    super("回合生成已被中断。");
+    this.name = "TurnCancelledError";
+  }
+}
+
+function assertTurnNotCancelled(isCancelled?: () => boolean) {
+  if (isCancelled?.()) throw new TurnCancelledError();
+}
+
 function isFailoverTrigger(error: unknown) {
   return error instanceof AiRequestError || error instanceof AiResponseError;
 }
@@ -161,6 +173,8 @@ export interface AdvanceTurnOptions {
   onStreamDelta?: (text: string) => void;
   onFailover?: (target: FailoverProfileInfo) => void;
   createTurnId?: () => string;
+  /** 返回 true 表示调用方已取消本次生成；提交（含属性判定待确认落库）前检测，置位则抛 TurnCancelledError。 */
+  isCancelled?: () => boolean;
 }
 
 export interface RegenerateTurnOptions {
@@ -174,6 +188,8 @@ export interface RegenerateTurnOptions {
   generate?: StoryJsonGenerator;
   onStreamDelta?: (text: string) => void;
   onFailover?: (target: FailoverProfileInfo) => void;
+  /** 返回 true 表示调用方已取消本次重生成；提交（含属性判定待确认落库）前检测，置位则抛 TurnCancelledError。 */
+  isCancelled?: () => boolean;
 }
 
 function asNumber(value: JsonValue | undefined) {
@@ -1744,6 +1760,7 @@ export async function advanceAdventureTurn(
   };
 
   if (validated.attributeChecks.length > 0) {
+    assertTurnNotCancelled(options.isCancelled);
     store.savePendingTurn({
       id: turnId,
       sessionId,
@@ -1777,6 +1794,7 @@ export async function advanceAdventureTurn(
     };
   }
 
+  assertTurnNotCancelled(options.isCancelled);
   const committedTurn = store.commitTurn({
     id: turnId,
     sessionId,
@@ -2008,6 +2026,7 @@ export async function regenerateLatestAdventureTurn(
   };
 
   if (validated.attributeChecks.length > 0) {
+    assertTurnNotCancelled(options.isCancelled);
     store.savePendingTurn({
       id: prepared.currentTurn.id,
       sessionId,
@@ -2041,6 +2060,7 @@ export async function regenerateLatestAdventureTurn(
     };
   }
 
+  assertTurnNotCancelled(options.isCancelled);
   const replacedTurn = store.replaceHeadTurn({
     actionId,
     feedback,

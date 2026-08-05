@@ -13,7 +13,7 @@ import {
   parsePlayerTurnRequest,
   validateGeneratedTurn,
 } from "../lib/story/回合协议.ts";
-import { advanceAdventureTurn } from "../lib/story/回合服务.ts";
+import { advanceAdventureTurn, TurnCancelledError } from "../lib/story/回合服务.ts";
 import {
   resolveAttributeCheck,
   resolveAttributeChecks,
@@ -465,4 +465,65 @@ test("开局解析校验角色属性分区白名单", () => {
       }),
     (error) => error.message.includes("白名单"),
   );
+});
+
+test("含属性判定的回合在待确认落库前被取消：不保存待确认回合", async () => {
+  const { directory, database, store } = temporaryDatabase();
+  try {
+    const started = startAdventure(store);
+    const input = parsePlayerTurnRequest({
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "cancel-pending-key",
+      customChoice: "撬开更楼的旧锁",
+    });
+    let cancelled = false;
+    await assert.rejects(
+      advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input,
+        isCancelled: () => cancelled,
+        generate: async () => {
+          cancelled = true; // 模拟生成期间客户端中断
+          return {
+            content: turnOutput(started, "旅人贴近更楼的旧锁。", {
+              topLevel: {
+                attributeChecks: [
+                  {
+                    id: "check-cancel-lock",
+                    characterId: started.playerCharacterId,
+                    attribute: "敏捷",
+                    difficulty: 65,
+                    context: "在不惊动守夜人的情况下撬开旧锁",
+                  },
+                ],
+              },
+            }),
+            model: "deepseek-test",
+            usage: { totalTokens: 100 },
+          };
+        },
+      }),
+      (error) => error instanceof TurnCancelledError,
+    );
+    const adventure = store.loadAdventure(started.sessionId);
+    assert.equal(
+      adventure.branchState.recentTurns.length,
+      1,
+      "取消后不应新增回合",
+    );
+    assert.equal(
+      adventure.branchState.branch.headTurnId,
+      started.openingTurnId,
+      "取消后分支头不应移动",
+    );
+    assert.equal(
+      store.loadPendingTurnByKey(started.sessionId, "cancel-pending-key"),
+      null,
+      "取消后不应残留待确认回合",
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

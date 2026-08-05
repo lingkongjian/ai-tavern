@@ -15,6 +15,7 @@ import {
 import {
   advanceAdventureTurn,
   collectDivergenceSignals,
+  TurnCancelledError,
 } from "../lib/story/回合服务.ts";
 import { createStoryGenerationMessages, createStoryGenerationPrompt } from "../lib/story/剧情提示.ts";
 import { parseCharacterManagementInput } from "../lib/story/人物管理.ts";
@@ -3637,6 +3638,159 @@ test("规则 31：玩家言行最高优先级——最新言行高亮分区与�
       ),
       false,
     );
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("取消标记置位时不提交回合，未取消正常提交，取消后重试幂等复用", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-cancel-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+
+  try {
+    const store = new LocalStoryStore(database);
+    const started = store.startAdventure({
+      campaignName: "中断测试",
+      world: { name: "雾港", premise: "雾中灯塔每夜更换航线。" },
+      player: { name: "船员", description: "追查旧航图的抄写员。" },
+      mainCharacter: {
+        name: "领航员",
+        role: "灯塔看护",
+        personality: "寡言。",
+        firstMessage: "雾散了。",
+      },
+      openingScene: "船员在雾港登上灯塔。",
+    });
+
+    const generatedContent = {
+      schemaVersion: "1.0",
+      turn: {
+        scene: "领航员调暗灯火，让船员看清旧航图上被涂改的航线。",
+        events: [
+          {
+            id: "event-cancel-turn",
+            type: "secret_revealed",
+            summary: "领航员展示被涂改的旧航图。",
+            characterIds: [started.playerCharacterId, started.mainCharacterId],
+            locationId: "lighthouse-top",
+          },
+        ],
+        dialogue: [],
+      },
+      decision: {
+        context: "action_direction",
+        prompt: "船员如何回应这份旧航图？",
+        choices: [
+          {
+            id: "choice-deck",
+            label: "照旧航行",
+            description: "按涂改前的航线行驶。",
+            stance: "neutral",
+          },
+          {
+            id: "choice-shore",
+            label: "靠岸盘问",
+            description: "先找领航员问清涂改者。",
+            stance: "benevolent",
+          },
+        ],
+      },
+      stateCommit: {
+        sceneTransition: {
+          locationId: "lighthouse-top",
+          locationName: "灯塔顶部",
+          locationDescription: "灯室在雾中缓慢转动。",
+          presentCharacterIds: [
+            started.playerCharacterId,
+            started.mainCharacterId,
+          ],
+          reason: "两人在灯室内查看旧航图。",
+          evidence: ["event-cancel-turn"],
+        },
+        characterStateChanges: [],
+        relationshipChanges: [],
+        characterCardChanges: [],
+        worldBookChanges: [],
+        storyDirectionEvaluation: null,
+        summaryPatch: "领航员展示了被涂改的旧航图。",
+      },
+      warnings: [],
+    };
+
+    const input = parsePlayerTurnRequest({
+      expectedHeadTurnId: started.openingTurnId,
+      idempotencyKey: "cancel-turn-request",
+      customChoice: "查看旧航图",
+    });
+
+    // 1) 生成完成后、提交前被取消：抛 TurnCancelledError 且不落库
+    let cancelled = false;
+    let generationCalls = 0;
+    await assert.rejects(
+      advanceAdventureTurn({
+        store,
+        sessionId: started.sessionId,
+        input,
+        isCancelled: () => cancelled,
+        generate: async () => {
+          generationCalls += 1;
+          cancelled = true; // 模拟生成期间客户端中断
+          return {
+            content: generatedContent,
+            model: "deepseek-test",
+            usage: { totalTokens: 200 },
+          };
+        },
+      }),
+      (error) => error instanceof TurnCancelledError,
+    );
+    assert.equal(generationCalls, 1);
+    const afterCancel = store.loadAdventure(started.sessionId);
+    assert.equal(
+      afterCancel.branchState.recentTurns.length,
+      1,
+      "取消后不应新增回合",
+    );
+    assert.equal(
+      afterCancel.branchState.branch.headTurnId,
+      started.openingTurnId,
+      "取消后分支头不应移动",
+    );
+
+    // 2) 未取消：正常提交
+    const result = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input,
+      isCancelled: () => false,
+      generate: async () => ({
+        content: generatedContent,
+        model: "deepseek-test",
+        usage: { totalTokens: 200 },
+      }),
+    });
+    assert.equal(result.committedTurn.sequence, 2);
+    assert.equal(
+      store.loadAdventure(started.sessionId).branchState.recentTurns.length,
+      2,
+    );
+
+    // 3) 已提交后带取消标记重试：幂等返回既有回合，不重复生成也不抛错
+    const retry = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input,
+      isCancelled: () => true,
+      generate: async () => {
+        throw new Error("幂等重试不应再次调用模型");
+      },
+    });
+    assert.equal(retry.committedTurn.id, result.committedTurn.id);
+    assert.equal(retry.committedTurn.reused, true);
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
