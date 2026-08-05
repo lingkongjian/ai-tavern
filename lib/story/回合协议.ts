@@ -81,6 +81,12 @@ export interface PlayerTurnRequest {
     mode: RoleplayMode;
     content: string;
   };
+  /**
+   * 玩家角色内心想法（可选，限长 1000）：仅玩家角色自己知道，
+   * 其他角色（含 NPC）不可知；影响玩家角色后续言行的动机，
+   * 但不作为故事内可观察内容。
+   */
+  innerThoughts?: string;
   storyDirection?: string;
 }
 
@@ -104,6 +110,15 @@ export interface GeneratedDialogue {
   speakerId: string;
   content: string;
   addressedCharacterIds: string[];
+}
+
+/**
+ * 角色内心想法（NPC 内心独白）：其他角色（含玩家角色）不可知，
+ * 只影响该角色自身后续行动的动机一致性。
+ */
+export interface GeneratedCharacterThought {
+  characterId: string;
+  content: string;
 }
 
 export interface GeneratedChoice {
@@ -240,6 +255,8 @@ export interface ValidatedGeneratedTurn {
     scene: string;
     events: GeneratedEvent[];
     dialogue: GeneratedDialogue[];
+    /** 角色内心想法（可选，无则空数组）：其他角色（含玩家角色）不可知。 */
+    characterThoughts: GeneratedCharacterThought[];
   };
   attributeChecks: GeneratedAttributeCheck[];
   sourceProgress: number | null;
@@ -366,6 +383,10 @@ export function parsePlayerTurnRequest(value: unknown): PlayerTurnRequest {
   const storyDirection = storyDirectionProvided
     ? trimText(value.storyDirection, 1_000)
     : undefined;
+  const innerThoughts =
+    typeof value.innerThoughts === "string"
+      ? value.innerThoughts.trim().slice(0, 1_000)
+      : undefined;
 
   let roleplay: PlayerTurnRequest["roleplay"];
   if (value.roleplay !== undefined && value.roleplay !== null) {
@@ -399,6 +420,7 @@ export function parsePlayerTurnRequest(value: unknown): PlayerTurnRequest {
     selectedChoiceId: selectedChoiceId || undefined,
     customChoice: customChoice || undefined,
     roleplay,
+    ...(innerThoughts ? { innerThoughts } : {}),
     ...(storyDirectionProvided ? { storyDirection } : {}),
   };
 }
@@ -602,6 +624,56 @@ export function validateStatusesArray(
       item.expiresAtDay >= 1
         ? { expiresAtDay: item.expiresAtDay }
         : {}),
+    });
+  });
+  return result;
+}
+
+/**
+ * 校验角色已知信息数组（character_state.knownFacts）。
+ * - undefined/null：未提供或显式清除，返回 null，不产生校验问题；
+ * - 数组：完整数组替换语义，逐项校验 id（非空、限长、数组内唯一）、
+ *   content（非空、限长）。
+ * 返回规范化后的已知信息列表（有校验问题时返回仍可读取的部分，由调用方决定成败）。
+ * 供回合协议 patch 校验复用（与 validateStatusesArray 同模式）。
+ */
+export function validateKnownFactsArray(
+  value: JsonValue | undefined,
+  path: string,
+  issues: string[],
+): { id: string; content: string }[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value)) {
+    issues.push(`${path} 必须是数组（完整替换）或 null（清除全部）。`);
+    return null;
+  }
+  const result: { id: string; content: string }[] = [];
+  const ids = new Set<string>();
+  value.forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    if (!isObject(item)) {
+      issues.push(`${itemPath} 必须是对象。`);
+      return;
+    }
+    const id = readString(item.id).trim();
+    if (!id) {
+      issues.push(`${itemPath}.id 不能为空。`);
+    } else if (id.length > 120) {
+      issues.push(`${itemPath}.id 不能超过 120 个字符。`);
+    } else if (ids.has(id)) {
+      issues.push(`${itemPath}.id 已知信息 ID ${id} 重复。`);
+    } else {
+      ids.add(id);
+    }
+    const content = readString(item.content).trim();
+    if (!content) {
+      issues.push(`${itemPath}.content 不能为空。`);
+    } else if (content.length > 300) {
+      issues.push(`${itemPath}.content 不能超过 300 个字符。`);
+    }
+    result.push({
+      id: id || `fact-${index}`,
+      content: content || "",
     });
   });
   return result;
@@ -1157,6 +1229,42 @@ export function validateGeneratedTurn(
     issues.push("本轮至少需要一个已经发生的事件或一条角色对话。");
   }
 
+  // 角色内心想法（NPC 内心独白）：可选，最多 6 条，每条不超过 400 字符，
+  // characterId 必须指向存在角色；无则省略（校验结果为空数组）。
+  const characterThoughts = (() => {
+    if (turn.characterThoughts === undefined) return [];
+    if (!Array.isArray(turn.characterThoughts)) {
+      issues.push("turn.characterThoughts 必须是数组。");
+      return [];
+    }
+    if (turn.characterThoughts.length > 6) {
+      issues.push("每轮最多输出 6 条角色内心想法。");
+    }
+    return turn.characterThoughts.slice(0, 6).map(
+      (item, index): GeneratedCharacterThought => {
+        const thought = requiredObject(
+          item,
+          `turn.characterThoughts[${index}]`,
+          issues,
+        );
+        const characterId = requiredText(
+          thought.characterId,
+          `turn.characterThoughts[${index}].characterId`,
+          issues,
+          160,
+        );
+        if (characterId && !characterIds.has(characterId)) {
+          issues.push(`内心想法引用了不存在的角色 ${characterId}。`);
+        }
+        const content = trimText(thought.content, 400);
+        if (!content) {
+          issues.push(`turn.characterThoughts[${index}].content 不能为空。`);
+        }
+        return { characterId, content };
+      },
+    );
+  })();
+
   const knownEvidenceIds = new Set(existingEvidenceIds);
   eventIds.forEach((id) => knownEvidenceIds.add(id));
   dialogueIds.forEach((id) => knownEvidenceIds.add(id));
@@ -1540,6 +1648,13 @@ export function validateGeneratedTurn(
       validateStatusesArray(
         patch.statuses,
         `stateCommit.characterStateChanges[${index}].patch.statuses`,
+        issues,
+      );
+    }
+    if (patch.knownFacts !== undefined) {
+      validateKnownFactsArray(
+        patch.knownFacts,
+        `stateCommit.characterStateChanges[${index}].patch.knownFacts`,
         issues,
       );
     }
@@ -2287,7 +2402,7 @@ export function validateGeneratedTurn(
             warnings,
           }
         : value,
-    turn: { scene, events, dialogue },
+    turn: { scene, events, dialogue, characterThoughts },
     attributeChecks,
     sourceProgress,
     decision: {

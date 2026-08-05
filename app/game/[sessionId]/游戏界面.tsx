@@ -715,6 +715,7 @@ export function GameInterface({
   const [customChoice, setCustomChoice] = useState("");
   const [roleplayMode, setRoleplayMode] = useState("mixed");
   const [roleplayInput, setRoleplayInput] = useState("");
+  const [innerThoughtsInput, setInnerThoughtsInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [streamingChars, setStreamingChars] = useState(0);
@@ -1065,6 +1066,7 @@ export function GameInterface({
     : {};
   const choices = records(decision.choices);
   const dialogue = records(turn.dialogue);
+  const characterThoughts = records(turn.characterThoughts);
   const sourceReferences = records(
     displayedTurn?.generatedOutput.sourceReferences,
   );
@@ -1105,6 +1107,9 @@ export function GameInterface({
       : "",
     text(historicalRoleplay?.content)
       ? `角色言行：${text(historicalRoleplay?.content)}`
+      : "",
+    text(displayedTurn?.playerInput.innerThoughts)
+      ? `想法：${text(displayedTurn?.playerInput.innerThoughts)}`
       : "",
   ].filter(Boolean);
   const initialDirection = text(storyDirection?.content);
@@ -1421,6 +1426,7 @@ export function GameInterface({
       setSelectedChoice("");
       setCustomChoice("");
       setRoleplayInput("");
+      setInnerThoughtsInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -1461,6 +1467,7 @@ export function GameInterface({
           roleplay: roleplayInput.trim()
             ? { mode: roleplayMode, content: roleplayInput.trim() }
             : undefined,
+          innerThoughts: innerThoughtsInput.trim() || undefined,
           storyDirection: directionInput.trim(),
         },
         (text) => setStreamingChars((current) => current + text.length),
@@ -1497,6 +1504,7 @@ export function GameInterface({
       setSelectedChoice("");
       setCustomChoice("");
       setRoleplayInput("");
+      setInnerThoughtsInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -1605,6 +1613,7 @@ export function GameInterface({
       setSelectedChoice("");
       setCustomChoice("");
       setRoleplayInput("");
+      setInnerThoughtsInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -1695,6 +1704,7 @@ export function GameInterface({
       setSelectedChoice("");
       setCustomChoice("");
       setRoleplayInput("");
+      setInnerThoughtsInput("");
       setRegenerationPanelOpen(false);
       setRegenerationFeedback("");
       setRegenerationMode("standard");
@@ -1769,6 +1779,7 @@ export function GameInterface({
     setSelectedChoice("");
     setCustomChoice("");
     setRoleplayInput("");
+    setInnerThoughtsInput("");
     setRegenerationPanelOpen(false);
     setRegenerationFeedback("");
     setRegenerationMode("standard");
@@ -3609,6 +3620,31 @@ export function GameInterface({
                 <p>{text(line.content)}</p>
               </blockquote>
             ))}
+            {characterThoughts.length > 0 ? (
+              <details className="inner-thoughts-panel">
+                <summary>
+                  <span>
+                    <small>内心活动</small>
+                    <strong>{characterThoughts.length} 位角色的内心独白</strong>
+                  </span>
+                  <i aria-hidden="true">⌄</i>
+                </summary>
+                <div className="inner-thoughts-list">
+                  {characterThoughts.map((thought, index) => (
+                    <article key={`${text(thought.characterId)}-${index}`}>
+                      <header>
+                        <strong>
+                          {characterNameById.get(text(thought.characterId)) ??
+                            text(thought.characterId)}
+                        </strong>
+                        <span>内心独白——角色之间互相不知道</span>
+                      </header>
+                      <p>{text(thought.content)}</p>
+                    </article>
+                  ))}
+                </div>
+              </details>
+            ) : null}
           </article>
 
           {sourceReferences.length > 0 || scriptGuidanceReferences.length > 0 ? (
@@ -3957,6 +3993,22 @@ export function GameInterface({
                         placeholder="写下角色说的话或正在做的动作……"
                       />
                     </div>
+                  </label>
+
+                  <label className="game-input inner-thoughts-input">
+                    <span>
+                      <b>角色想法</b>
+                      <small>仅玩家角色自己知道，其他角色不会知道</small>
+                    </span>
+                    <textarea
+                      rows={3}
+                      maxLength={1_000}
+                      value={innerThoughtsInput}
+                      onChange={(event) =>
+                        setInnerThoughtsInput(event.target.value)
+                      }
+                      placeholder="角色此刻内心的真实想法（作为内在动机影响角色后续言行，其他角色无从知晓）……"
+                    />
                   </label>
                 </div>
 

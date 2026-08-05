@@ -8,6 +8,7 @@ import { openLocalDatabase } from "../db/index.ts";
 import { LocalStoryStore } from "../lib/storage/story-store.ts";
 import {
   GeneratedTurnValidationError,
+  PlayerTurnInputError,
   normalizeGeneratedTurnVersion,
   parsePlayerTurnRequest,
   validateGeneratedTurn,
@@ -3791,6 +3792,523 @@ test("取消标记置位时不提交回合，未取消正常提交，取消后�
     });
     assert.equal(retry.committedTurn.id, result.committedTurn.id);
     assert.equal(retry.committedTurn.reused, true);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("innerThoughts 玩家内心想法协议校验：限长、随言行提交", () => {
+  const parsed = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "thought-request-1",
+    selectedChoiceId: "opening-neutral",
+    innerThoughts: "我其实很害怕，但不能让守钟人看出来。",
+  });
+  assert.equal(parsed.innerThoughts, "我其实很害怕，但不能让守钟人看出来。");
+  // 超过 1000 字符截断
+  const long = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "thought-request-2",
+    selectedChoiceId: "opening-neutral",
+    innerThoughts: "想".repeat(1_200),
+  });
+  assert.equal(long.innerThoughts.length, 1_000);
+  // 仅填想法不构成有效回合输入：仍需至少一个言行/选择/走向
+  assert.throws(
+    () =>
+      parsePlayerTurnRequest({
+        expectedHeadTurnId: null,
+        idempotencyKey: "thought-request-3",
+        innerThoughts: "只有想法。",
+      }),
+    PlayerTurnInputError,
+  );
+  // 空白想法被省略
+  const empty = parsePlayerTurnRequest({
+    expectedHeadTurnId: null,
+    idempotencyKey: "thought-request-4",
+    selectedChoiceId: "opening-neutral",
+    innerThoughts: "   ",
+  });
+  assert.equal("innerThoughts" in empty, false);
+});
+
+test("turn.characterThoughts 输出校验：数量、长度与角色存在", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-thoughts-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "想法协议测试");
+    const adventure = store.loadAdventure(started.sessionId);
+    const base = statusesTestTurn(
+      started,
+      "event-thought-protocol",
+      "守钟人看着镜面沉默。",
+    );
+    const withThoughts = (thoughts) => ({
+      ...base,
+      turn: { ...base.turn, characterThoughts: thoughts },
+    });
+
+    // 合法数组通过，且保持条数与内容
+    const valid = validateGeneratedTurn(
+      withThoughts([
+        { characterId: started.mainCharacterId, content: "她开始怀疑旅人真正的来意。" },
+        { characterId: started.playerCharacterId, content: "旅人没有说出全部实情。" },
+      ]),
+      adventure,
+      "protocol-thought-1",
+    );
+    assert.equal(valid.turn.characterThoughts.length, 2);
+    assert.equal(valid.turn.characterThoughts[0].characterId, started.mainCharacterId);
+    assert.equal(valid.turn.characterThoughts[1].content, "旅人没有说出全部实情。");
+    // 省略字段 → 空数组
+    const omitted = validateGeneratedTurn(base, adventure, "protocol-thought-2");
+    assert.deepEqual(omitted.turn.characterThoughts, []);
+    // 超过 6 条 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withThoughts(
+            Array.from({ length: 7 }, (_, i) => ({
+              characterId: started.mainCharacterId,
+              content: `想法${i}`,
+            })),
+          ),
+          adventure,
+          "protocol-thought-3",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /6 条角色内心想法/.test(issue)),
+    );
+    // 不存在角色 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withThoughts([{ characterId: "ghost-char", content: "幽灵的想法。" }]),
+          adventure,
+          "protocol-thought-4",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /不存在的角色/.test(issue)),
+    );
+    // 非数组 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(withThoughts("想法"), adventure, "protocol-thought-5"),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /必须是数组/.test(issue)),
+    );
+    // 内容超长截断到 400 字符
+    const longContent = validateGeneratedTurn(
+      withThoughts([{ characterId: started.mainCharacterId, content: "内".repeat(500) }]),
+      adventure,
+      "protocol-thought-6",
+    );
+    assert.equal(longContent.turn.characterThoughts[0].content.length, 400);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("knownFacts 角色已知信息 patch 校验：结构、重复与限长", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-knownfacts-protocol-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "已知信息协议测试");
+    const adventure = store.loadAdventure(started.sessionId);
+    const base = statusesTestTurn(
+      started,
+      "event-knownfacts-protocol",
+      "守钟人向旅人吐露了一个秘密。",
+    );
+    const withKnownFacts = (knownFacts) => ({
+      ...base,
+      stateCommit: {
+        ...base.stateCommit,
+        characterStateChanges: [
+          {
+            characterId: started.mainCharacterId,
+            patch: { knownFacts },
+            duration: "until_changed",
+            reason: "角色获知了重要信息",
+            evidence: ["event-knownfacts-protocol"],
+          },
+        ],
+      },
+    });
+    // 非数组非 null → 拒绝
+    assert.throws(
+      () => validateGeneratedTurn(withKnownFacts("秘密"), adventure, "protocol-kf-1"),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /必须是数组/.test(issue)),
+    );
+    // 重复 id → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withKnownFacts([
+            { id: "fact-a", content: "铜钟的秘密。" },
+            { id: "fact-a", content: "守钟人的名字。" },
+          ]),
+          adventure,
+          "protocol-kf-2",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /重复/.test(issue)),
+    );
+    // content 超过 300 → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withKnownFacts([{ id: "fact-long", content: "长".repeat(301) }]),
+          adventure,
+          "protocol-kf-3",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /300/.test(issue)),
+    );
+    // 缺少 id → 拒绝
+    assert.throws(
+      () =>
+        validateGeneratedTurn(
+          withKnownFacts([{ content: "没有 id 的信息。" }]),
+          adventure,
+          "protocol-kf-4",
+        ),
+      (error) =>
+        error instanceof GeneratedTurnValidationError &&
+        error.issues.some((issue) => /id 不能为空/.test(issue)),
+    );
+    // null 清除全部 → 通过
+    const cleared = validateGeneratedTurn(withKnownFacts(null), adventure, "protocol-kf-5");
+    assert.equal(cleared.stateCommit.characterStateChanges[0].patch.knownFacts, null);
+    // 合法数组 → 通过
+    const valid = validateGeneratedTurn(
+      withKnownFacts([
+        { id: "fact-1", content: "铜钟在逆流时与失踪者名单对应。" },
+        { id: "fact-2", content: "守钟人藏有侧门钥匙。" },
+      ]),
+      adventure,
+      "protocol-kf-6",
+    );
+    assert.equal(valid.stateCommit.characterStateChanges[0].patch.knownFacts.length, 2);
+    assert.equal(valid.stateCommit.characterStateChanges[0].patch.knownFacts[0].id, "fact-1");
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("角色想法与已知信息端到端：登记物化、上下文注入与规则文本", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-knownfacts-e2e-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "已知信息测试");
+    const eventId = "event-knownfacts-1";
+    const turn1 = statusesTestTurn(started, eventId, "守钟人告诉旅人铜钟的秘密。");
+    const first = await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "knownfacts-e2e-1",
+        innerThoughts: "我必须先赢得她的信任。",
+        selectedChoiceId: "opening-neutral",
+      }),
+      createTurnId: () => "turn-knownfacts-1",
+      generate: async () => ({
+        content: {
+          ...turn1,
+          turn: {
+            ...turn1.turn,
+            characterThoughts: [
+              { characterId: started.mainCharacterId, content: "旅人暂时可信，但还要观察。" },
+            ],
+          },
+          stateCommit: {
+            ...turn1.stateCommit,
+            characterStateChanges: [
+              {
+                characterId: started.mainCharacterId,
+                patch: {
+                  knownFacts: [
+                    { id: "fact-clock-secret", content: "铜钟在逆流时与失踪者名单对应。" },
+                  ],
+                },
+                duration: "until_changed",
+                reason: "守钟人向旅人说明了铜钟的秘密",
+                evidence: [eventId],
+              },
+            ],
+          },
+        },
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    assert.equal(first.committedTurn.sequence, 2);
+    // NPC 想法随 turn 保存，玩家想法随 playerInput 保存
+    const adventure = store.loadAdventure(started.sessionId);
+    const firstOutput = adventure.branchState.recentTurns.at(-1).generatedOutput;
+    assert.deepEqual(firstOutput.turn.characterThoughts, [
+      { characterId: started.mainCharacterId, content: "旅人暂时可信，但还要观察。" },
+    ]);
+    assert.equal(
+      adventure.branchState.recentTurns.at(-1).playerInput.innerThoughts,
+      "我必须先赢得她的信任。",
+    );
+    // knownFacts 物化到 character_state
+    const keeperState = adventure.branchState.states.find(
+      (state) =>
+        state.entityType === "character_state" &&
+        state.entityId === started.mainCharacterId,
+    );
+    assert.deepEqual(keeperState.state.knownFacts, [
+      { id: "fact-clock-secret", content: "铜钟在逆流时与失踪者名单对应。" },
+    ]);
+
+    // 后续回合：上下文注入已知信息 + 历史 NPC 想法 + 玩家想法高亮 + 规则文本
+    const messages = createStoryGenerationMessages({
+      adventure,
+      turnId: "turn-knownfacts-2",
+      resolvedPlayerTurn: {
+        playerInput: {
+          selectedChoice: null,
+          customChoice: "追问铜钟的来历",
+          roleplay: null,
+          innerThoughts: "她守口如瓶，但眼神里有破绽。",
+          storyDirection: null,
+          effectiveStoryDirection: null,
+        },
+        displayMessage: "自定义选择：追问铜钟的来历",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    });
+    const context = parseStoryContext(messages[1].content);
+    // 玩家想法高亮区与 playerInput 同步
+    assert.equal(context.latestPlayerInnerThoughts, "她守口如瓶，但眼神里有破绽。");
+    assert.equal(context.playerInput.innerThoughts, "她守口如瓶，但眼神里有破绽。");
+    // 角色目录注入已知信息（该角色已经知道的信息）
+    const keeper = context.characterDirectory.find(
+      (character) => character.id === started.mainCharacterId,
+    );
+    assert.deepEqual(keeper.knownFacts, [
+      { id: "fact-clock-secret", content: "铜钟在逆流时与失踪者名单对应。" },
+    ]);
+    // 最近回合注入历史 NPC 想法
+    const recent = context.recentTurns.find((turn) => turn.sequence === 2);
+    assert.deepEqual(recent.characterThoughts, [
+      { characterId: started.mainCharacterId, content: "旅人暂时可信，但还要观察。" },
+    ]);
+    // 规则 35/36/37 文本断言
+    const systemPrompt = messages[0].content;
+    assert.match(systemPrompt, /35\. 角色想法体系/);
+    assert.match(systemPrompt, /仅玩家角色自己知道，其他角色（含 NPC）不可知/);
+    assert.match(systemPrompt, /正文、对话、事件中不得直接写出他人想法/);
+    assert.match(systemPrompt, /36\. 角色已知信息/);
+    assert.match(systemPrompt, /该角色已经知道的信息/);
+    assert.match(systemPrompt, /不得重复生成“首次获知\/得知该信息”的表述/);
+    assert.match(systemPrompt, /按角色隔离/);
+    assert.match(systemPrompt, /37\. 关系变化维度区分/);
+    assert.match(systemPrompt, /不得笼统写“关系加深”/);
+    // 诊断 sections 增加“最新玩家想法”条目（含保密标注）
+    const snapshot = createStoryGenerationPrompt({
+      adventure,
+      turnId: "turn-knownfacts-2",
+      resolvedPlayerTurn: {
+        playerInput: {
+          selectedChoice: null,
+          customChoice: "追问铜钟的来历",
+          roleplay: null,
+          innerThoughts: "她守口如瓶，但眼神里有破绽。",
+          storyDirection: null,
+          effectiveStoryDirection: null,
+        },
+        displayMessage: "自定义选择：追问铜钟的来历",
+        effectiveStoryDirection: "",
+        previousStoryDirection: "",
+      },
+    }).snapshot;
+    assert.ok(
+      snapshot.diagnostics.sections.some(
+        (section) =>
+          section.name.includes("最新玩家想法") &&
+          section.name.includes("其他角色不可知"),
+      ),
+    );
+    // 无玩家想法时 latestPlayerInnerThoughts 省略
+    const noThoughtContext = parseStoryContext(
+      createStoryGenerationMessages({
+        adventure,
+        turnId: "turn-knownfacts-3",
+        resolvedPlayerTurn: {
+          playerInput: {},
+          displayMessage: "测试",
+          effectiveStoryDirection: "",
+          previousStoryDirection: "",
+        },
+      })[1].content,
+    );
+    assert.equal("latestPlayerInnerThoughts" in noThoughtContext, false);
+  } finally {
+    database.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("knownFacts 上下文预算：每角色最多 10 条、总字符约 1200、超出保留最近登记", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ai-tavern-knownfacts-budget-"));
+  const database = openLocalDatabase({
+    filePath: join(temporaryDirectory, "story.sqlite"),
+    migrationsDir,
+  });
+  try {
+    const store = new LocalStoryStore(database);
+    const started = statusesAdventure(store, "已知信息预算测试");
+    const eventId = "event-knownfacts-budget";
+    const turn1 = statusesTestTurn(started, eventId, "守钟人记下了许多事情。");
+    // 13 条已知信息（超过注入上限；存储不限制条数，注入时做预算）
+    const longFacts = Array.from({ length: 13 }, (_, i) => ({
+      id: `fact-${i}`,
+      content: `消息${i}：${"字".repeat(120)}`,
+    }));
+    await advanceAdventureTurn({
+      store,
+      sessionId: started.sessionId,
+      input: parsePlayerTurnRequest({
+        expectedHeadTurnId: started.openingTurnId,
+        idempotencyKey: "knownfacts-budget-1",
+        selectedChoiceId: "opening-neutral",
+      }),
+      createTurnId: () => "turn-knownfacts-budget",
+      generate: async () => ({
+        content: {
+          ...turn1,
+          stateCommit: {
+            ...turn1.stateCommit,
+            characterStateChanges: [
+              {
+                characterId: started.mainCharacterId,
+                patch: { knownFacts: longFacts },
+                duration: "until_changed",
+                reason: "角色登记了大量已知信息",
+                evidence: [eventId],
+              },
+            ],
+          },
+        },
+        model: "deepseek-v4-flash",
+        usage: { totalTokens: 1000 },
+      }),
+    });
+    const adventure = store.loadAdventure(started.sessionId);
+    const context = parseStoryContext(
+      createStoryGenerationMessages({
+        adventure,
+        turnId: "turn-knownfacts-budget-2",
+        resolvedPlayerTurn: {
+          playerInput: {},
+          displayMessage: "测试",
+          effectiveStoryDirection: "",
+          previousStoryDirection: "",
+        },
+      })[1].content,
+    );
+    const keeper = context.characterDirectory.find(
+      (character) => character.id === started.mainCharacterId,
+    );
+    // 每条 content 约 125 字符：10 条窗口 = 1250 > 1200 预算 → 保留最近 9 条
+    assert.equal(keeper.knownFacts.length, 9);
+    assert.equal(keeper.knownFacts[0].id, "fact-4");
+    assert.equal(keeper.knownFacts.at(-1).id, "fact-12");
+
+    // 短内容场景：窗口上限 10 条全部保留
+    const shortFacts = Array.from({ length: 13 }, (_, i) => ({
+      id: `short-${i}`,
+      content: `短消息${i}`,
+    }));
+    const temporaryDirectory2 = mkdtempSync(join(tmpdir(), "ai-tavern-knownfacts-budget2-"));
+    const database2 = openLocalDatabase({
+      filePath: join(temporaryDirectory2, "story.sqlite"),
+      migrationsDir,
+    });
+    try {
+      const store2 = new LocalStoryStore(database2);
+      const started2 = statusesAdventure(store2, "已知信息预算测试二");
+      const turn2 = statusesTestTurn(started2, "event-knownfacts-budget-2", "守钟人记下了许多事情。");
+      await advanceAdventureTurn({
+        store: store2,
+        sessionId: started2.sessionId,
+        input: parsePlayerTurnRequest({
+          expectedHeadTurnId: started2.openingTurnId,
+          idempotencyKey: "knownfacts-budget-2",
+          selectedChoiceId: "opening-neutral",
+        }),
+        createTurnId: () => "turn-knownfacts-budget-2",
+        generate: async () => ({
+          content: {
+            ...turn2,
+            stateCommit: {
+              ...turn2.stateCommit,
+              characterStateChanges: [
+                {
+                  characterId: started2.mainCharacterId,
+                  patch: { knownFacts: shortFacts },
+                  duration: "until_changed",
+                  reason: "角色登记了大量短消息",
+                  evidence: ["event-knownfacts-budget-2"],
+                },
+              ],
+            },
+          },
+          model: "deepseek-v4-flash",
+          usage: { totalTokens: 1000 },
+        }),
+      });
+      const adventure2 = store2.loadAdventure(started2.sessionId);
+      const context2 = parseStoryContext(
+        createStoryGenerationMessages({
+          adventure: adventure2,
+          turnId: "turn-knownfacts-budget-3",
+          resolvedPlayerTurn: {
+            playerInput: {},
+            displayMessage: "测试",
+            effectiveStoryDirection: "",
+            previousStoryDirection: "",
+          },
+        })[1].content,
+      );
+      const keeper2 = context2.characterDirectory.find(
+        (character) => character.id === started2.mainCharacterId,
+      );
+      assert.equal(keeper2.knownFacts.length, 10);
+      assert.equal(keeper2.knownFacts[0].id, "short-3");
+      assert.equal(keeper2.knownFacts.at(-1).id, "short-12");
+    } finally {
+      database2.close();
+      rmSync(temporaryDirectory2, { recursive: true, force: true });
+    }
   } finally {
     database.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });

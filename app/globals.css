@@ -3488,6 +3488,101 @@ a {
   margin-top: 10px;
 }
 
+.inner-thoughts-panel {
+  margin: 14px 0 0;
+  border: 1px solid rgb(148 111 132 / 18%);
+  border-radius: 4px;
+  background: linear-gradient(145deg, rgb(47 25 39 / 25%), rgb(18 14 16 / 70%));
+}
+
+.inner-thoughts-panel > summary {
+  display: flex;
+  min-height: 54px;
+  padding: 12px 18px;
+  align-items: center;
+  justify-content: space-between;
+  list-style: none;
+  cursor: pointer;
+}
+
+.inner-thoughts-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.inner-thoughts-panel > summary > span {
+  display: grid;
+  gap: 4px;
+}
+
+.inner-thoughts-panel > summary small {
+  color: #8d6280;
+  font-family: ui-monospace, monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.13em;
+}
+
+.inner-thoughts-panel > summary strong {
+  color: #b8aebd;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.inner-thoughts-panel > summary i {
+  color: #807069;
+  font-style: normal;
+  transition: transform 150ms ease;
+}
+
+.inner-thoughts-panel[open] > summary i {
+  transform: rotate(180deg);
+}
+
+.inner-thoughts-list {
+  display: grid;
+  max-height: 400px;
+  padding: 14px;
+  border-top: 1px solid rgb(148 111 132 / 14%);
+  gap: 10px;
+  overflow-y: auto;
+  scrollbar-color: #67495a transparent;
+}
+
+.inner-thoughts-list article {
+  padding: 14px;
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-left: 2px solid #77596a;
+  border-radius: 3px;
+  background: rgb(13 10 12 / 38%);
+}
+
+.inner-thoughts-list header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inner-thoughts-list header strong {
+  color: #c0b1bd;
+  font-size: 0.72rem;
+}
+
+.inner-thoughts-list header span {
+  color: #80766f;
+  font-size: 0.57rem;
+}
+
+.inner-thoughts-list p {
+  margin: 11px 0 0;
+  color: #a08f97;
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 0.78rem;
+  font-style: italic;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
 .turn-changes {
   order: 7;
   margin: 0 0 28px;

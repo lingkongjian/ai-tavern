@@ -68,6 +68,14 @@
           "items": {
             "$ref": "#/$defs/dialogue"
           }
+        },
+        "characterThoughts": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/characterThought"
+          },
+          "description": "可选：NPC 角色内心想法（内心独白）。其他角色（含玩家角色）不可知，只影响该角色自身后续行动的动机一致性；无则省略该字段。"
         }
       }
     },
@@ -117,6 +125,20 @@
           "items": {
             "$ref": "#/$defs/nonEmptyString"
           }
+        }
+      }
+    },
+    "characterThought": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["characterId", "content"],
+      "properties": {
+        "characterId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "content": {
+          "$ref": "#/$defs/nonEmptyString",
+          "maxLength": 400
         }
       }
     },
@@ -330,7 +352,16 @@
         },
         "patch": {
           "type": "object",
-          "minProperties": 1
+          "minProperties": 1,
+          "properties": {
+            "knownFacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/knownFact"
+              },
+              "description": "可选：该角色已经知道的信息（完整数组替换，null 清除全部）。已登记的信息后续剧情不得重复生成“首次获知/得知该信息”的表述；信息按角色隔离。"
+            }
+          }
         },
         "duration": {
           "enum": ["instant", "scene", "until_changed", "permanent"]
@@ -340,6 +371,21 @@
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "knownFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "content"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "稳定唯一 ID（修改该条信息时保持不变）。"
+        },
+        "content": {
+          "$ref": "#/$defs/nonEmptyString",
+          "maxLength": 300
         }
       }
     },

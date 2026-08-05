@@ -390,6 +390,11 @@ function recreatePlayerTurnRequest(input: {
   const validRoleplayMode =
     mode === "speech" || mode === "action" || mode === "mixed" ? mode : null;
   const storyDirection = input.playerInput.storyDirection;
+  const innerThoughts =
+    typeof input.playerInput.innerThoughts === "string" &&
+    input.playerInput.innerThoughts.trim()
+      ? input.playerInput.innerThoughts.trim()
+      : undefined;
   if (!selectedChoiceId && !customChoice && !roleplayContent && typeof storyDirection !== "string") {
     throw new TurnRegenerationError("没有找到该回合原来的玩家输入，无法重新生成。");
   }
@@ -401,6 +406,7 @@ function recreatePlayerTurnRequest(input: {
     ...(validRoleplayMode && roleplayContent
       ? { roleplay: { mode: validRoleplayMode, content: roleplayContent } }
       : {}),
+    ...(innerThoughts ? { innerThoughts } : {}),
     ...(typeof storyDirection === "string" ? { storyDirection } : {}),
   };
 }

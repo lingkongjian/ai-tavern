@@ -86,6 +86,33 @@ function collectHiddenStatuses(value: JsonValue | undefined) {
     }));
 }
 
+/**
+ * 角色已知信息（character_state.knownFacts）注入：
+ * - 每角色最多 10 条（取数组尾部——模型维护完整数组替换，最近登记的排在末尾）；
+ * - 单条 content 截断到 300 字符；
+ * - 单角色总字符预算约 1200 字符，超出时保留最近登记的条目。
+ */
+function collectCharacterKnownFacts(value: JsonValue | undefined) {
+  if (!Array.isArray(value)) return [];
+  const items = value
+    .filter(isObject)
+    .map((item) => ({
+      id: readText(item.id),
+      content: readText(item.content).slice(0, 300),
+    }))
+    .filter((item) => item.id && item.content);
+  if (items.length === 0) return [];
+  const windowed = items.slice(-10);
+  const result: { id: string; content: string }[] = [];
+  let totalChars = 0;
+  for (let index = windowed.length - 1; index >= 0; index -= 1) {
+    totalChars += windowed[index].content.length;
+    if (totalChars > 1_200) break;
+    result.unshift(windowed[index]);
+  }
+  return result;
+}
+
 export interface ResolvedPlayerTurn {
   playerInput: JsonObject;
   displayMessage: string;
@@ -146,6 +173,7 @@ export function resolvePlayerTurn(
     roleplay: input.roleplay
       ? { mode: input.roleplay.mode, content: input.roleplay.content }
       : null,
+    innerThoughts: input.innerThoughts ?? null,
     storyDirection:
       input.storyDirection !== undefined ? input.storyDirection : null,
     effectiveStoryDirection: effectiveStoryDirection || null,
@@ -164,6 +192,9 @@ export function resolvePlayerTurn(
           ? "动作"
           : "言行";
     displayParts.push(`${modeLabel}：${input.roleplay.content}`);
+  }
+  if (input.innerThoughts) {
+    displayParts.push(`想法：${input.innerThoughts}`);
   }
   if (input.storyDirection !== undefined && input.storyDirection !== previousStoryDirection) {
     displayParts.push(
@@ -199,6 +230,16 @@ function compactRecentTurns(adventure: LoadedAdventure, count: number) {
       : null;
     const roleplayMode = readText(roleplay?.mode);
     const roleplayContent = readText(roleplay?.content);
+    // 历史角色内心想法：随最近回合注入（规则 35 标注为内心独白，其他角色不可知），
+    // 帮助模型保持该角色行动动机跨回合一致。
+    const characterThoughts = readArray(turn.characterThoughts)
+      .filter(isObject)
+      .slice(0, 6)
+      .map((item) => ({
+        characterId: readText(item.characterId),
+        content: readText(item.content),
+      }))
+      .filter((item) => item.characterId && item.content);
     return {
       turnId: recentTurn.id,
       sequence: recentTurn.sequence,
@@ -214,6 +255,7 @@ function compactRecentTurns(adventure: LoadedAdventure, count: number) {
       scene: readText(turn.scene),
       dialogue: readArray(turn.dialogue),
       events: readArray(turn.events),
+      ...(characterThoughts.length > 0 ? { characterThoughts } : {}),
       nextQuestion: readText(decision.prompt),
       summaryPatch: recentTurn.summaryPatch,
     };
@@ -267,6 +309,9 @@ export function createStoryGenerationPrompt(input: {
       roleplayMode === "mixed")
       ? { mode: roleplayMode, content: roleplayContent }
       : null;
+  // 最新玩家内心想法高亮分区：精简自 playerInput.innerThoughts（仅玩家角色自己
+  // 知道，其他角色不可知），置于 context 顶部显眼位置；无想法时省略该字段。
+  const playerInnerThoughts = readText(resolvedPlayerTurn.playerInput.innerThoughts);
   const activeStateRecords = adventure.branchState.states.filter(
     (state) => state.isActive,
   );
@@ -481,6 +526,7 @@ export function createStoryGenerationPrompt(input: {
         ? current.state.restriction
         : null;
       const statuses = visibleCharacterStatuses(current?.state.statuses, gameTimeDay);
+      const knownFacts = collectCharacterKnownFacts(current?.state.knownFacts);
       return {
         id: state.entityId,
         name: readText(current?.state.name) || readText(data.name),
@@ -496,6 +542,7 @@ export function createStoryGenerationPrompt(input: {
             }
           : {}),
         ...(statuses.length > 0 ? { statuses } : {}),
+        ...(knownFacts.length > 0 ? { knownFacts } : {}),
       };
     });
   const hiddenCharacterStatuses = usableStateRecords
@@ -730,13 +777,18 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
 33. 候选选项实质差异：本轮 decision.choices 与最近 2-3 回合的候选项应有实质差异——不得连续多轮生成语义相似的选项（如反复"继续调查/观望/保持现状"这类近似选项）。选项应随剧情进展与玩家回应结果变化：上一轮的选择及其结果已经改变局势，本轮选项必须体现这种变化，给出新的行动空间、新的代价或新的方向，而不是同一批措辞换着说法重出。与规则 6 的边界：规则 6 要求本轮内部选项彼此有差异，本规则要求与近期回合的选项拉开差异；对话持续推进时选项可以自然演变，但每轮仍应让人看出局势在变。
 34. 约定（stateCommit.appointments）：剧情中角色之间明确约定未来的具体时间点（会面、交易、交付、赴考、委托时限等剧情内事件，区别于剧本包预埋任务的 deadlineDay）时，在本轮 stateCommit.appointments 中登记：{"id":"稳定唯一ID","title":"约定标题","description":"约定内容（何时、何地、何事）","characterIds":["参与角色ID"],"atDay":游戏内约定日期}。appointments 是完整数组替换：新登记、修改（改 title/description/characterIds/atDay，id 不变）、兑现或取消约定（从新数组中移除该 id）时，必须提供包含全部现存约定的新数组；stateCommit.appointments=null 表示清除全部约定；省略该字段表示约定保持不变。不得把角色随口一提或尚未谈成的话写成约定。上下文中的 appointments 是尚未到期的约定（含 daysRemaining 剩余天数），剧情可自然引用；dueAppointments 是约定日已到（atDay ≤ 当前游戏内日期）且仍未处理的约定，这是导演级硬事实：本轮剧情必须体现约定的兑现或失效（如期赴约、错过约定、变故推迟、当面重新约定等），并同步更新 appointments（已兑现/已失效的约定从新数组中移除，重新约定的更新 atDay），不能假装约定不存在或时间没有流逝。约定与任务期限互不替代：deadlineDay 是剧本包预埋任务的时间约束，约定是剧情动态产生的时间承诺，两者都不需要通过状态词条维护；五回合一天模式下 atDay 同样按游戏内日期计算（一天 = 5 个回合）。${timeFixInstruction}
 
+35. 角色想法体系：玩家的内心想法来自本轮输入（playerInput.innerThoughts / 上下文 latestPlayerInnerThoughts），仅玩家角色自己知道，其他角色（含 NPC）不可知；AI 控制角色的内心想法在本轮输出 turn.characterThoughts 中表达（每条 {"characterId":"角色ID","content":"内心独白"}，最多 6 条，每条不超过 400 字符；没有则不返回），最近回合的 characterThoughts 会随上下文注入，同为该角色内心独白，其他角色（含玩家角色）不可知。想法是角色的内在动机：影响该角色的言行风格、候选选项倾向与后续行动的一致性；但想法不自动成为言行——言行仍必须通过 scene/events/dialogue 呈现，玩家角色的想法不能替其自动做出言行。任何角色的想法对其他角色不可知：正文、对话、事件中不得直接写出他人想法（读心、心灵感应等必须有剧情事件支撑才可出现），不得把 NPC 的想法当作玩家角色或其他 NPC 已知信息使用，不得用 NPC 想法替玩家角色做决定。
+36. 角色已知信息（character_state.knownFacts）：角色获知重要信息（对话告知、信件、发现、偷听、亲眼所见等）时，在本轮 characterStateChanges 的 patch.knownFacts 中登记：{"id":"稳定唯一ID","content":"该角色已经知道的信息（约 300 字内）"}。knownFacts 是完整数组替换：新增、修改（id 不变）或移除时必须提供包含全部现存条目的新数组；patch.knownFacts=null 表示清除该角色全部已知信息。上下文 characterDirectory 中的 knownFacts 是“该角色已经知道的信息”，按角色隔离：A 已知不等于 B 已知，除非 B 也通过剧情获知并登记。已登记的信息，后续剧情不得重复生成“首次获知/得知该信息”的表述——剧本推进到相关情节时应体现角色已经掌握该信息（基于信息行动、决策、回应），而不是重新交代获知过程；首次获知本身（何时、从哪里得知）仍应在发生时通过剧情呈现，并同步登记。角色想法（规则 35）可以基于其已知信息生成。
+37. 关系变化维度区分：relationshipChanges 必须明确区分维度——信任（trust：托付秘密、可靠承诺、守约、值得依赖）与好感（affection：心动、亲近、思念、情感依恋）是不同的维度，恐惧（fear）、敌意（hostility）、敬意（respect）同理各自独立。尤其在情侣或暧昧关系深化时，必须判断本次加深的究竟是信任、好感还是两者兼有：两类都加深时分别登记两条变化（各自标注 delta 与 reason），不得笼统写“关系加深”或只改一个维度敷衍了事；每个变化的 reason 必须指向本轮或历史中具体的事件/对话依据（与规则 8 的证据要求一致），不得使用无依据的泛化理由。
+
 返回结构必须完整：
 {
   "schemaVersion": "1.0.0",
   "turn": {
     "scene": "面向玩家的本轮叙述",
     "events": [{"id":"event-id","type":"事件类型","summary":"已发生事实","characterIds":["角色ID"],"locationId":null}],
-    "dialogue": [{"id":"dialogue-id","speakerId":"角色ID","content":"角色台词","addressedCharacterIds":["角色ID"]}]
+    "dialogue": [{"id":"dialogue-id","speakerId":"角色ID","content":"角色台词","addressedCharacterIds":["角色ID"]}],
+    "characterThoughts": [{"characterId":"角色ID","content":"该角色本轮内心独白（可选，最多 6 条，其他角色不可知；没有则不返回）"}]
   },
   "decision": {
     "context": "proposal_response 或 action_direction",
@@ -745,7 +797,7 @@ divergenceState 是导演级判断，只出现在输出 JSON 中，系统不会�
   },
   "stateCommit": {
     "sceneTransition": {"locationId":"已有或新地点ID","locationName":"地点名称","locationDescription":"地点资料","presentCharacterIds":["本轮结束时仍在场的全部角色ID"],"offstageUpdates":[{"characterId":"不在场角色ID","locationId":"已知或新地点ID","locationName":"新地点时必须提供","locationDescription":"可选","reason":"为什么该角色离场移动"}],"timeAdvance":"moment（缺省即时间基本不变；仅剧情实际经过数小时/次日/数日时填 hours/one_day/several_days）","gameTimeDayNext":"跨日剧情必填：本回合结束时的游戏内日期（整数，≥ 当前 gameTimeDay，不得回退；与 timeAdvance 同时提供时以此为准），未跨日省略","reason":"位置或阵容如此变化的原因","evidence":["事件或对话ID"]},
-    "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60},"statuses":[{"id":"wound-1","name":"受伤","kind":"debuff","description":"左臂刀伤未愈合","expiresAtDay":5}]},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
+    "characterStateChanges": [{"characterId":"角色ID","patch":{"attributes":{"力量":60},"statuses":[{"id":"wound-1","name":"受伤","kind":"debuff","description":"左臂刀伤未愈合","expiresAtDay":5}],"knownFacts":[{"id":"fact-1","content":"该角色已经知道的信息（约 300 字内）"}]},"duration":"until_changed","reason":"原因","evidence":["事件或对话ID"]}],
     "relationshipChanges": [{"sourceCharacterId":"角色ID","targetCharacterId":"角色ID","dimension":"trust","delta":0,"reason":"原因","evidence":["事件或对话ID"]}],
     "characterCardChanges": [{"characterId":"角色ID","operation":"add","path":"允许路径","value":{},"reason":"原因","evidence":["事件或对话ID"],"sourceTurnId":"${turnId}"}],
     "worldBookChanges": [],
@@ -766,10 +818,11 @@ worldBookChanges 按需使用以下结构之一：
 - update：{"operation":"update","targetEntryId":"现有条目ID","patch":{"content":"更新后的事实"},"sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 - deactivate：{"operation":"deactivate","targetEntryId":"现有条目ID","sourceTurnId":"${turnId}","reason":"原因","evidence":["事件或对话ID"]}
 
-没有某类变化时必须返回空数组；stateCommit.appointments 按规则 34 使用：剧情中角色明确约定未来时间点（会面、交易、交付等，非剧本包任务期限）时登记（完整数组替换，null 清除全部约定，省略表示约定保持不变），dueAppointments（约定日已到）出现时本轮必须体现赴约/错过/变故并同步更新 appointments。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
+没有某类变化时必须返回空数组；turn.characterThoughts 没有则省略（不返回空数组）；stateCommit.appointments 按规则 34 使用：剧情中角色明确约定未来时间点（会面、交易、交付等，非剧本包任务期限）时登记（完整数组替换，null 清除全部约定，省略表示约定保持不变），dueAppointments（约定日已到）出现时本轮必须体现赴约/错过/变故并同步更新 appointments。attributeChecks 按需使用：{"id":"check-1","characterId":"角色ID","attribute":"力量","difficulty":70,"context":"为什么在此刻判定、判定的具体行动"}，最多 4 项，属性只能是 力量/敏捷/感知/意志/魅力/智力/体质，难度是 1-100 整数；没有判定时不返回字段。sourceProgress 按需使用：当本轮剧情实际发生的内容推进到了原文新章节（可跨章节推进）时，在顶层返回 {"sourceProgress": N}，N 是 1 起的整数；对话、日常回合未触及新章节时省略该字段，绝不能虚报进度。可用角色 ID：${characterIds.join(", ")}。已记录且可进入的地点 ID：${locationIds.join(", ") || "无，可按需创建新地点"}。可更新或停用的世界书条目 ID：${worldBookEntryIds.join(", ") || "无"}。`;
 
   const context: JsonObject = {
     ...(latestPlayerRoleplay ? { latestPlayerRoleplay } : {}),
+    ...(playerInnerThoughts ? { latestPlayerInnerThoughts: playerInnerThoughts } : {}),
     nextTurnId: turnId,
     campaign: adventure.campaign,
     session: adventure.session,
@@ -916,6 +969,14 @@ worldBookChanges 按需使用以下结构之一：
     ],
     ...(latestPlayerRoleplay
       ? [["最新玩家言行", context.latestPlayerRoleplay] as const]
+      : []),
+    ...(playerInnerThoughts
+      ? [
+          [
+            "最新玩家想法（仅玩家角色自己知道，其他角色不可知）",
+            context.latestPlayerInnerThoughts,
+          ] as const,
+        ]
       : []),
     ["玩家输入", context.playerInput],
     ...(divergenceSignals
