@@ -1,6 +1,6 @@
 {
   "name": "ai-tavern",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "private": true,
   "description": "本地运行、由 AI API 驱动的网页酒馆程序",
   "author": "AI 酒馆项目",
