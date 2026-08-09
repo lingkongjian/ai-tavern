@@ -55,6 +55,32 @@ test("游戏正文之后依次显示玩家回应、剧情走向和本轮变化",
   assert.match(styles, /\.turn-changes\s*\{[\s\S]*?order:\s*7/);
 });
 
+test("跨页面 UI 使用统一叙事令牌、可读正文宽度和分级响应式布局", async () => {
+  const styles = await readProjectFile("app/globals.css");
+
+  for (const token of [
+    "--text-strong",
+    "--surface-base",
+    "--surface-raised",
+    "--border-subtle",
+    "--shadow-overlay",
+    "--content-measure",
+    "--control-height",
+  ]) {
+    assert.match(styles, new RegExp(token));
+  }
+
+  assert.match(styles, /统一界面系统：叙事层级、控件与密度/);
+  assert.match(styles, /\.scene-text\s*\{[\s\S]*?max-width:\s*var\(--content-measure\)/);
+  assert.match(styles, /\.state-rail\s*\{[\s\S]*?height:\s*calc\(100dvh/);
+  assert.match(styles, /\.story-workbench-navigation\s*\{[\s\S]*?position:\s*sticky/);
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.main-menu-shell\s*\{[\s\S]*?grid-template-columns:\s*1fr/);
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.header-branch-actions\s*\{[\s\S]*?display:\s*flex[\s\S]*?overflow-x:\s*auto/);
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.state-rail\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2/);
+  assert.match(styles, /@media \(max-width: 580px\)[\s\S]*?\.state-rail\s*\{[\s\S]*?grid-template-columns:\s*1fr/);
+  assert.match(styles, /prefers-reduced-motion:\s*reduce/);
+});
+
 test("桌面版退出按钮通过受限预加载桥接关闭程序", async () => {
   const [main, preload, buildScript, verifyScript] = await Promise.all([
     readProjectFile("desktop/main.mjs"),

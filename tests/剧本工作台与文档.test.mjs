@@ -205,9 +205,10 @@ test("文件生命周期和玩家手册覆盖当前维护边界", async () => {
 });
 
 test("网页操作手册直接渲染唯一 Markdown 源文件", async () => {
-  const [pageSource, rendererSource] = await Promise.all([
+  const [pageSource, rendererSource, styles] = await Promise.all([
     readProjectFile("app/manual/page.tsx"),
     readProjectFile("app/manual/Markdown文档.tsx"),
+    readProjectFile("app/globals.css"),
   ]);
 
   assert.match(pageSource, /AI酒馆操作手册\.md/);
@@ -215,4 +216,7 @@ test("网页操作手册直接渲染唯一 Markdown 源文件", async () => {
   assert.match(pageSource, /下载 Markdown 原文/);
   assert.match(rendererSource, /manual-table-scroll/);
   assert.match(rendererSource, /renderInline/);
+  assert.match(styles, /\.manual-page-actions\s*\{[\s\S]*?position:\s*sticky/);
+  assert.match(styles, /\.manual-document\s*\{[\s\S]*?width:\s*min\(900px/);
+  assert.match(styles, /\.manual-table-scroll\s*\{[\s\S]*?overflow-x:\s*auto/);
 });
