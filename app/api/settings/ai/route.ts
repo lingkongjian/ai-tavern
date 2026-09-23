@@ -4,6 +4,7 @@ import {
   AiRequestError,
   AiResponseError,
   getAiProviderStatus,
+  readGenerationLimit,
   type AiJsonMode,
   type AiProviderId,
 } from "@/lib/ai/模型供应商";
@@ -46,7 +47,7 @@ function parseConfiguration(value: unknown) {
   if (typeof model !== "string" || model.length > 200) {
     throw new AiConfigurationError("模型名称格式无效或过长。");
   }
-  if (jsonMode !== "response_format" && jsonMode !== "prompt_only") {
+  if (jsonMode !== "response_format" && jsonMode !== "json_schema" && jsonMode !== "prompt_only") {
     throw new AiConfigurationError("请选择有效的 JSON 输出方式。");
   }
   if (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length > 4_000)) {
@@ -60,6 +61,8 @@ function parseConfiguration(value: unknown) {
     baseUrl,
     model,
     jsonMode: jsonMode as AiJsonMode,
+    ...(value.maxOutputTokens !== undefined ? { maxOutputTokens: readGenerationLimit(value.maxOutputTokens, 6_000, 131_072, "输出上限") } : {}),
+    ...(value.requestTimeoutSeconds !== undefined ? { requestTimeoutSeconds: readGenerationLimit(value.requestTimeoutSeconds, 90, 14_400, "等待时间") } : {}),
     ...(typeof apiKey === "string" ? { apiKey } : {}),
     ...(typeof clearApiKey === "boolean" ? { clearApiKey } : {}),
   };

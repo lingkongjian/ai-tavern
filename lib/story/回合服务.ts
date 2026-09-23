@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+  AiConfigurationError,
   AiRequestError,
   AiResponseError,
+  AiOutputTruncatedError,
   requestAiJson,
   requestAiJsonStream,
+  getAiProviderConfig,
   type AiJsonResult,
   type AiMessage,
   type AiUsage,
@@ -84,7 +87,8 @@ function assertTurnNotCancelled(isCancelled?: () => boolean) {
 }
 
 function isFailoverTrigger(error: unknown) {
-  return error instanceof AiRequestError || error instanceof AiResponseError;
+  return !(error instanceof AiOutputTruncatedError) &&
+    (error instanceof AiRequestError || error instanceof AiResponseError);
 }
 
 function profileAsConfigInput(profile: ActiveAiProfile) {
@@ -93,6 +97,8 @@ function profileAsConfigInput(profile: ActiveAiProfile) {
     baseUrl: profile.baseUrl,
     model: profile.model,
     jsonMode: profile.jsonMode,
+    maxOutputTokens: profile.maxOutputTokens,
+    requestTimeoutSeconds: profile.requestTimeoutSeconds,
     apiKey: profile.apiKey,
   };
 }
@@ -104,9 +110,11 @@ export async function generateWithProfileFailover(
     onFailover?: (target: FailoverProfileInfo) => void;
     fetchImplementation?: typeof fetch;
     timeoutMs?: number;
+    signal?: AbortSignal;
   } = {},
 ): Promise<AiJsonResult> {
   const activeProfile = getActiveAiProfileSync();
+  if (options.signal?.aborted) throw new TurnCancelledError();
   let lastError: unknown;
   try {
     return options.onStreamDelta
@@ -114,12 +122,17 @@ export async function generateWithProfileFailover(
           onDelta: options.onStreamDelta,
           fetchImplementation: options.fetchImplementation,
           timeoutMs: options.timeoutMs,
+          signal: options.signal,
+          config: activeProfile ? profileAsConfigInput(activeProfile) : undefined,
         })
       : await requestAiJson(messages, {
           fetchImplementation: options.fetchImplementation,
           timeoutMs: options.timeoutMs,
+          signal: options.signal,
+          config: activeProfile ? profileAsConfigInput(activeProfile) : undefined,
         });
   } catch (error) {
+    if (options.signal?.aborted) throw new TurnCancelledError();
     if (!isFailoverTrigger(error) || !activeProfile) throw error;
     lastError = error;
   }
@@ -128,6 +141,14 @@ export async function generateWithProfileFailover(
     (profile) => profile.id !== activeProfile.id,
   );
   for (const profile of alternates) {
+    if (options.signal?.aborted) throw new TurnCancelledError();
+    // Incomplete legacy profiles must not mask the active provider's real error.
+    try {
+      getAiProviderConfig(profileAsConfigInput(profile));
+    } catch (error) {
+      if (error instanceof AiConfigurationError) continue;
+      throw error;
+    }
     try {
       const result = options.onStreamDelta
         ? await requestAiJsonStream(messages, {
@@ -135,12 +156,15 @@ export async function generateWithProfileFailover(
             onDelta: options.onStreamDelta,
             fetchImplementation: options.fetchImplementation,
             timeoutMs: options.timeoutMs,
+            signal: options.signal,
           })
         : await requestAiJson(messages, {
             config: profileAsConfigInput(profile),
             fetchImplementation: options.fetchImplementation,
             timeoutMs: options.timeoutMs,
+            signal: options.signal,
           });
+      if (options.signal?.aborted) throw new TurnCancelledError();
       // 备用请求成功后持久切换活动配置：后续回合（含校验修复重试）都从备用开始，
       // 直到用户手动切回。持久化失败只记录，不影响本轮回合结果。
       try {
@@ -151,6 +175,8 @@ export async function generateWithProfileFailover(
       options.onFailover?.({ id: profile.id, name: profile.name });
       return result;
     } catch (error) {
+      if (options.signal?.aborted) throw new TurnCancelledError();
+      if (error instanceof AiOutputTruncatedError) throw error;
       lastError = error;
     }
   }
@@ -160,15 +186,18 @@ export async function generateWithProfileFailover(
 export function defaultStoryGenerator(
   onStreamDelta?: (text: string) => void,
   onFailover?: (target: FailoverProfileInfo) => void,
+  signal?: AbortSignal,
 ): StoryJsonGenerator {
   return (messages) =>
     generateWithProfileFailover(messages, {
       onStreamDelta,
       onFailover,
+      signal,
     });
 }
 
 export interface AdvanceTurnOptions {
+  signal?: AbortSignal;
   store: LocalStoryStore;
   sessionId: string;
   input: PlayerTurnRequest;
@@ -181,6 +210,7 @@ export interface AdvanceTurnOptions {
 }
 
 export interface RegenerateTurnOptions {
+  signal?: AbortSignal;
   store: LocalStoryStore;
   sessionId: string;
   expectedHeadTurnId: string;
@@ -1797,7 +1827,7 @@ export async function advanceAdventureTurn(
   const messages = prompt.messages;
   const generate =
     options.generate ??
-    defaultStoryGenerator(options.onStreamDelta, options.onFailover);
+    defaultStoryGenerator(options.onStreamDelta, options.onFailover, options.signal);
   // 跨回合防兜圈子：取最近 4 回合（含上一回合）的 scene 逐一比较，
   // 任一高度相似即触发修复重试，拦截隔几回合后语义重复的绕圈。
   const recentScenes = adventure.branchState.recentTurns
@@ -2055,7 +2085,7 @@ export async function regenerateLatestAdventureTurn(
   });
   const generate =
     options.generate ??
-    defaultStoryGenerator(options.onStreamDelta, options.onFailover);
+    defaultStoryGenerator(options.onStreamDelta, options.onFailover, options.signal);
   const previousRegenerateTurn =
     prepared.adventureBeforeTurn.branchState.recentTurns.at(-1);
   const previousRegenerateOutput = isJsonObject(

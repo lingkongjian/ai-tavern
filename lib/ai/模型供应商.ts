@@ -7,7 +7,7 @@ export type AiProviderId =
   | "openai_compatible"
   | "local_openai_compatible";
 
-export type AiJsonMode = "response_format" | "prompt_only";
+export type AiJsonMode = "response_format" | "json_schema" | "prompt_only";
 
 export interface AiMessage {
   role: "system" | "user" | "assistant";
@@ -32,12 +32,15 @@ export interface AiProviderConfigInput {
   model?: string;
   apiKey?: string;
   jsonMode?: AiJsonMode;
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
 }
 
 export interface AiRequestOptions {
   maxTokens?: number;
   fetchImplementation?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
   config?: AiProviderConfigInput;
 }
 
@@ -103,6 +106,8 @@ export interface ResolvedAiProviderConfig {
   apiKey: string;
   apiKeyRequired: boolean;
   jsonMode: AiJsonMode;
+  maxOutputTokens: number;
+  requestTimeoutSeconds: number;
 }
 
 export type ResolvedAiConnectionConfig = Omit<
@@ -134,6 +139,23 @@ export class AiResponseError extends Error {
   }
 }
 
+export class AiOutputTruncatedError extends AiResponseError {
+  constructor(providerLabel: string, maxTokens: number) {
+    super(
+      `${providerLabel} 输出被截断（本次输出上限 ${maxTokens} Token，含思考）。请在“模型设置”中提高输出上限和等待时间，或在模型服务中减少/关闭思考；同时检查模型的上下文容量。本轮未保存。`,
+    );
+    this.name = "AiOutputTruncatedError";
+  }
+}
+
+export function readGenerationLimit(value: unknown, fallback: number, maximum: number, label: string): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > maximum) {
+    throw new AiConfigurationError(label + "必须是 1 到 " + maximum + " 之间的整数。");
+  }
+  return value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -163,9 +185,9 @@ function readProvider(value: string | undefined): AiProviderId {
 
 function readJsonMode(value: string | undefined): AiJsonMode {
   const mode = value?.trim() || "response_format";
-  if (mode === "response_format" || mode === "prompt_only") return mode;
+  if (mode === "response_format" || mode === "json_schema" || mode === "prompt_only") return mode;
   throw new AiConfigurationError(
-    "AI_JSON_MODE 必须是 response_format 或 prompt_only。",
+    "AI_JSON_MODE 必须是 response_format、json_schema 或 prompt_only。",
   );
 }
 
@@ -232,13 +254,26 @@ function parseJsonObject(content: string, providerLabel: string) {
 }
 
 function readProviderMessage(value: unknown) {
-  if (!isRecord(value) || !isRecord(value.error)) return "";
-  return typeof value.error.message === "string" ? value.error.message : "";
+  if (!isRecord(value)) return "";
+  // LM Studio returns { error: "..." }; other providers use error.message.
+  if (typeof value.error === "string") return value.error;
+  if (isRecord(value.error) && typeof value.error.message === "string") return value.error.message;
+  return typeof value.message === "string" ? value.message : "";
 }
 
 function safeProviderMessage(message: string, apiKey: string) {
-  const limited = message.slice(0, 500);
-  return apiKey ? limited.split(apiKey).join("[密钥已隐藏]") : limited;
+  const redacted = apiKey ? message.split(apiKey).join("[密钥已隐藏]") : message;
+  return redacted.slice(0, 500);
+}
+
+function responseFormat(jsonMode: AiJsonMode) {
+  if (jsonMode === "response_format") return { type: "json_object" };
+  if (jsonMode === "json_schema") {
+    // Like JSON object mode, constrain the root only. Story-specific fields are
+    // still validated by each caller; audit and streaming use the same format.
+    return { type: "json_schema", json_schema: { name: "ai_tavern_json", schema: { type: "object" } } };
+  }
+  return undefined;
 }
 
 function readUsage(value: unknown): AiUsage {
@@ -295,6 +330,9 @@ export function getAiConnectionConfig(
     apiKey,
     apiKeyRequired: preset.apiKeyRequired,
     jsonMode,
+    // Explicit profiles must not inherit the active profile's generation limits.
+    maxOutputTokens: readGenerationLimit(input.maxOutputTokens ?? (input.provider === undefined ? profile?.maxOutputTokens : undefined), 6_000, 131_072, "输出上限"),
+    requestTimeoutSeconds: readGenerationLimit(input.requestTimeoutSeconds ?? (input.provider === undefined ? profile?.requestTimeoutSeconds : undefined), provider === "local_openai_compatible" ? 1_800 : 90, 14_400, "等待时间"),
   };
 }
 
@@ -341,6 +379,8 @@ export function getAiProviderStatus() {
     configured: Boolean(
       baseUrl && model && (hasApiKey || !preset.apiKeyRequired),
     ),
+    maxOutputTokens: profile?.maxOutputTokens ?? 6_000,
+    requestTimeoutSeconds: profile?.requestTimeoutSeconds ?? (provider === "local_openai_compatible" ? 1_800 : 90),
     hasApiKey,
     apiKeyRequired: preset.apiKeyRequired,
     baseUrl,
@@ -359,7 +399,10 @@ export async function requestAiJsonStream(
 
   const config = getAiProviderConfig(options.config);
   const fetchImplementation = options.fetchImplementation ?? fetch;
-  const timeoutMs = options.timeoutMs ?? 90_000;
+  const timeoutMs = options.timeoutMs ?? config.requestTimeoutSeconds * 1_000;
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ? AbortSignal.any([deadline, options.signal]) : deadline;
+  options.signal?.throwIfAborted();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "text/event-stream",
@@ -369,13 +412,12 @@ export async function requestAiJsonStream(
   const requestBody: Record<string, unknown> = {
     model: config.model,
     messages,
-    max_tokens: options.maxTokens ?? 6_000,
+    max_tokens: options.maxTokens ?? config.maxOutputTokens,
     stream: true,
     stream_options: { include_usage: true },
   };
-  if (config.jsonMode === "response_format") {
-    requestBody.response_format = { type: "json_object" };
-  }
+  const format = responseFormat(config.jsonMode);
+  if (format) requestBody.response_format = format;
   if (config.provider === "deepseek" || config.provider === "opencode_go") {
     requestBody.thinking = { type: "disabled" };
   }
@@ -386,11 +428,12 @@ export async function requestAiJsonStream(
       method: "POST",
       headers,
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
   } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new AiRequestError(`${config.providerLabel} 响应超时，请稍后重试。`);
+    options.signal?.throwIfAborted();
+    if (deadline.aborted || (error instanceof Error && error.name === "TimeoutError")) {
+      throw new AiRequestError(`${config.providerLabel} 响应超时（${Math.ceil(timeoutMs / 1000)} 秒），请检查模型加载和提示词处理进度。`);
     }
     throw new AiRequestError(
       `无法连接 ${config.providerLabel}，请检查地址、网络和服务状态。`,
@@ -463,17 +506,20 @@ export async function requestAiJsonStream(
     buffer += decoder.decode();
     for (const line of buffer.split("\n")) consumeLine(line);
   } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new AiRequestError(`${config.providerLabel} 流式响应超时，请稍后重试。`);
+    options.signal?.throwIfAborted();
+    if (deadline.aborted || (error instanceof Error && error.name === "TimeoutError")) {
+      throw new AiRequestError(`${config.providerLabel} 流式响应超时（${Math.ceil(timeoutMs / 1000)} 秒），请检查模型加载和生成进度。`);
     }
     throw new AiRequestError(`${config.providerLabel} 流式响应中断，请稍后重试。`);
+  } finally {
+    reader.releaseLock();
   }
 
   if (!sawFrame) {
     throw new AiResponseError(`${config.providerLabel} 没有返回任何流式内容。`);
   }
   if (finishReason === "length") {
-    throw new AiResponseError(`${config.providerLabel} 输出被截断，请重试本轮。`);
+    throw new AiOutputTruncatedError(config.providerLabel, options.maxTokens ?? config.maxOutputTokens);
   }
   if (!content.trim()) {
     throw new AiResponseError(`${config.providerLabel} 没有返回剧情内容。`);
@@ -495,7 +541,10 @@ function requestErrorFromResponse(
     readProviderMessage(body),
     config.apiKey,
   );
-  let message = `${config.providerLabel} 请求失败，请稍后重试。`;
+  let message = `${config.providerLabel} 请求失败。`;
+  if (status === 400 || status === 422) {
+    message = `${config.providerLabel} 拒绝请求参数，请检查模型名称和 JSON 输出方式。`;
+  }
   if (status === 401 || status === 403) {
     message = `${config.providerLabel} API Key 无效、已失效或权限不足。`;
   }
@@ -508,8 +557,12 @@ function requestErrorFromResponse(
   if (status >= 500) {
     message = `${config.providerLabel} 服务暂时不可用，请稍后重试。`;
   }
+  message += `（HTTP ${status}）`;
+  if (config.jsonMode === "response_format" && /response_format/i.test(providerMessage) && /json_schema/i.test(providerMessage)) {
+    message += " 可将 JSON 输出方式改为“JSON Schema（LM Studio）”后重新审核并保存。";
+  }
   return new AiRequestError(
-    providerMessage ? `${message}（${providerMessage}）` : message,
+    providerMessage ? `${message}\n服务返回：${providerMessage}` : message,
     status,
   );
 }
@@ -524,7 +577,10 @@ export async function requestAiJson(
 
   const config = getAiProviderConfig(options.config);
   const fetchImplementation = options.fetchImplementation ?? fetch;
-  const timeoutMs = options.timeoutMs ?? 90_000;
+  const timeoutMs = options.timeoutMs ?? config.requestTimeoutSeconds * 1_000;
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ? AbortSignal.any([deadline, options.signal]) : deadline;
+  options.signal?.throwIfAborted();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -533,12 +589,11 @@ export async function requestAiJson(
   const requestBody: Record<string, unknown> = {
     model: config.model,
     messages,
-    max_tokens: options.maxTokens ?? 6_000,
+    max_tokens: options.maxTokens ?? config.maxOutputTokens,
     stream: false,
   };
-  if (config.jsonMode === "response_format") {
-    requestBody.response_format = { type: "json_object" };
-  }
+  const format = responseFormat(config.jsonMode);
+  if (format) requestBody.response_format = format;
   if (config.provider === "deepseek" || config.provider === "opencode_go") {
     requestBody.thinking = { type: "disabled" };
   }
@@ -549,11 +604,12 @@ export async function requestAiJson(
       method: "POST",
       headers,
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
   } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new AiRequestError(`${config.providerLabel} 响应超时，请稍后重试。`);
+    options.signal?.throwIfAborted();
+    if (deadline.aborted || (error instanceof Error && error.name === "TimeoutError")) {
+      throw new AiRequestError(`${config.providerLabel} 响应超时（${Math.ceil(timeoutMs / 1000)} 秒），请检查模型加载和提示词处理进度。`);
     }
     throw new AiRequestError(
       `无法连接 ${config.providerLabel}，请检查地址、网络和服务状态。`,
@@ -564,6 +620,9 @@ export async function requestAiJson(
   try {
     body = await response.json();
   } catch {
+    options.signal?.throwIfAborted();
+    if (deadline.aborted) throw new AiRequestError(`${config.providerLabel} 响应超时（${Math.ceil(timeoutMs / 1000)} 秒）。`);
+    if (!response.ok) throw requestErrorFromResponse(config, response.status, undefined);
     throw new AiResponseError(`${config.providerLabel} 返回了无法读取的响应。`);
   }
 
@@ -579,7 +638,7 @@ export async function requestAiJson(
     throw new AiResponseError(`${config.providerLabel} 响应缺少最终消息。`);
   }
   if (choice.finish_reason === "length") {
-    throw new AiResponseError(`${config.providerLabel} 输出被截断，请重试本轮。`);
+    throw new AiOutputTruncatedError(config.providerLabel, options.maxTokens ?? config.maxOutputTokens);
   }
   const content = choice.message.content;
   if (typeof content !== "string" || !content.trim()) {

@@ -17,7 +17,7 @@ npm run lint
 npm test
 ```
 
-涉及桌面端时，还应在 Apple Silicon Mac 上运行 `npm run desktop:build:mac`。涉及文件格式、数据库或模型输出时，需要同步修改对应 Schema、兼容测试和规范文档。
+涉及桌面端时，还应在 Windows 上运行 `npm run desktop:build:win`，在 Apple Silicon Mac 上运行 `npm run desktop:build:mac`。公共构建与验证逻辑须保持两端兼容；Windows 验证包含中文/空格路径、退出备份和后台服务清理。涉及文件格式、数据库或模型输出时，需要同步修改对应 Schema、兼容测试和规范文档。
 
 ## 数据与内容要求
 

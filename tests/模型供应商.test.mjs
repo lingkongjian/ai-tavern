@@ -45,6 +45,17 @@ function restoreEnvironment() {
 
 test.after(restoreEnvironment);
 
+// Never let a developer's saved active profile override test environment values.
+let isolatedDataDirectory;
+test.beforeEach(async () => {
+  isolatedDataDirectory = await mkdtemp(path.join(os.tmpdir(), "ai-tavern-provider-isolated-"));
+  process.env.AI_TAVERN_DATA_DIR = isolatedDataDirectory;
+});
+test.afterEach(async () => {
+  restoreEnvironment();
+  await rm(isolatedDataDirectory, { recursive: true, force: true });
+});
+
 test("generic compatible providers omit DeepSeek-only request fields", async () => {
   let capturedRequest;
   const result = await requestAiJson(

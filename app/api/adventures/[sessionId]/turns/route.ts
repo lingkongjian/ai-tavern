@@ -120,6 +120,8 @@ export async function POST(
         store: new LocalStoryStore(getDb()),
         sessionId,
         input,
+        signal: request.signal,
+        isCancelled: () => request.signal.aborted,
       });
       return noStoreJson(result, {
         status:
@@ -132,19 +134,23 @@ export async function POST(
     }
 
     let cancelled = false;
+    const generationController = new AbortController();
     const markCancelled = () => {
       cancelled = true;
+      generationController.abort();
     };
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
-        // 前端中断（abort）或响应流被取消时，生成完成后不再提交回合
+        // 中断时立即取消模型请求，同时保留提交前的取消检查。
         request.signal?.addEventListener?.("abort", markCancelled);
+        if (request.signal.aborted) markCancelled();
         try {
           const result = await advanceAdventureTurn({
             store: new LocalStoryStore(getDb()),
             sessionId,
             input,
             isCancelled: () => cancelled,
+            signal: generationController.signal,
             onStreamDelta: (text) => sseEvent(controller, "delta", { text }),
             onFailover: ({ id, name }) =>
               sseEvent(controller, "failover", {
@@ -186,6 +192,7 @@ export async function POST(
             ...errorPayload(error),
           });
         } finally {
+          request.signal.removeEventListener("abort", markCancelled);
           try {
             controller.close();
           } catch {
@@ -194,7 +201,7 @@ export async function POST(
         }
       },
       cancel() {
-        cancelled = true;
+        markCancelled();
       },
     });
 

@@ -172,7 +172,7 @@ type AiProviderId =
   | "opencode_go"
   | "openai_compatible"
   | "local_openai_compatible";
-type AiJsonMode = "response_format" | "prompt_only";
+type AiJsonMode = "response_format" | "json_schema" | "prompt_only";
 
 interface AiProviderPreset {
   id: AiProviderId;
@@ -230,6 +230,8 @@ interface AiProfileSummary {
   baseUrl: string;
   model: string;
   jsonMode: AiJsonMode;
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   hasApiKey: boolean;
   createdAt: string;
   updatedAt: string;
@@ -244,6 +246,8 @@ interface AiSettingsResponse {
   baseUrl: string;
   model: string;
   jsonMode: AiJsonMode;
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   version?: string;
   presets: AiProviderPreset[];
   activeId: string | null;
@@ -258,6 +262,8 @@ interface AiSettingsDraft {
   model: string;
   apiKey: string;
   jsonMode: AiJsonMode;
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   clearApiKey: boolean;
 }
 
@@ -697,6 +703,8 @@ export function TavernHome() {
       model: status.model,
       apiKey: "",
       jsonMode: status.jsonMode,
+      maxOutputTokens: status.maxOutputTokens,
+      requestTimeoutSeconds: status.requestTimeoutSeconds,
       clearApiKey: false,
     });
     setModelProfiles(status.profiles ?? []);
@@ -866,6 +874,8 @@ export function TavernHome() {
         model: body.model,
         apiKey: "",
         jsonMode: body.jsonMode,
+      maxOutputTokens: body.maxOutputTokens,
+      requestTimeoutSeconds: body.requestTimeoutSeconds,
         clearApiKey: false,
       });
       setAvailableModels([]);
@@ -890,6 +900,8 @@ export function TavernHome() {
       model: profile.model,
       apiKey: "",
       jsonMode: profile.jsonMode,
+      maxOutputTokens: profile.maxOutputTokens,
+      requestTimeoutSeconds: profile.requestTimeoutSeconds,
       clearApiKey: false,
     });
     setModelNotice("");
@@ -954,6 +966,8 @@ export function TavernHome() {
         model: body.model,
         apiKey: "",
         jsonMode: body.jsonMode,
+      maxOutputTokens: body.maxOutputTokens,
+      requestTimeoutSeconds: body.requestTimeoutSeconds,
         clearApiKey: false,
       });
       setAvailableModels([]);
@@ -3788,6 +3802,8 @@ export function TavernHome() {
                             provider,
                             baseUrl: preset.defaultBaseUrl,
                             model: preset.defaultModel,
+                            maxOutputTokens: 6_000,
+                            requestTimeoutSeconds: provider === "local_openai_compatible" ? 1_800 : 90,
                             clearApiKey: false,
                           }
                         : current,
@@ -3862,9 +3878,33 @@ export function TavernHome() {
                   }}
                 >
                   <option value="response_format">发送 JSON 模式参数</option>
+                  <option value="json_schema">JSON Schema（LM Studio）</option>
                   <option value="prompt_only">仅用提示词要求 JSON</option>
                 </select>
-                <small>若兼容服务提示不支持 response_format，请选择“仅用提示词”。</small>
+                <small>LM Studio 请选择“JSON Schema”；不支持结构化输出的服务可选择“仅用提示词”。</small>
+              </label>
+
+              <label className="field">
+                <span>单次输出上限（Token，含思考）</span>
+                <input type="number" min={1} max={131072} step={1} required
+                  value={modelDraft.maxOutputTokens ?? 6000}
+                  disabled={Boolean(modelOperation)}
+                  onChange={(event) => {
+                    setModelDraft((current) => current ? { ...current, maxOutputTokens: Number(event.target.value) } : current);
+                    clearModelReview();
+                  }} />
+                <small>思考与正文共用额度。开启 thinking 可尝试 16384；输入与输出总量需适合模型的上下文容量。</small>
+              </label>
+              <label className="field">
+                <span>生成等待上限（秒）</span>
+                <input type="number" min={1} max={14400} step={1} required
+                  value={modelDraft.requestTimeoutSeconds ?? (modelDraft.provider === "local_openai_compatible" ? 1800 : 90)}
+                  disabled={Boolean(modelOperation)}
+                  onChange={(event) => {
+                    setModelDraft((current) => current ? { ...current, requestTimeoutSeconds: Number(event.target.value) } : current);
+                    clearModelReview();
+                  }} />
+                <small>包含提示词处理、思考和正文生成。慢速本地模型可设为 3600 秒（60 分钟）；可用性审核仍使用短时测试。</small>
               </label>
 
               <label className="field full-width-field">

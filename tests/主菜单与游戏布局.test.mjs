@@ -85,14 +85,14 @@ test("桌面版退出按钮通过受限预加载桥接关闭程序", async () =>
   const [main, preload, buildScript, verifyScript] = await Promise.all([
     readProjectFile("desktop/main.mjs"),
     readProjectFile("desktop/preload.cjs"),
-    readProjectFile("scripts/构建macOS桌面包.mjs"),
-    readProjectFile("scripts/验证macOS桌面包.mjs"),
+    readProjectFile("scripts/desktop-build.mjs"),
+    readProjectFile("scripts/desktop-verify.mjs"),
   ]);
 
   assert.match(main, /preload: path\.join\(desktopDirectory, "preload\.cjs"\)/);
   assert.match(main, /ipcMain\.on\("ai-tavern:quit"/);
   assert.match(preload, /contextBridge\.exposeInMainWorld\("aiTavernDesktop"/);
   assert.match(preload, /ipcRenderer\.send\("ai-tavern:quit"\)/);
-  assert.match(buildScript, /desktop", "preload\.cjs"/);
+  assert.match(buildScript, /\["main\.mjs", "preload\.cjs", "portable-paths\.mjs", "server-entry\.mjs"\]/);
   assert.match(verifyScript, /应用包内缺少桌面退出桥接脚本/);
 });
