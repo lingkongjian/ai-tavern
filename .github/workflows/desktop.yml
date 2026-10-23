@@ -1,0 +1,37 @@
+name: Desktop portability
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-latest
+            target: mac
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run public:check
+      - run: npm run lint
+      - run: npm run desktop:build:${{ matrix.target }}
+      - run: node --disable-warning=ExperimentalWarning --test tests/*.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-tavern-${{ matrix.os }}
+          path: 发布/**/*.zip
+          if-no-files-found: error

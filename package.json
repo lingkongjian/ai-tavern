@@ -1,6 +1,6 @@
 {
   "name": "ai-tavern",
-  "version": "0.1.28",
+  "version": "0.1.31",
   "private": true,
   "description": "本地运行、由 AI API 驱动的网页酒馆程序",
   "author": "AI 酒馆项目",
@@ -9,14 +9,16 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --webpack --hostname 127.0.0.1 --port 3210",
-    "build": "NEXT_TELEMETRY_DISABLED=1 next build --webpack",
-    "start": "NEXT_TELEMETRY_DISABLED=1 next start --hostname 127.0.0.1 --port 3210",
+    "dev": "node scripts/next.mjs dev --webpack --hostname 127.0.0.1 --port 3210",
+    "build": "node scripts/next.mjs build --webpack",
+    "start": "node scripts/next.mjs start --hostname 127.0.0.1 --port 3210",
     "test": "npm run build && node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
     "test:storage": "node --disable-warning=ExperimentalWarning --test tests/storage.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "desktop:build:mac": "node scripts/构建macOS桌面包.mjs",
     "desktop:verify:mac": "node scripts/验证macOS桌面包.mjs",
+    "desktop:build:win": "node scripts/构建Windows桌面包.mjs",
+    "desktop:verify:win": "node scripts/验证Windows桌面包.mjs",
     "db:generate": "drizzle-kit generate",
     "bundle:build": "node scripts/构建剧本包.mjs",
     "bundle:check": "node scripts/构建剧本包.mjs --check",

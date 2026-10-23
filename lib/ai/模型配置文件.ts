@@ -30,6 +30,8 @@ export interface SaveAiProviderConfigInput {
 }
 
 export interface SaveAiProfileInput {
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   id?: string;
   name?: string;
   provider: AiProviderId;
@@ -41,6 +43,8 @@ export interface SaveAiProfileInput {
 }
 
 export interface AiProfileRecord {
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   id: string;
   name: string;
   provider: AiProviderId;
@@ -53,6 +57,8 @@ export interface AiProfileRecord {
 }
 
 export interface AiProfileSummary {
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   id: string;
   name: string;
   provider: AiProviderId;
@@ -88,6 +94,8 @@ function profileSummary(record: AiProfileRecord): AiProfileSummary {
     baseUrl: record.baseUrl,
     model: record.model,
     jsonMode: record.jsonMode,
+    maxOutputTokens: record.maxOutputTokens ?? 6_000,
+    requestTimeoutSeconds: record.requestTimeoutSeconds ?? (record.provider === "local_openai_compatible" ? 1_800 : 90),
     hasApiKey: Boolean(record.apiKey),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -353,11 +361,14 @@ export async function saveAiProfile(
     return "";
   })();
 
+  const previous = existingFile?.profiles.find((item) => item.id === input.id);
   const config = getAiProviderConfig({
     provider: input.provider,
     baseUrl: input.baseUrl,
     model: input.model,
     jsonMode: input.jsonMode,
+    maxOutputTokens: input.maxOutputTokens ?? previous?.maxOutputTokens,
+    requestTimeoutSeconds: input.requestTimeoutSeconds ?? previous?.requestTimeoutSeconds,
     apiKey: existingApiKey,
   });
 
@@ -380,6 +391,8 @@ export async function saveAiProfile(
       baseUrl: config.baseUrl,
       model: config.model,
       jsonMode: config.jsonMode,
+      maxOutputTokens: config.maxOutputTokens,
+      requestTimeoutSeconds: config.requestTimeoutSeconds,
       apiKey: config.apiKey,
       updatedAt: now,
     };
@@ -392,6 +405,8 @@ export async function saveAiProfile(
       baseUrl: config.baseUrl,
       model: config.model,
       jsonMode: config.jsonMode,
+      maxOutputTokens: config.maxOutputTokens,
+      requestTimeoutSeconds: config.requestTimeoutSeconds,
       apiKey: config.apiKey,
       createdAt: now,
       updatedAt: now,

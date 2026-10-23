@@ -10,6 +10,8 @@ export interface ActiveAiProfile {
   baseUrl: string;
   model: string;
   jsonMode: AiJsonMode;
+  maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   apiKey: string;
   createdAt: string;
   updatedAt: string;

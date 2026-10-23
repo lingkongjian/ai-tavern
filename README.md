@@ -4,7 +4,7 @@
 
 AI 酒馆把世界观、人物卡、世界书、剧情任务、原文参考和长期记忆组织成可持续演进的本地剧本。玩家可以从系统生成的候选回应中选择，也可以直接输入角色言行或长期剧情走向；模型负责扮演其他角色、评估世界变化并推进下一回合。
 
-> 当前版本：`0.1.28`，开发预览阶段。项目没有线上服务器，游戏数据默认只保存在玩家自己的电脑中。
+> 当前版本：`0.1.31`（本地 Windows 移植修订版），开发预览阶段。项目没有线上服务器，游戏数据默认只保存在玩家自己的电脑中。
 
 [AI 酒馆完整操作手册](public/使用手册/AI酒馆操作手册.md) · [导入材料标准](public/文件标准/导入材料文件结构指导手册.md) · [项目范围](docs/PROJECT_SCOPE.md) · [参与贡献](CONTRIBUTING.md) · [安全与隐私](SECURITY.md)
 
@@ -59,7 +59,7 @@ AI 酒馆把世界观、人物卡、世界书、剧情任务、原文参考和�
 - 可以读取模型目录、选择模型、导出不含密钥的模型清单并执行最小可用性审核。
 - 可以在本机保存多套 API 配置并在设置面板管理、游戏页顶栏快速切换；当前配置失败时会自动切换到备用配置并**持久启用**（顶栏同步显示实际生效配置），直到手动切回。
 - 回合生成采用流式传输，页面以进度条与已生成字数反馈，生成中可随时中断并保留输入修改后重新生成；完整内容校验通过后整体保存。
-- 提供 Apple Silicon macOS 便携桌面包，内置 Electron、Next.js 服务和本地数据库运行环境；主菜单页脚显示当前安装版本号。
+- 提供 macOS 与 Windows 便携桌面包，内置 Electron、Next.js 服务和本地数据库运行环境；主菜单页脚显示当前安装版本号。
 
 ## 一轮剧情如何推进
 
@@ -88,6 +88,18 @@ flowchart LR
 ### macOS 双击启动
 
 开发阶段最简单的方式是在 Finder 中双击项目根目录的 [`启动AI酒馆.command`](启动AI酒馆.command)。启动器会检查 Node.js、安装缺少的依赖并打开浏览器。
+
+### Windows 双击启动
+
+桌面版：完整解压 Windows ZIP 到个人可写目录，双击其中的 `AI酒馆.exe`，无需安装 Node.js。请保留整个文件夹中的运行组件和 `用户数据`，不要只复制 EXE。
+
+源码版：安装 Node.js `>=22.13.0`（含 npm），双击 [`启动AI酒馆.cmd`](启动AI酒馆.cmd)。首次启动自动安装依赖、创建 `.env.local` 并打开浏览器；按 `Ctrl+C` 停止。也可在 PowerShell 中运行：
+
+```powershell
+npm ci
+Copy-Item .env.example .env.local
+npm run dev
+```
 
 ### 终端启动
 
@@ -128,7 +140,9 @@ AI_TAVERN_BACKUP_RETENTION=12
 NEXT_TELEMETRY_DISABLED=1
 ```
 
-兼容服务不接受 `response_format` 时，将 `AI_JSON_MODE` 改为 `prompt_only`。不要使用 `NEXT_PUBLIC_` 前缀保存密钥，否则变量可能进入浏览器构建结果。
+LM Studio 请选择“JSON Schema（LM Studio）”，或设置 `AI_JSON_MODE=json_schema`；其接口可能拒绝 `json_object` 参数。完全不支持结构化输出的兼容服务可使用 `prompt_only`。两种方式仍会校验模型返回的 JSON；审核通过仅代表最小连接测试通过。不要使用 `NEXT_PUBLIC_` 前缀保存密钥，否则变量可能进入浏览器构建结果。
+
+本地模型的回合生成默认最多等待 30 分钟（含提示词处理与输出），云端仍为 90 秒；最小可用性审核仍为 30 秒。点击“中断”会取消模型请求，并阻止未完成回合保存。自动切换会跳过缺少密钥等配置不完整的备用项，避免用备用项的配置错误掩盖本次请求失败原因。
 
 ## 数据与隐私边界
 
@@ -177,6 +191,21 @@ npm run bundle:build -- "你的剧本资料目录"
 
 “继续游戏”页面可以打开、重命名、导出或删除已有剧本，也可以导入另一台电脑导出的完整存档。完整存档包含剧情、分支、人物与地点状态、世界书、原文参考、回滚、字段锁、快照和重生成记录，但不包含模型 API Key。
 
+## Windows 桌面版
+
+在 Windows 10/11 x64、Node.js `>=22.13.0` 环境中构建：
+
+```powershell
+npm ci
+npm run desktop:build:win
+```
+
+产物位于 `发布/AI酒馆-<版本>-Windows-x64/`，包含可直接运行的 `AI酒馆/AI酒馆.exe` 和完整 ZIP。构建会验证空库启动、桌面页面与退出按钮桥接、中文及空格路径、退出备份和服务停止；可使用 `npm run desktop:verify:win` 复验未使用过的发布目录。
+
+数据保存在 EXE 同级 `用户数据/`。升级时先退出并备份该目录，完整解压新版本，再复制旧 `用户数据/` 到新目录；卸载时退出并删除整个软件文件夹。不要放在需要管理员权限的 `Program Files` 中。
+
+当前产物为未签名的开发测试便携包，Windows 可能提示未知发布者。构建脚本支持本机 x64/arm64 架构，Windows ARM64 尚未实机验证。GitHub Actions 会在 Windows 与 macOS 上构建、测试并保存 ZIP；不自动发布 Release。
+
 ## macOS 桌面版
 
 在 Apple Silicon Mac 上构建：
@@ -201,7 +230,7 @@ npm run desktop:build:mac
 | 长期记忆 | `lib/memory/` | 章节摘要、事实提取、相关性召回和上下文预算 |
 | 导入导出 | `lib/import/` | 人物卡、世界书、剧本包和完整存档格式 |
 | 存储 | `db/`、`lib/storage/`、`drizzle/` | SQLite、迁移、事务、分支与状态物化 |
-| 桌面封装 | `desktop/`、`scripts/` | Electron 窗口、无界面本地服务、macOS 打包与验证 |
+| 桌面封装 | `desktop/`、`scripts/` | Electron 窗口、无界面本地服务、Windows/macOS 打包与验证 |
 
 ## 常用命令
 
@@ -213,6 +242,7 @@ npm test                     # 构建并运行全部自动化测试
 npm run public:check         # 检查当前提交是否混入私有数据或常见密钥
 npm run public:check:history # 检查当前分支完整历史
 npm run desktop:build:mac    # 生成并验证 macOS 桌面包
+npm run desktop:build:win    # 生成并验证 Windows 便携桌面 ZIP
 node scripts/发布GitHubRelease.mjs  # 发布 GitHub Release（说明见 docs/release-说明-v<版本>.md）
 ```
 
@@ -228,9 +258,9 @@ node scripts/发布GitHubRelease.mjs  # 发布 GitHub Release（说明见 docs/r
 | [`docs/STORAGE.md`](docs/STORAGE.md) | 数据库、事务、分支、存档、备份与记忆 |
 | [`docs/IMPORT_FORMAT.md`](docs/IMPORT_FORMAT.md) | 人物卡、世界书、剧本包和完整存档格式 |
 | [`docs/DEEPSEEK.md`](docs/DEEPSEEK.md) | 多供应商调用、校验、重试和上下文结构 |
-| [`docs/LOCAL_RUNTIME.md`](docs/LOCAL_RUNTIME.md) | 本地开发与 macOS 桌面封装 |
+| [`docs/LOCAL_RUNTIME.md`](docs/LOCAL_RUNTIME.md) | 本地开发与 Windows/macOS 桌面封装 |
 | [`docs/GITHUB_PUBLICATION.md`](docs/GITHUB_PUBLICATION.md) | 不携带私有历史的 GitHub 发布流程 |
-| [`docs/release-说明-v0.1.28.md`](docs/release-说明-v0.1.28.md) | GitHub Release 文案模板：每版维护一份，由发布脚本读取 |
+| [`docs/release-说明-v0.1.31.md`](docs/release-说明-v0.1.31.md) | 本地 Windows 修订版：thinking 输出额度与等待时间设置 |
 
 ## 当前限制与后续方向
 
@@ -238,7 +268,7 @@ node scripts/发布GitHubRelease.mjs  # 发布 GitHub Release（说明见 docs/r
 - macOS 桌面包目前只验证 Apple Silicon，且仍使用临时签名。
 - 不同兼容模型对结构化 JSON、长上下文和内容策略的支持程度不同。
 - 剧本包自动生成仍需要作者审阅人物分工、开场、世界事实和任务链。
-- 桌面端自动更新、崩溃报告导出、正式发布签名和 Windows/Linux 安装包仍待建设。
+- 桌面端自动更新、崩溃报告导出、正式发布签名、Windows 安装向导和 Linux 安装包仍待建设。
 
 ## 参与贡献
 

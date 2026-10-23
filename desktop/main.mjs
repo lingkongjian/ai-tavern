@@ -11,6 +11,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePortableRoot } from "./portable-paths.mjs";
 
 const desktopDirectory = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,11 +19,13 @@ app.setName("AI酒馆");
 process.umask(0o077);
 
 function portableRoot() {
-  if (process.env.AI_TAVERN_PORTABLE_ROOT) {
-    return path.resolve(process.env.AI_TAVERN_PORTABLE_ROOT);
-  }
-  if (!app.isPackaged) return path.resolve(desktopDirectory, "..");
-  return path.resolve(path.dirname(app.getPath("exe")), "../../..");
+  return resolvePortableRoot({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    executable: app.getPath("exe"),
+    desktopDirectory,
+    override: process.env.AI_TAVERN_PORTABLE_ROOT,
+  });
 }
 
 const rootDirectory = portableRoot();
@@ -53,7 +56,7 @@ try {
   app.commandLine.appendSwitch("disk-cache-dir", path.join(directories.browser, "缓存"));
   // 便携版不能在 macOS Keychain 留下 Chromium 的单独加密条目。
   // 模型密钥由权限为 0600 的本地配置文件管理。
-  app.commandLine.appendSwitch("use-mock-keychain");
+  if (process.platform === "darwin") app.commandLine.appendSwitch("use-mock-keychain");
 } catch (error) {
   preparationError = error;
 }
@@ -155,10 +158,21 @@ let serverProcess = null;
 let serverOrigin = null;
 let quitting = false;
 
-function stopServer() {
+async function stopServer() {
   if (!serverProcess) return;
-  serverProcess.kill();
+  const child = serverProcess;
   serverProcess = null;
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve();
+    }, 5_000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.postMessage("ai-tavern:shutdown");
+  });
 }
 
 async function startServer() {
@@ -177,7 +191,7 @@ async function startServer() {
     flags: "a",
     mode: 0o600,
   });
-  serverProcess = utilityProcess.fork(serverFile, [], {
+  serverProcess = utilityProcess.fork(path.join(desktopDirectory, "server-entry.mjs"), [], {
     cwd: serverRoot,
     env: {
       ...process.env,
@@ -203,6 +217,7 @@ async function startServer() {
     log("本地服务进程错误。", detail);
   });
   serverProcess.once("exit", (code) => {
+    serverProcess = null;
     serverLog.end(`\n[${new Date().toISOString()}] 服务退出 code=${code}\n`);
     if (!quitting && mainWindow) {
       dialog.showErrorBox("AI酒馆服务已停止", `本地服务意外停止。请查看：\n${path.join(directories.logs, "本地服务.log")}`);
@@ -210,6 +225,7 @@ async function startServer() {
     }
   });
   await waitForServer(serverOrigin, serverProcess);
+  log(`本地服务已就绪：${serverOrigin}`);
 }
 
 async function createWindow() {
@@ -242,7 +258,17 @@ async function createWindow() {
     mainWindow = null;
   });
   await mainWindow.loadURL(serverOrigin);
-  if (smokeTest) setTimeout(() => app.quit(), 250);
+  log("桌面窗口已加载。");
+  if (smokeTest) {
+    const ready = await mainWindow.webContents.executeJavaScript(`
+      fetch('/api/adventures').then(async (response) => {
+        const body = await response.json();
+        return response.ok && Array.isArray(body.adventures) && typeof window.aiTavernDesktop?.quit === 'function';
+      })
+    `);
+    if (!ready) throw new Error("桌面 API 或退出桥接验证失败。");
+    await mainWindow.webContents.executeJavaScript("window.aiTavernDesktop.quit()");
+  }
 }
 
 const hasLock = app.requestSingleInstanceLock();
@@ -256,20 +282,25 @@ else {
   });
 }
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (quitting) return;
   quitting = true;
-  stopServer();
-  log("桌面应用退出。用户数据目录：" + userDataDirectory);
-  logStream?.end();
+  event.preventDefault();
+  void stopServer().finally(() => {
+    log("桌面应用退出。用户数据目录：" + userDataDirectory);
+    logStream?.end();
+    app.quit();
+  });
 });
 app.on("window-all-closed", () => app.quit());
 ipcMain.on("ai-tavern:quit", () => app.quit());
 
 app.whenReady().then(async () => {
+  if (!hasLock || quitting) return;
   if (preparationError) {
     dialog.showErrorBox(
       "无法建立用户数据目录",
-      `请先把整个“AI酒馆”文件夹复制到可写位置（例如“应用程序”或个人文件夹），不要直接从只读安装镜像运行。\n\n目标目录：${userDataDirectory}\n\n${preparationError.message || preparationError}`,
+      `请先把整个“AI酒馆”文件夹解压或复制到个人可写目录，不要直接从 ZIP、只读镜像或 Program Files 运行。\n\n目标目录：${userDataDirectory}\n\n${preparationError.message || preparationError}`,
     );
     app.quit();
     return;

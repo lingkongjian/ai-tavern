@@ -44,6 +44,7 @@ OpenCode Go 的官方目录为 `https://opencode.ai/zen/go/v1/models`，官方�
 [`lib/ai/模型供应商.ts`](../lib/ai/模型供应商.ts) 统一调用兼容 OpenAI 格式的 `/chat/completions`；[`lib/ai/深度求索.ts`](../lib/ai/深度求索.ts) 仅保留旧代码导入兼容：
 
 - `AI_JSON_MODE=response_format` 时发送 `response_format: { "type": "json_object" }`；若供应商不支持该字段，可改为 `prompt_only`，仅依靠系统提示要求 JSON。
+- LM Studio 可使用 `AI_JSON_MODE=json_schema`，对应设置页“JSON Schema（LM Studio）”；审核与流式生成均使用根类型为 object 的 Schema，具体剧情字段仍由酒馆校验。HTTP 错误会保留状态码，并兼容 `error` 字符串及 `error.message` 两种响应，显示前隐藏配置密钥。
 - 只有 DeepSeek 与 OpenCode Go 预设发送 `thinking: { "type": "disabled" }`（OpenCode Go 的 DeepSeek/Kimi 推理模型会先输出思维链，占满输出预算导致空回复或截断）；其他通用兼容服务不会收到供应商专属字段。
 - 默认最长等待 90 秒。
 - 回合生成使用流式输出：服务端以 SSE 逐帧接收模型内容，页面以进度条与已生成字数反馈；完整内容仍须通过结构校验后才会整体保存。
